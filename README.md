@@ -1,6 +1,6 @@
 # Synthetic Data Augmentation Tool
 
-![Python](https://img.shields.io/badge/Python-3.10-blue)
+![Python](https://img.shields.io/badge/Python-3.9-blue)
 ![License](https://img.shields.io/badge/License-Apache%202.0-green)
 <a href="mailto:your.email@example.com">
     <img alt="email" src="https://img.shields.io/badge/contact_me-email-yellow">
@@ -19,86 +19,94 @@
 - [Contact](#contact)
 
 ## Project Overview
-Esta herramienta está diseñada para generar datos sintéticos a partir de un dataset de imágenes anotadas (en formato COCO) mediante técnicas de aumento de datos. La herramienta permite extraer objetos de las imágenes originales (usando segmentaciones) o utilizar imágenes de objetos desde una carpeta externa, y pegarlos sobre fondos, aplicando transformaciones (rotación, escalado y traslación) y estrategias avanzadas para adaptar la tonalidad y suavizar los bordes, logrando una integración natural entre el objeto y el fondo.
+This tool is designed to generate synthetic data from an annotated image dataset (in COCO format) using data augmentation techniques. It allows you to either extract objects from the original images (using segmentation annotations) or use object images from an external folder, and then paste them on various backgrounds. The tool applies transformations (rotation, scaling, translation) and advanced strategies to adapt the object's tone and smooth its edges, ensuring a natural blend between the object and the background.
 
-Además, la herramienta controla el solapamiento entre objetos utilizando el contorno real (más allá de las bounding boxes) y permite definir desde la interfaz el número deseado de muestras sintéticas por clase para balancear el dataset. Al finalizar el proceso, se genera un archivo JSON en formato COCO que agrupa todas las anotaciones del nuevo dataset sintético.
+
+![Algorithm example](/assets/tool1.png)
+![Algorithm definition](/assets/tool2.png)
+
+Moreover, the tool controls the overlapping between objects using the actual object contour (beyond simple bounding boxes) and lets you specify the desired number of synthetic samples per class via the user interface to balance the dataset. At the end of the process, it generates a single JSON file in COCO format that aggregates all the annotations of the new synthetic dataset.
+
 
 ## Features
 
-- **Extracción de objetos segmentados:**  
-  Extrae objetos de las imágenes originales a partir de las anotaciones de segmentación del dataset de entrada.
+- **Segmented Object Extraction:**  
+  Extract objects from the original images based on segmentation annotations in the input dataset.
 
-- **Uso de objetos externos:**  
-  Permite utilizar imágenes de objetos almacenadas en una carpeta externa, organizadas en subdirectorios por clase.
+- **External Object Usage:**  
+  Use object images stored in an external folder, organized in subdirectories by class.
 
-- **Transformaciones y adaptación:**  
-  Aplica transformaciones aleatorias (rotación, escalado, traslación) y adapta el tono y el contorno del objeto para que se integre mejor con el fondo.
+- **Transformations and Adaptation:**  
+  Apply random transformations (rotation, scaling, translation) and adjust the object’s tone and edges so that it blends seamlessly with the background.
 
-- **Control del solapamiento:**  
-  Emplea una estrategia basada en la máscara (contorno real) del objeto, con dilatación, para evitar que los objetos se solapen de forma excesiva.
+- **Overlap Control:**  
+  Employ a strategy based on the object's mask (its actual contour) with dilation to avoid excessive overlapping of objects.
 
-- **Configuración personalizada:**  
-  La interfaz de usuario basada en Streamlit permite:
-  - Seleccionar la fuente de objetos (Dataset de entrada o Carpeta de objetos).
-  - Definir el número máximo de objetos a pegar por imagen.
-  - Especificar el número deseado de muestras sintéticas por cada clase.
-  - Visualizar sugerencias basadas en el análisis del dataset original.
-  - Monitorizar el progreso del proceso mediante una barra de progreso.
-  - Visualizar gráficos del número de muestras sintéticas generadas por clase y la composición final del dataset (original + sintéticas).
+- **Custom Configuration:**  
+  The Streamlit-based user interface allows you to:
+  - Select the object source (input dataset or external folder).
+  - Define the maximum number of objects to paste per image.
+  - Specify the desired number of synthetic samples per class.
+  - View suggestions based on the original dataset analysis.
+  - Monitor the process progress with a progress bar.
+  - View graphs showing the number of synthetic samples generated per class and the final dataset composition (original + synthetic).
 
-- **Salida en formato COCO:**  
-  Se genera un único archivo JSON global en formato COCO con la misma estructura del JSON de entrada, que incluye:
-  - Información de las imágenes sintéticas generadas.
-  - Anotaciones (bounding boxes, áreas) de los objetos pegados.
-  - Información de las categorías.
+- **COCO Format Output:**  
+  A single global JSON file is generated in COCO format with the same structure as the input JSON. It includes:
+  - Information on the generated synthetic images.
+  - Annotations (bounding boxes, areas) of the pasted objects.
+  - Category information.
 
 ## Installation
 
-1. Clona el repositorio:
+1. **Clone the repository:**
    ```
    git clone https://github.com/tu_usuario/synthetic-data-augmentation.git
    cd synthetic-data-augmentation
    ```
 
-2. Instala las dependencias (se recomienda usar un entorno virtual):
+2. Install dependencies (using a virtual environment is recommended):
   ```
   pip install -r requirements.txt
   ```
 
-3. (Opcional) Construye la imagen Docker:
+3. (Optional) Build the Docker image:
   ```
   docker-compose build
   ```
 
 # Usage
 ## With Docker
-1. Levanta la aplicación:
+1. Start the application:
   ```
   docker-compose up
   ```
 
-2. Accede a la interfaz de Streamlit en **http://localhost:8501**.
+2. Access the Streamlit interface at http://localhost:8501.
 
 ## Without Docker
-1. Ejecuta la aplicación:
+1. Run the application:
   ```
   streamlit run app/main.py
   ```
 
-2. Utiliza la interfaz para:
+2. Use the interface to:
 
-- Subir tu archivo COCO JSON.
-- Seleccionar las clases a aumentar.
-- Definir el número deseado de muestras sintéticas por clase (con sugerencias).
-- Elegir la fuente de objetos y configurar parámetros de transformación.
-- Ejecutar el proceso y visualizar el progreso y las gráficas de salida.
+  - Upload your COCO JSON file.
+  - Select the classes to augment.
+  - Define the desired number of synthetic samples per class (with suggestions based on the dataset).
+  - Choose the object source and configure transformation parameters.
+  - Run the augmentation process while monitoring progress and viewing output graphs.
 
 # Customization
-- **Configuración**:
-Modifica el archivo ```configs/config.yaml``` para ajustar rutas, parámetros de aumento (rotación, escalado, etc.) y otros ajustes globales.
+- **Configuration**:
+Modify the file ```configs/config.yaml``` to adjust paths, augmentation parameters (rotation, scaling, etc.), and other global settings.
 
-- **Parámetros de Overlap y Transformaciones:**
-Los parámetros como ```overlap_threshold``` y ```max_overlap_threshold``` en el código pueden ajustarse para lograr una integración óptima entre los objetos y los fondos.
+- **Overlap and Transformation Parameters:**
+Parameters such as ```overlap_threshold``` and ```max_overlap_threshold``` can be adjusted in the code to achieve optimal blending between objects and backgrounds.
+
+- **Desired Sample Control:**
+Through the Streamlit interface, you can define the exact number of synthetic samples to generate per class, overriding the automatic balancing based on the dataset.
 
 ## Citing
 If you use this repo in your research/project or wish to refer to the results published here, please use the following BibTeX entries.
