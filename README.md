@@ -15,7 +15,6 @@
   - [With Docker](#with-docker)
   - [Without Docker](#without-docker)
 - [Customization](#customization)
-- [License](#license)
 - [Citing](#citing)
 - [Contact](#contact)
 
@@ -101,7 +100,30 @@ Modifica el archivo ```configs/config.yaml``` para ajustar rutas, parámetros de
 - **Parámetros de Overlap y Transformaciones:**
 Los parámetros como ```overlap_threshold``` y ```max_overlap_threshold``` en el código pueden ajustarse para lograr una integración óptima entre los objetos y los fondos.
 
-# Contacto
+## Citing
+If you use this repo in your research/project or wish to refer to the results published here, please use the following BibTeX entries.
+
+```BibTeX
+@article{SANCHEZFERRER2023154,
+      title = {An experimental study on marine debris location and recognition using object detection},
+      author = {Alejandro Sánchez-Ferrer and Jose J. Valero-Mas and Antonio Javier Gallego and Jorge Calvo-Zaragoza},
+      journal = {Pattern Recognition Letters},
+      year = {2023},
+      doi = {https://doi.org/10.1016/j.patrec.2022.12.019},
+      url = {https://www.sciencedirect.com/science/article/pii/S0167865522003889},
+}
+```
+```BibTeX
+@InProceedings{10.1007/978-3-031-04881-4_49,
+      title="The CleanSea Set: A Benchmark Corpus for Underwater Debris Detection and Recognition",
+      author="S{\'a}nchez-Ferrer, Alejandro and Gallego, Antonio Javier and Valero-Mas, Jose J. and Calvo-Zaragoza, Jorge",
+      booktitle="Pattern Recognition and Image Analysis",
+      year="2022",
+      publisher="Springer International Publishing",
+}
+```
+
+# Contact
 **Project Lead:** Alejandro Sanchez Ferrer  
 **Email:** asanc.tech@gmail.com  
 **GitHub:** [asferrer](https://github.com/asferrer)
