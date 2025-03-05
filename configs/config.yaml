@@ -1,0 +1,28 @@
+# configs/config.yaml
+
+# Parámetros del proceso de augmentación
+augmentation:
+  rot: true                  # Aplicar rotación a los objetos
+  scale: true                # Aplicar escalado a los objetos
+  trans: true                # Aplicar traslación a los objetos
+  try_count: 2               # Número máximo de intentos para pegar un objeto sin solapamiento excesivo
+  overlap_threshold: 10      # Umbral de solapamiento (%) permitido
+  max_objects_per_image: 5
+
+# Rutas de archivos y directorios
+paths:
+  images: "/app/synthetic_dataset/images"          # Directorio de salida para las imágenes aumentadas
+  labels: "/app/synthetic_dataset/labels"            # Directorio de salida para las anotaciones generadas
+  objects_dataset: "/app/datasets/Objects"   # Ruta al dataset de objetos (máscaras)
+  backgrounds_dataset: "/app/datasets/Backgrounds"  # Ruta al dataset de fondos
+
+# Configuración de Streamlit (para la interfaz)
+streamlit:
+  port: 8501                # Puerto en el que se ejecutará la aplicación Streamlit
+  debug: false              # Activar modo debug para Streamlit (opcional)
+
+# Configuración de logging (a nivel de aplicación)
+logging:
+  level: INFO               # Nivel de logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  format: "[%(asctime)s] %(levelname)s: %(message)s"  # Formato del mensaje de log
+  datefmt: "%Y-%m-%d %H:%M:%S"                     # Formato de fecha/hora en los logs
