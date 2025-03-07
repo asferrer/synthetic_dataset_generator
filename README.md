@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9-blue)
 ![License](https://img.shields.io/badge/License-Apache%202.0-green)
-<a href="mailto:your.email@example.com">
+<a href="mailto:asanc.tech@gmail.com">
     <img alt="email" src="https://img.shields.io/badge/contact_me-email-yellow">
 </a>
 
