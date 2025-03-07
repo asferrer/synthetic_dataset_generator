@@ -18,18 +18,19 @@ def load_config(config_path="configs/config.yaml"):
 
 config = load_config()
 
-default_images_path = config["paths"]["backgrounds_dataset"]  # Carpeta de fondos
-default_output_dir = os.path.dirname(config["paths"]["images"])  # Carpeta de salida sintética
-default_objects_path = config["paths"].get("objects_dataset", None)  # Carpeta de objetos externos
+# Define default paths from config
+default_images_path = config["paths"]["backgrounds_dataset"]  # Background images folder
+default_output_dir = os.path.dirname(config["paths"]["images"])  # Synthetic output folder
+default_objects_path = config["paths"].get("objects_dataset", None)  # External objects folder
 
 def plot_synthetic_counts(synthetic_counts):
     classes = list(synthetic_counts.keys())
     counts = list(synthetic_counts.values())
     fig, ax = plt.subplots()
     ax.bar(classes, counts, color='orange')
-    ax.set_title("Muestras sintéticas generadas por clase")
-    ax.set_xlabel("Clase")
-    ax.set_ylabel("Número de instancias sintéticas")
+    ax.set_title("Synthetic Samples Generated per Class")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Number of Synthetic Instances")
     plt.xticks(rotation=45, ha='right')
     return fig
 
@@ -41,110 +42,108 @@ def plot_final_composition(original_counts, synthetic_counts):
     counts = list(final.values())
     fig, ax = plt.subplots()
     ax.bar(classes, counts, color='blue')
-    ax.set_title("Composición final del dataset (original + sintéticas)")
-    ax.set_xlabel("Clase")
-    ax.set_ylabel("Número de instancias")
+    ax.set_title("Final Dataset Composition (Original + Synthetic)")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Number of Instances")
     plt.xticks(rotation=45, ha='right')
     return fig
 
 def main():
-    st.title("Herramienta de Aumento de Datos Sintético")
+    st.title("Synthetic Data Augmentation Tool")
     
-    st.sidebar.header("Configuración de Aumentado de Datos")
-    rot = st.sidebar.checkbox("Rotación", value=config["augmentation"]["rot"])
-    scale = st.sidebar.checkbox("Escalado", value=config["augmentation"]["scale"])
-    trans = st.sidebar.checkbox("Traslación", value=config["augmentation"]["trans"])
-    try_count = st.sidebar.number_input("Intentos máximos de pegado", min_value=1, max_value=10, value=config["augmentation"]["try_count"])
-    overlap_threshold = st.sidebar.number_input("Umbral de solapamiento (%)", min_value=0, max_value=100, value=config["augmentation"]["overlap_threshold"])
-    minority_threshold = st.sidebar.number_input("Umbral para clase minoritaria (número de instancias)", min_value=1, value=10)
+    st.sidebar.header("Augmentation Configuration")
+    rotate_flag = st.sidebar.checkbox("Rotation", value=config["augmentation"]["rot"])
+    scale_flag = st.sidebar.checkbox("Scaling", value=config["augmentation"]["scale"])
+    translate_flag = st.sidebar.checkbox("Translation", value=config["augmentation"]["trans"])
+    try_count = st.sidebar.number_input("Maximum Paste Attempts", min_value=1, max_value=10, value=config["augmentation"]["try_count"])
+    overlap_threshold = st.sidebar.number_input("Overlap Threshold (%)", min_value=0, max_value=100, value=config["augmentation"]["overlap_threshold"])
+    minority_threshold = st.sidebar.number_input("Minority Class Threshold (number of instances)", min_value=1, value=10)
     
-    max_obj_per_image = st.sidebar.number_input("Máximo de objetos por imagen", min_value=1, value=config["augmentation"].get("max_objects_per_image", 3))
+    max_obj_per_image = st.sidebar.number_input("Max Objects per Image", min_value=1, value=config["augmentation"].get("max_objects_per_image", 3))
     
-    st.sidebar.subheader("Fuente de objetos para aumentación")
-    objects_source = st.sidebar.radio("Selecciona la fuente de objetos:", options=["Dataset de entrada", "Carpeta de objetos"])
+    st.sidebar.subheader("Object Source for Augmentation")
+    objects_source = st.sidebar.radio("Select object source:", options=["Input Dataset", "External Folder"])
     
-    mode_bbox = st.sidebar.checkbox("Usar modo segmentación/bounding box (objetos y fondos)", value=True)
+    mode_bbox = st.sidebar.checkbox("Use segmentation/bounding box mode (objects & backgrounds)", value=True)
     
-    st.header("Carga y Análisis del Dataset COCO")
-    st.markdown("Sube tu archivo de anotaciones en formato COCO JSON.")
+    st.header("COCO Dataset Upload and Analysis")
+    st.markdown("Upload your COCO JSON annotation file.")
     
-    coco_file = st.file_uploader("Selecciona tu archivo COCO JSON", type=["json"])
+    coco_file = st.file_uploader("Select your COCO JSON file", type=["json"])
     
     if coco_file is not None:
         try:
             coco_data = json.load(coco_file)
-            st.success("Archivo COCO cargado correctamente.")
+            st.success("COCO file loaded successfully.")
             
             analysis = analyze_coco_dataset(coco_data)
-            st.subheader("Resumen del Dataset Original")
-            st.write(f"Número de imágenes: {analysis.get('num_images', 'N/A')}")
-            st.write(f"Número de anotaciones: {analysis.get('num_annotations', 'N/A')}")
+            st.subheader("Original Dataset Summary")
+            st.write(f"Number of images: {analysis.get('num_images', 'N/A')}")
+            st.write(f"Number of annotations: {analysis.get('num_annotations', 'N/A')}")
             original_counts = analysis.get("class_counts", {})
-            st.write("Distribución de clases (original):")
+            st.write("Original Class Distribution:")
             st.write(original_counts)
             
             fig_orig = plot_class_distribution(original_counts)
             st.pyplot(fig_orig)
             
-            # Sugerir cantidad de muestras sintéticas para cada clase:
+            # Suggest synthetic sample counts per class based on input dataset
             if original_counts:
                 target_count = max(original_counts.values())
                 suggestion = {cls: max(target_count - original_counts.get(cls, 0), 0) for cls in original_counts.keys()}
-                st.subheader("Sugerencia de muestras sintéticas por clase")
-                st.write("Se recomienda generar estas muestras sintéticas para balancear el dataset:")
+                st.subheader("Suggested Synthetic Samples per Class")
+                st.write("It is suggested to generate these synthetic samples to balance the dataset:")
                 st.write(suggestion)
             else:
                 suggestion = {}
 
             minority_classes = [cls for cls, count in original_counts.items() if count < minority_threshold]
-            st.write(f"Clases minoritarias (menos de {minority_threshold} instancias):")
+            st.write(f"Minority Classes (less than {minority_threshold} instances):")
             st.write(minority_classes)
             
-            selected_classes = st.multiselect("Selecciona las clases a aumentar", minority_classes)
+            selected_classes = st.multiselect("Select classes to augment", minority_classes)
             
-            # Para cada clase seleccionada, permitir definir manualmente el número de muestras sintéticas deseadas,
-            # prellenando el campo con la sugerencia calculada.
+            # For each selected class, allow the user to define the desired number of synthetic samples.
             desired_samples = {}
             if selected_classes:
-                st.subheader("Definir número de muestras sintéticas por clase")
+                st.subheader("Define Desired Synthetic Samples per Class")
                 for cls in selected_classes:
                     default_value = suggestion.get(cls, 0)
-                    desired = st.number_input(f"Para la clase '{cls}', número deseado:", min_value=0, value=int(default_value))
+                    desired = st.number_input(f"For class '{cls}', desired number:", min_value=0, value=int(default_value))
                     desired_samples[cls] = desired
 
             if mode_bbox:
-                st.info("Modo segmentación/bounding box activado.")
-                if objects_source == "Carpeta de objetos":
-                    st.write("Utilizando objetos de la carpeta externa:")
+                st.info("Segmentation/Bounding Box mode enabled.")
+                if objects_source == "External Folder":
+                    st.write("Using objects from external folder:")
                     st.write(default_objects_path)
                 else:
-                    st.write("Utilizando objetos extraídos del dataset de entrada.")
-                st.write("Fondo utilizado:")
+                    st.write("Using objects extracted from the input dataset.")
+                st.write("Background folder:")
                 st.write(default_images_path)
             else:
-                st.info("Modo tradicional: se utilizarán las imágenes originales del dataset.")
+                st.info("Traditional mode: Using original dataset images.")
             
-            st.write("Ruta de salida para el dataset sintético:")
+            st.write("Synthetic dataset output directory:")
             st.write(default_output_dir)
             
-            if st.button("Ejecutar Augmentación"):
+            if st.button("Run Augmentation"):
                 if not os.path.exists(default_output_dir):
                     os.makedirs(default_output_dir)
                 
                 progress_bar = st.progress(0)
                 augmentor = SyntheticDataAugmentor(
                     output_dir=default_output_dir,
-                    rot=rot,
-                    scale=scale,
-                    trans=trans,
+                    rot=rotate_flag,
+                    scale=scale_flag,
+                    trans=translate_flag,
                     try_count=try_count,
-                    overlap_threshold=overlap_threshold
+                    overlap_threshold=overlap_threshold/100
                 )
                 
-                # Se pasa desired_synthetic_per_class como un diccionario con las muestras deseadas para cada clase.
-                with st.spinner("Ejecutando proceso de augmentación..."):
+                with st.spinner("Running augmentation process..."):
                     if mode_bbox:
-                        if objects_source == "Dataset de entrada":
+                        if objects_source == "Input Dataset":
                             synthetic_counts, synthetic_total = augmentor.augment_dataset(
                                 coco_data, 
                                 images_path=default_images_path, 
@@ -176,23 +175,23 @@ def main():
                             progress_bar=progress_bar
                         )
                 
-                st.success("Proceso de augmentación completado.")
+                st.success("Augmentation process completed.")
                 
                 fig_synth = plot_synthetic_counts(synthetic_counts)
-                st.subheader("Muestras sintéticas generadas por clase")
+                st.subheader("Synthetic Samples Generated per Class")
                 st.pyplot(fig_synth)
                 
                 final_counts = {}
                 for cls in set(original_counts.keys()).union(synthetic_counts.keys()):
                     final_counts[cls] = original_counts.get(cls, 0) + synthetic_counts.get(cls, 0)
                 fig_final = plot_final_composition(original_counts, synthetic_counts)
-                st.subheader("Composición final del dataset (original + sintéticas)")
+                st.subheader("Final Dataset Composition (Original + Synthetic)")
                 st.pyplot(fig_final)
                 
-                st.info("Revisa el directorio de salida para ver las nuevas imágenes, anotaciones y las imágenes anotadas.")
+                st.info("Check the output directory for new images, annotations, and annotated images.")
                 
         except Exception as e:
-            st.error(f"Error al procesar el archivo COCO: {e}")
+            st.error(f"Error processing the COCO file: {e}")
 
 if __name__ == "__main__":
     main()
