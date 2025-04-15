@@ -57,15 +57,15 @@ def main():
     translate_flag = st.sidebar.checkbox("Translation", value=config["augmentation"]["trans"])
     try_count = st.sidebar.number_input("Maximum Paste Attempts", min_value=1, max_value=10, value=config["augmentation"]["try_count"])
     overlap_threshold = st.sidebar.number_input("Overlap Threshold (%)", min_value=0, max_value=100, value=config["augmentation"]["overlap_threshold"])
-    minority_threshold = st.sidebar.number_input("Minority Class Threshold (number of instances)", min_value=1, value=10)
+    minority_threshold = st.sidebar.number_input("Minority Class Threshold (number of instances)", min_value=1, value=1500)
     
     max_obj_per_image = st.sidebar.number_input("Max Objects per Image", min_value=1, value=config["augmentation"].get("max_objects_per_image", 3))
     
     st.sidebar.subheader("Object Source for Augmentation")
-    objects_source = st.sidebar.radio("Select object source:", options=["Input Dataset", "External Folder"])
-    
-    mode_bbox = st.sidebar.checkbox("Use segmentation/bounding box mode (objects & backgrounds)", value=True)
-    
+    objects_source = st.sidebar.radio("Select object source:", options=["External Folder","Input Dataset"])
+        
+    save_intermediate = st.sidebar.checkbox("Save Intermediate Steps", value=False)
+
     st.header("COCO Dataset Upload and Analysis")
     st.markdown("Upload your COCO JSON annotation file.")
     
@@ -111,18 +111,6 @@ def main():
                     default_value = suggestion.get(cls, 0)
                     desired = st.number_input(f"For class '{cls}', desired number:", min_value=0, value=int(default_value))
                     desired_samples[cls] = desired
-
-            if mode_bbox:
-                st.info("Segmentation/Bounding Box mode enabled.")
-                if objects_source == "External Folder":
-                    st.write("Using objects from external folder:")
-                    st.write(default_objects_path)
-                else:
-                    st.write("Using objects extracted from the input dataset.")
-                st.write("Background folder:")
-                st.write(default_images_path)
-            else:
-                st.info("Traditional mode: Using original dataset images.")
             
             st.write("Synthetic dataset output directory:")
             st.write(default_output_dir)
@@ -138,39 +126,31 @@ def main():
                     scale=scale_flag,
                     trans=translate_flag,
                     try_count=try_count,
-                    overlap_threshold=overlap_threshold/100
+                    overlap_threshold=overlap_threshold/100,
+                    save_intermediate_steps=save_intermediate
                 )
                 
                 with st.spinner("Running augmentation process..."):
-                    if mode_bbox:
-                        if objects_source == "Input Dataset":
-                            synthetic_counts, synthetic_total = augmentor.augment_dataset(
-                                coco_data, 
-                                images_path=default_images_path, 
-                                selected_classes=selected_classes,
-                                objects_source="dataset",
-                                backgrounds_dataset_path=default_images_path,
-                                max_objects_per_image=max_obj_per_image,
-                                desired_synthetic_per_class=desired_samples,
-                                progress_bar=progress_bar
-                            )
-                        else:
-                            synthetic_counts, synthetic_total = augmentor.augment_dataset(
-                                coco_data, 
-                                images_path=default_images_path, 
-                                selected_classes=selected_classes,
-                                objects_source="folder",
-                                objects_dataset_path=default_objects_path,
-                                backgrounds_dataset_path=default_images_path,
-                                max_objects_per_image=max_obj_per_image,
-                                desired_synthetic_per_class=desired_samples,
-                                progress_bar=progress_bar
-                            )
+                    if objects_source == "Input Dataset":
+                        synthetic_counts, synthetic_total = augmentor.augment_dataset(
+                            coco_data, 
+                            images_path=default_images_path, 
+                            selected_classes=selected_classes,
+                            objects_source="dataset",
+                            backgrounds_dataset_path=default_images_path,
+                            max_objects_per_image=max_obj_per_image,
+                            desired_synthetic_per_class=desired_samples,
+                            progress_bar=progress_bar
+                        )
                     else:
                         synthetic_counts, synthetic_total = augmentor.augment_dataset(
                             coco_data, 
                             images_path=default_images_path, 
                             selected_classes=selected_classes,
+                            objects_source="folder",
+                            objects_dataset_path=default_objects_path,
+                            backgrounds_dataset_path=default_images_path,
+                            max_objects_per_image=max_obj_per_image,
                             desired_synthetic_per_class=desired_samples,
                             progress_bar=progress_bar
                         )
