@@ -26,8 +26,5 @@ RUN pip install -r requirements.txt
 # Copiar el resto del código del proyecto
 COPY . .
 
-# Exponer el puerto de Streamlit
-EXPOSE 8501
-
 # Comando para iniciar la aplicación Streamlit
-CMD ["streamlit", "run", "app/main.py"]
+CMD ["streamlit", "run", "app/main.py", "--server.port", "8501"]
