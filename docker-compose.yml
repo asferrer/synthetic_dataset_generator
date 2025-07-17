@@ -5,7 +5,7 @@ services:
       - "8501:8501"
     volumes:
       - .:/app
-      - D:\RT-DETRv2-Densea\rtdetrv2_pytorch\dataset:/app/datasets
+      - C:\Users\aleja\Desktop\RT-DETRv2-Densea\rtdetrv2_pytorch\dataset:/app/datasets
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1

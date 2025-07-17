@@ -5,9 +5,11 @@ augmentation:
   rot: true                  # Aplicar rotación a los objetos
   scale: true                # Aplicar escalado a los objetos
   trans: true                # Aplicar traslación a los objetos
-  try_count: 2               # Número máximo de intentos para pegar un objeto sin solapamiento excesivo
+  try_count: 5               # Número máximo de intentos para pegar un objeto sin solapamiento excesivo
   overlap_threshold: 10      # Umbral de solapamiento (%) permitido
   max_objects_per_image: 5
+  min_area_ratio: 0.005  # Mínimo 0.5% del área total de la imagen
+  max_area_ratio: 0.40   # Máximo 40% del área total de la imagen
 
 # Rutas de archivos y directorios
 paths:
