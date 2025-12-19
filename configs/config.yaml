@@ -1,28 +1,205 @@
 # configs/config.yaml
 
-# Parámetros del proceso de augmentación
+# Augmentation process parameters
 augmentation:
-  rot: true                  # Aplicar rotación a los objetos
-  scale: true                # Aplicar escalado a los objetos
-  trans: true                # Aplicar traslación a los objetos
-  try_count: 2               # Número máximo de intentos para pegar un objeto sin solapamiento excesivo
-  overlap_threshold: 10      # Umbral de solapamiento (%) permitido
-  max_objects_per_image: 5
+  rot: true                  # Apply rotation to objects
+  scale: true                # Apply scaling to objects
+  trans: true                # Apply translation to objects
+  try_count: 5               # Maximum number of attempts to paste an object without excessive overlap
+  overlap_threshold: 10      # Allowed overlap threshold (%)
+  max_objects_per_image: 5   # Maximum objects per image
+  min_area_ratio: 0.005      # Minimum 0.5% of total image area
+  max_area_ratio: 0.40       # Maximum 40% of total image area
 
-# Rutas de archivos y directorios
+  # Depth-aware augmentation (Depth Anything V3 - Nov 2025 SOTA)
+  depth_aware: true                # Enable depth-aware object scaling and positioning
+  depth_model_version: v3          # Model version: 'v3' (SOTA, +44% accuracy) or 'v2' (backward compatibility)
+  depth_model_size: base           # Model size: 'small', 'base', 'large', or 'giant' (V3 only, non-commercial)
+  depth_cache_dir: checkpoints     # Directory to cache depth model weights
+  enable_pose_estimation: false    # Enable camera pose estimation (V3 only, experimental)
+
+# Advanced lighting estimation system
+advanced_lighting:
+  enabled: true                      # Enable advanced multi-light source estimation
+
+  # Light source detection
+  max_light_sources: 3               # Maximum number of light sources to detect
+  intensity_threshold: 0.6           # Minimum intensity for light detection (0-1)
+
+  # HDR estimation (experimental)
+  use_hdr_estimation: false          # Enable full HDR panorama estimation (slower)
+
+  # Shadow generation
+  enable_multi_shadows: true         # Generate shadows from multiple light sources
+  shadow_softness: 0.7               # Shadow edge softness (0-1)
+  max_shadow_intensity: 0.7          # Maximum shadow darkness (0-1)
+
+  # Underwater-specific
+  apply_water_attenuation: true      # Adjust lights for underwater scenes
+  default_water_clarity: clear       # Options: 'clear', 'murky', 'very_murky'
+
+# Quality validation system
+validation:
+  enabled: true                    # Enable automated quality validation
+
+  # Quality metrics
+  metrics:
+    lpips_enabled: true            # Enable LPIPS perceptual quality metric
+    fid_enabled: false             # Enable FID distribution matching (requires reference dataset)
+    anomaly_detection: true        # Enable anomaly detection with Isolation Forest
+    physics_checks: true           # Enable physics plausibility validation
+
+  # Quality thresholds (0-1 scale, higher = stricter)
+  thresholds:
+    min_perceptual_quality: 0.70   # Minimum LPIPS-based quality score
+    min_distribution_match: 0.65   # Minimum FID-based distribution match
+    min_anomaly_score: 0.60        # Minimum anomaly detector score (inlier probability)
+    min_composition_score: 0.70    # Minimum composition plausibility score
+
+  # Physics validation settings
+  physics:
+    density_threshold_float: 0.95  # Materials with density < this must float (top zone)
+    density_threshold_sink: 1.15   # Materials with density > this must sink (bottom zone)
+    surface_zone: 0.25             # Top 25% of image considered "surface zone"
+    bottom_zone: 0.75              # Bottom 75% considered "bottom zone"
+    auto_correct_physics: true     # Automatically correct physically implausible placements
+    max_correction_attempts: 3     # Maximum attempts to correct placement
+
+  # Actions on validation failure
+  reject_failed_images: true       # Reject and regenerate images that fail validation
+  save_rejected: true              # Save rejected images for debugging
+  rejected_dir: "rejected_images"  # Directory to save rejected images
+  max_retries: 5                   # Maximum regeneration attempts before giving up
+
+  # Reference dataset for FID/LPIPS (optional)
+  reference_dataset_path: null     # Path to real images for comparison (if null, FID disabled)
+
+# File and directory paths
+# Rutas configuradas para Docker (montaje en /app/datasets/)
+# Estructura esperada: C:\Users\aleja\Desktop\RT-DETRv2-Densea\rtdetrv2_pytorch\dataset\
+#   ├── Backgrounds_filtered/   -> /app/datasets/Backgrounds_filtered
+#   └── Objects/       -> /app/datasets/Objects
 paths:
-  images: "/app/synthetic_dataset/images"          # Directorio de salida para las imágenes aumentadas
-  labels: "/app/synthetic_dataset/labels"            # Directorio de salida para las anotaciones generadas
-  objects_dataset: "/app/datasets/Objects"   # Ruta al dataset de objetos (máscaras)
-  backgrounds_dataset: "/app/datasets/Backgrounds"  # Ruta al dataset de fondos
+  # Output directories (lectura/escritura)
+  images: "/app/output/synthetic_dataset/images"    # Output directory for augmented images
+  labels: "/app/output/synthetic_dataset/labels"    # Output directory for generated annotations
 
-# Configuración de Streamlit (para la interfaz)
+  # Input directories (solo lectura, montados desde Windows)
+  objects_dataset: "/app/datasets/Objects"          # Path to objects dataset (masks)
+  backgrounds_dataset: "/app/datasets/Backgrounds_filtered"  # Path to backgrounds dataset
+
+  # Rutas alternativas para ejecución local (sin Docker)
+  # Descomentar estas líneas si se ejecuta fuera de Docker:
+  # images: "synthetic_dataset/images"
+  # labels: "synthetic_dataset/labels"
+  # objects_dataset: "datasets/Objects"
+  # backgrounds_dataset: "datasets/Backgrounds_filtered"
+
+# Streamlit configuration (for the interface)
 streamlit:
-  port: 8501                # Puerto en el que se ejecutará la aplicación Streamlit
-  debug: false              # Activar modo debug para Streamlit (opcional)
+  port: 8501                # Port where Streamlit application will run
+  debug: false              # Enable debug mode for Streamlit (optional)
 
-# Configuración de logging (a nivel de aplicación)
+# Logging configuration (application level)
 logging:
-  level: INFO               # Nivel de logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-  format: "[%(asctime)s] %(levelname)s: %(message)s"  # Formato del mensaje de log
-  datefmt: "%Y-%m-%d %H:%M:%S"                     # Formato de fecha/hora en los logs
+  level: INFO               # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  format: "[%(asctime)s] %(levelname)s: %(message)s"  # Log message format
+  datefmt: "%Y-%m-%d %H:%M:%S"                        # Date/time format in logs
+
+# =============================================================================
+# POST-PROCESSING CONFIGURATION
+# =============================================================================
+
+# Export configuration - Multi-format annotation export
+export:
+  # Default formats to export (available: coco, yolo, coco_segmentation)
+  default_formats:
+    - coco
+    - yolo
+
+  # YOLO export settings
+  yolo:
+    create_classes_file: true     # Create classes.txt with category names
+    create_yaml: true             # Create data.yaml for YOLOv5/v8 training
+    normalize_coords: true        # Normalize coordinates to [0, 1]
+
+  # COCO Segmentation export settings
+  coco_segmentation:
+    polygon_tolerance: 2.0        # Tolerance for polygon simplification
+    min_polygon_area: 100         # Minimum area for valid polygons
+    generate_from_bbox: true      # Generate rectangular polygons from bbox if no mask
+
+  # General export settings
+  copy_images: true               # Copy images to export directory
+  include_synthetic_flag: true    # Mark synthetic images in metadata
+
+# Dataset split configuration - Train/Val/Test splitting
+splits:
+  # Default split ratios (must sum to 1.0)
+  default_ratios:
+    train: 0.7
+    val: 0.2
+    test: 0.1
+
+  # Split strategy: 'random' or 'stratified'
+  # - random: Simple random split
+  # - stratified: Maintains class distribution across splits
+  default_strategy: stratified
+
+  # Random seed for reproducibility
+  random_seed: 42
+
+  # Whether to copy images to split directories
+  copy_images: true
+
+  # K-Fold cross-validation settings
+  kfold:
+    default_n_folds: 5            # Number of folds
+    stratified: true              # Use stratified K-Fold
+    shuffle: true                 # Shuffle before splitting
+
+# Class balancing configuration
+balancing:
+  # Default balancing strategy: 'oversample', 'undersample', 'hybrid'
+  # - oversample: Duplicate minority class samples
+  # - undersample: Remove majority class samples
+  # - hybrid: Combination (oversample minorities, undersample majorities to median)
+  default_strategy: oversample
+
+  # Maximum times a sample can be duplicated (prevents extreme oversampling)
+  max_oversample_ratio: 5.0
+
+  # Random seed for reproducibility
+  random_seed: 42
+
+  # Class weights calculation settings
+  weights:
+    # Default method: 'inverse_frequency', 'effective_samples', 'focal', 'sqrt_inverse'
+    # - inverse_frequency: weight = total / (n_classes * count)
+    # - effective_samples: Based on paper "Class-Balanced Loss Based on Effective Number of Samples"
+    # - focal: weight = (1 - freq)^gamma, for focal loss
+    # - sqrt_inverse: weight = sqrt(total / count), less aggressive
+    default_method: inverse_frequency
+
+    # Export formats for weights
+    export_formats:
+      - pytorch                   # For PyTorch DataLoader
+      - dict                      # Simple dictionary format
+
+    # Parameters for specific methods
+    effective_samples_beta: 0.999 # Beta parameter for effective samples method
+    focal_gamma: 2.0              # Gamma parameter for focal weights
+
+# Post-processing pipeline configuration
+pipeline:
+  # Output directory for processed datasets
+  output_dir: "/app/output/processed"
+
+  # Enable/disable pipeline stages
+  enable_balancing: false         # Enable class balancing (set to true if needed)
+  enable_splits: true             # Enable train/val/test splitting
+  enable_kfolds: false            # Enable K-Fold generation (in addition to splits)
+  compute_weights: true           # Compute class weights for training
+
+  # Dataset combination
+  combine_original_synthetic: false  # Combine original and synthetic datasets
