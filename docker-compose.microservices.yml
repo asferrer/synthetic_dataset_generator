@@ -1,0 +1,232 @@
+services:
+  # ============================================
+  # API Gateway - Orquestador central
+  # ============================================
+  gateway:
+    build: ./services/gateway
+    container_name: synth-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - DEPTH_SERVICE_URL=http://depth:8001
+      - SEGMENTATION_SERVICE_URL=http://segmentation:8002
+      - EFFECTS_SERVICE_URL=http://effects:8003
+      - AUGMENTOR_SERVICE_URL=http://augmentor:8004
+      - PYTHONUNBUFFERED=1
+      # Rutas por defecto para datasets
+      - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
+      - OBJECTS_PATH=/app/datasets/Objects
+    volumes:
+      - shared_data:/shared
+      # Dataset con Backgrounds_filtered/ y Objects/
+      # Configura DATASET_PATH en .env.microservices
+      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+    depends_on:
+      depth:
+        condition: service_healthy
+      effects:
+        condition: service_healthy
+      augmentor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Depth Service - Depth-Anything-3
+  # ============================================
+  depth:
+    build: ./services/depth
+    container_name: synth-depth
+    ports:
+      - "8001:8001"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - DEPTH_MODEL=${DEPTH_MODEL:-DA3-BASE}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/app/checkpoints/huggingface
+    volumes:
+      - shared_data:/shared
+      - checkpoints:/app/checkpoints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Segmentation Service - SAM3
+  # ============================================
+  segmentation:
+    build: ./services/segmentation
+    container_name: synth-segmentation
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_HOME=/app/checkpoints/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - shared_data:/shared
+      - checkpoints:/app/checkpoints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Effects Service - Realism Pipeline
+  # ============================================
+  effects:
+    build: ./services/effects
+    container_name: synth-effects
+    ports:
+      - "8003:8003"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - shared_data:/shared
+      - caustics_cache:/app/cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Augmentor Service - Composition + Validation
+  # ============================================
+  augmentor:
+    build: ./services/augmentor
+    container_name: synth-augmentor
+    ports:
+      - "8004:8004"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - DEPTH_SERVICE_URL=http://depth:8001
+      - EFFECTS_SERVICE_URL=http://effects:8003
+      - SEGMENTATION_SERVICE_URL=http://segmentation:8002
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - shared_data:/shared
+      - checkpoints:/app/checkpoints
+      # Dataset con Backgrounds_filtered/ y Objects/
+      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+      # Output para imágenes generadas
+      - ./output:/app/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      depth:
+        condition: service_healthy
+      effects:
+        condition: service_healthy
+      segmentation:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Frontend - Streamlit UI
+  # ============================================
+  frontend:
+    build: ./frontend
+    container_name: synth-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - GATEWAY_URL=http://gateway:8000
+      - PYTHONUNBUFFERED=1
+      # Rutas por defecto para datasets
+      - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
+      - OBJECTS_PATH=/app/datasets/Objects
+      - OUTPUT_PATH=/app/output
+    volumes:
+      - shared_data:/shared:ro
+      # Dataset con Backgrounds_filtered/ y Objects/
+      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+      # Output para imágenes generadas (lectura/escritura)
+      - ./output:/app/output
+    depends_on:
+      - gateway
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+networks:
+  synth-network:
+    driver: bridge
+    name: synth-network
+
+# ============================================
+# Volúmenes compartidos para transferencia eficiente
+# ============================================
+volumes:
+  shared_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${SHARED_DATA_PATH:-./volumes/shared}
+  checkpoints:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${CHECKPOINTS_PATH:-./volumes/checkpoints}
+  caustics_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${CACHE_PATH:-./volumes/cache}

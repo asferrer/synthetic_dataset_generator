@@ -1,16 +1,53 @@
-# Librerías principales para la aplicación
-numpy
-opencv-python
-scipy
-imageio
-tqdm
-matplotlib
-streamlit
-scikit-image
-noise
+# Core dependencies (latest stable versions 2025)
+numpy>=1.24.0
+opencv-python>=4.8.0
+scipy>=1.11.0
+imageio>=2.31.0
+Pillow>=10.0.0
 
-# Librerías para manejo de configuraciones (opcional, si se usan archivos YAML)
-pyyaml
+# Data handling
+pandas>=2.0.0
+scikit-image>=0.21.0
+matplotlib>=3.7.0
 
-# Librerías para pruebas
-pytest
+# Web framework (Streamlit - requires Python >=3.10)
+streamlit>=1.28.0
+plotly>=5.18.0
+altair>=5.0.0
+
+# Utilities
+tqdm>=4.66.0
+pyyaml>=6.0.1
+toml>=0.10.2
+
+# Testing
+pytest>=7.4.0
+
+# Quality validation dependencies
+lpips>=0.1.4                    # Learned Perceptual Image Patch Similarity
+scikit-learn>=1.5.0             # For Isolation Forest anomaly detection
+# pytorch-fid (optional, requires reference dataset)
+
+# Depth estimation dependencies (Depth Anything V3 - Nov 2025 SOTA)
+# Required for model loading and checkpoints
+huggingface-hub>=0.20.0
+
+# Transformers for HuggingFace integration
+transformers>=4.45.0
+
+# XFormers for memory-efficient attention (required by Depth Anything V3)
+xformers>=0.0.28
+
+# Gradio dependencies (required by depth-anything packages)
+gradio>=4.29.0
+gradio_imageslider>=0.0.17
+
+# PyTorch 2.5.0 + CUDA 12.4 installed in Dockerfile (stable version)
+# torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cu124
+
+# Depth Anything V3 (November 2025 - SOTA, +44% accuracy improvement)
+# Installed from GitHub in Dockerfile for better compatibility
+# pip install git+https://github.com/ByteDance-Seed/Depth-Anything-3.git
+
+# Depth Anything V2 (Backward compatibility)
+# pip install git+https://github.com/DepthAnything/Depth-Anything-V2.git

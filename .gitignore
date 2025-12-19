@@ -68,3 +68,34 @@ venv.bak/
 
 # Salidas y datasets generados (se asume que son archivos de salida y no se versionan)
 synthetic_dataset/
+output/
+
+# Docker volumes y datos de runtime
+volumes/
+.caustics_cache/
+
+# Tokens y credenciales
+hf_token.txt
+*.token
+.env.local
+.env.*.local
+.env.microservices
+.env.production
+.env.development
+
+# Keep example files
+!.env.example
+!.env.*.example
+
+# Claude Code
+.claude/
+
+# Windows artifacts
+nul
+
+# Checkpoints y modelos (muy grandes para git)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
