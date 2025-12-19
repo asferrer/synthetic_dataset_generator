@@ -1,1 +1,45 @@
 """Frontend components"""
+from .api_client import get_api_client, APIClient
+from .effects_sidebar import render_effects_sidebar
+from .ui import (
+    metric_card,
+    metric_row,
+    status_badge,
+    alert_box,
+    section_header,
+    page_header,
+    service_card,
+    progress_card,
+    stat_grid,
+    info_table,
+    empty_state,
+    loading_placeholder,
+    tab_bar,
+    labeled_input,
+    form_section,
+    spacer,
+    divider_with_text,
+)
+
+__all__ = [
+    "get_api_client",
+    "APIClient",
+    "render_effects_sidebar",
+    "metric_card",
+    "metric_row",
+    "status_badge",
+    "alert_box",
+    "section_header",
+    "page_header",
+    "service_card",
+    "progress_card",
+    "stat_grid",
+    "info_table",
+    "empty_state",
+    "loading_placeholder",
+    "tab_bar",
+    "labeled_input",
+    "form_section",
+    "spacer",
+    "divider_with_text",
+]
