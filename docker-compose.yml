@@ -1,12 +1,34 @@
 services:
   augmentation:
     build: .
+    container_name: synthetic_augmentor
+    image: synthetic_dataset_generator:v3_cuda128
     ports:
       - "8501:8501"
     volumes:
       - .:/app
-      - D:\RT-DETRv2-Densea\rtdetrv2_pytorch\dataset:/app/datasets
+      - C:\Users\aleja\Desktop\RT-DETRv2-Densea\rtdetrv2_pytorch\dataset:/app/datasets
+      # Volume para cachear checkpoints de modelos (persistir entre builds)
+      - ./checkpoints:/app/checkpoints
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
+      # Variables para GPU RTX 5090 (Blackwell architecture)
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Optimización de memoria para RTX 5090
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    # Configuración GPU con NVIDIA Container Toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Runtime explícito para NVIDIA (compatibilidad mejorada)
+    runtime: nvidia
+    # Reiniciar en caso de fallo
+    restart: unless-stopped

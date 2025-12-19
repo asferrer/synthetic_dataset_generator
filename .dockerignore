@@ -11,3 +11,8 @@ dist
 .env
 .venv
 venv
+
+# Volumes (no copiar checkpoints ni cache al build)
+checkpoints/
+volumes/
+.caustics_cache/
