@@ -11,7 +11,11 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from app.utils import LabelManager, ExportManager, DatasetSplitter
+from app.utils import (
+    LabelManager, ExportManager, DatasetSplitter,
+    KFoldGenerator, KFoldConfig,
+    ClassBalancer, ClassWeightsCalculator, BalancingConfig
+)
 
 
 def render_post_processing_page():
@@ -364,6 +368,258 @@ def render_post_processing_page():
                             st.success(f"  {fmt}: OK")
                         else:
                             st.error(f"  {fmt}: {result.get('error')}")
+
+    st.divider()
+
+    # ===== Section 6: K-Fold Cross-Validation =====
+    st.subheader("6. K-Fold Cross-Validation")
+
+    if st.session_state.pp_coco_data:
+        st.markdown("""
+        Generate K-Fold splits for cross-validation training.
+        Each fold provides a different train/validation split.
+        """)
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            n_folds = st.number_input("Number of folds (K)", min_value=2, max_value=20, value=5, key='pp_n_folds')
+
+        with col2:
+            kfold_stratified = st.checkbox("Stratified", value=True, key='pp_kfold_stratified',
+                                           help="Maintain class distribution in each fold")
+
+        with col3:
+            kfold_seed = st.number_input("Random seed", value=42, key='pp_kfold_seed')
+
+        kfold_output_dir = st.text_input(
+            "K-Fold output directory",
+            value=os.environ.get("OUTPUT_PATH", "/app/output") + "/kfold",
+            key='pp_kfold_dir'
+        )
+
+        if st.button("Generate K-Folds", type="primary", key='pp_kfold_btn'):
+            try:
+                with st.spinner(f"Generating {n_folds}-fold splits..."):
+                    config = KFoldConfig(
+                        n_folds=int(n_folds),
+                        stratified=kfold_stratified,
+                        random_seed=int(kfold_seed)
+                    )
+                    generator = KFoldGenerator(config)
+
+                    images = st.session_state.pp_coco_data['images']
+                    annotations = st.session_state.pp_coco_data['annotations']
+
+                    folds = generator.get_all_folds(images, annotations)
+
+                    # Save each fold
+                    kfold_path = Path(kfold_output_dir)
+                    kfold_path.mkdir(parents=True, exist_ok=True)
+
+                    fold_stats = []
+                    for fold in folds:
+                        train_data, val_data = generator.export_fold(fold, st.session_state.pp_coco_data)
+
+                        # Save train
+                        train_file = kfold_path / f"fold_{fold.fold_number}_train.json"
+                        with open(train_file, 'w') as f:
+                            json.dump(train_data, f, indent=2)
+
+                        # Save val
+                        val_file = kfold_path / f"fold_{fold.fold_number}_val.json"
+                        with open(val_file, 'w') as f:
+                            json.dump(val_data, f, indent=2)
+
+                        fold_stats.append({
+                            'Fold': fold.fold_number,
+                            'Train Images': fold.n_train,
+                            'Val Images': fold.n_val,
+                            'Train Annotations': len(train_data['annotations']),
+                            'Val Annotations': len(val_data['annotations'])
+                        })
+
+                    st.success(f"Generated {n_folds} folds!")
+
+                    # Show statistics
+                    st.dataframe(pd.DataFrame(fold_stats), use_container_width=True, hide_index=True)
+
+                    st.info(f"Saved to: {kfold_output_dir}")
+
+            except Exception as e:
+                st.error(f"Error generating K-Folds: {e}")
+    else:
+        st.info("Load a dataset to enable K-Fold cross-validation")
+
+    st.divider()
+
+    # ===== Section 7: Class Balancing =====
+    st.subheader("7. Class Balancing")
+
+    if st.session_state.pp_coco_data:
+        st.markdown("""
+        Balance your dataset to handle class imbalance:
+        - **Oversample**: Duplicate minority class samples
+        - **Undersample**: Remove majority class samples
+        - **Hybrid**: Combine both approaches (target = median)
+        """)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            balance_strategy = st.selectbox(
+                "Balancing strategy",
+                options=['oversample', 'undersample', 'hybrid'],
+                key='pp_balance_strategy'
+            )
+
+        with col2:
+            target_mode = st.radio(
+                "Target count",
+                ["Auto", "Custom"],
+                horizontal=True,
+                key='pp_target_mode'
+            )
+
+        custom_target = None
+        if target_mode == "Custom":
+            custom_target = st.number_input(
+                "Target count per class",
+                min_value=1,
+                value=100,
+                key='pp_custom_target'
+            )
+
+        if st.button("Apply Balancing", type="primary", key='pp_balance_btn'):
+            try:
+                with st.spinner(f"Applying {balance_strategy} balancing..."):
+                    balancer = ClassBalancer()
+                    balanced_data, result = balancer.balance(
+                        st.session_state.pp_coco_data,
+                        strategy=balance_strategy,
+                        target_count=custom_target
+                    )
+
+                    # Show results
+                    st.success("Balancing complete!")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Original annotations", result.total_original)
+                    with col2:
+                        st.metric("Balanced annotations", result.total_balanced)
+
+                    # Show class counts comparison
+                    comparison_data = []
+                    cat_id_to_name = {cat['id']: cat['name'] for cat in st.session_state.pp_coco_data['categories']}
+
+                    for cat_id in result.original_counts:
+                        comparison_data.append({
+                            'Class': cat_id_to_name.get(cat_id, f"ID_{cat_id}"),
+                            'Original': result.original_counts[cat_id],
+                            'Balanced': result.balanced_counts.get(cat_id, 0)
+                        })
+
+                    st.dataframe(
+                        pd.DataFrame(comparison_data).sort_values('Class'),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # Option to apply
+                    if st.button("Apply to dataset", key='pp_apply_balance'):
+                        st.session_state.pp_coco_data = balanced_data
+                        st.success("Dataset updated with balanced data!")
+                        st.rerun()
+
+            except Exception as e:
+                st.error(f"Error balancing dataset: {e}")
+    else:
+        st.info("Load a dataset to enable class balancing")
+
+    st.divider()
+
+    # ===== Section 8: Class Weights Calculator =====
+    st.subheader("8. Class Weights for Training")
+
+    if st.session_state.pp_coco_data:
+        st.markdown("""
+        Calculate class weights for weighted loss functions during training.
+        Weights help models focus more on underrepresented classes.
+        """)
+
+        weight_method = st.selectbox(
+            "Weighting method",
+            options=[
+                'inverse_frequency',
+                'effective_samples',
+                'focal',
+                'sqrt_inverse'
+            ],
+            format_func=lambda x: {
+                'inverse_frequency': 'Inverse Frequency (standard)',
+                'effective_samples': 'Effective Samples (Cui et al.)',
+                'focal': 'Focal Loss Weights',
+                'sqrt_inverse': 'Square Root Inverse'
+            }.get(x, x),
+            key='pp_weight_method'
+        )
+
+        export_format = st.selectbox(
+            "Export format",
+            options=['dict', 'pytorch', 'tensorflow', 'list'],
+            key='pp_weight_format'
+        )
+
+        if st.button("Calculate Weights", type="primary", key='pp_calc_weights_btn'):
+            try:
+                weights = ClassWeightsCalculator.from_coco_data(
+                    st.session_state.pp_coco_data,
+                    method=weight_method
+                )
+
+                exported = ClassWeightsCalculator.export_weights(
+                    weights,
+                    st.session_state.pp_coco_data['categories'],
+                    format=export_format
+                )
+
+                st.success("Weights calculated!")
+
+                # Display weights
+                if export_format == 'dict':
+                    weights_df = pd.DataFrame([
+                        {'Class': k, 'Weight': f"{v:.4f}"}
+                        for k, v in sorted(exported.items(), key=lambda x: -x[1])
+                    ])
+                    st.dataframe(weights_df, use_container_width=True, hide_index=True)
+
+                elif export_format == 'pytorch':
+                    st.json({
+                        'weights': [round(w, 4) for w in exported['weights']],
+                        'class_to_idx': exported['class_to_idx']
+                    })
+
+                elif export_format == 'list':
+                    st.code(f"weights = {[round(w, 4) for w in exported]}")
+
+                else:
+                    st.json(exported)
+
+                # Download button
+                weights_json = json.dumps(exported, indent=2, default=str)
+                st.download_button(
+                    "Download Weights JSON",
+                    data=weights_json,
+                    file_name=f"class_weights_{weight_method}.json",
+                    mime="application/json",
+                    key='pp_download_weights'
+                )
+
+            except Exception as e:
+                st.error(f"Error calculating weights: {e}")
+    else:
+        st.info("Load a dataset to calculate class weights")
 
     st.divider()
 
