@@ -6,6 +6,7 @@ Batch generation monitoring with progress tracking and ETA.
 
 import os
 import time
+import json
 from datetime import datetime
 import streamlit as st
 from pathlib import Path
@@ -18,6 +19,62 @@ from app.components.ui import (
     workflow_stepper, workflow_navigation
 )
 from app.config.theme import get_colors_dict
+
+
+def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
+    """Save the generation configuration alongside the generated dataset.
+
+    This allows users to retrieve and reuse the exact configuration
+    used for a specific generation job.
+    """
+    try:
+        # Build job folder path
+        job_folder = f"job_{job_id}" if not job_id.startswith("job_") else job_id
+        base_output = _normalize_path(output_dir)
+
+        # Try to find the actual job folder
+        job_path = base_output / job_folder
+        if not job_path.exists():
+            job_path = base_output  # Fallback
+
+        # Build config with metadata
+        saved_config = {
+            "config_version": "1.0",
+            "job_id": job_id,
+            "created_at": datetime.now().isoformat(),
+            "directories": {
+                "backgrounds_dir": config.get("backgrounds_dir", ""),
+                "objects_dir": config.get("objects_dir", ""),
+                "output_dir": config.get("output_dir", ""),
+            },
+            "effects": {
+                "enabled": config.get("effects", []),
+                "config": config.get("effects_config", {}),
+            },
+            "generation": {
+                "num_images": config.get("num_images", 0),
+                "max_objects_per_image": config.get("max_objects_per_image", 5),
+                "overlap_threshold": config.get("overlap_threshold", 0.1),
+                "depth_aware": config.get("depth_aware", True),
+            },
+            "validation": {
+                "validate_quality": config.get("validate_quality", False),
+                "validate_physics": config.get("validate_physics", False),
+            },
+            "debug": {
+                "save_pipeline_debug": config.get("save_pipeline_debug", False),
+            },
+            "targets_per_class": config.get("targets_per_class", {}),
+        }
+
+        # Save to job folder
+        config_path = job_path / "generation_config.json"
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(saved_config, f, indent=2, ensure_ascii=False)
+
+    except Exception:
+        # Silently fail - this is a convenience feature, not critical
+        pass
 
 
 def render_generation_page():
@@ -349,15 +406,17 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
     job_completed = status in ["completed", "cancelled"]
 
     if job_completed:
-        # Store generated dataset info
+        # Store generated dataset info and save config
         if status == "completed":
             coco_path = Path(output_dir) / "synthetic_dataset.json"
             if coco_path.exists():
-                import json
                 try:
                     with open(coco_path) as f:
                         st.session_state.generated_dataset = json.load(f)
                     st.session_state.generated_output_dir = output_dir
+
+                    # Save configuration used for this generation
+                    _save_generation_config(output_dir, job_id, config)
                 except Exception as e:
                     st.warning(f"No se pudo cargar el dataset generado: {e}")
 
