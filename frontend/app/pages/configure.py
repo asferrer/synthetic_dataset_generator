@@ -72,7 +72,16 @@ def _build_exportable_config(
 
 
 def _apply_loaded_config(config: Dict) -> bool:
-    """Apply a loaded configuration to session state. Returns True on success."""
+    """Apply a loaded configuration to session state. Returns True on success.
+
+    Applies:
+    - Directory paths
+    - Enabled effects (checkboxes)
+    - Effect intensity values (sliders)
+    - Advanced generation options
+    - Validation and debug settings
+    - Targets per class (optional)
+    """
     try:
         # Directories
         dirs = config.get("directories", {})
@@ -83,7 +92,7 @@ def _apply_loaded_config(config: Dict) -> bool:
         if dirs.get("output_dir"):
             st.session_state.config_output_dir = dirs["output_dir"]
 
-        # Effects enabled
+        # Effects enabled (checkboxes)
         effects_data = config.get("effects", {})
         enabled_effects = effects_data.get("enabled", [])
 
@@ -96,43 +105,45 @@ def _apply_loaded_config(config: Dict) -> bool:
         st.session_state.fx_motion = "motion_blur" in enabled_effects
         st.session_state.fx_lighting = "lighting" in enabled_effects
 
-        # Effects config (intensities)
+        # Effects config (intensities from sliders)
         fx_config = effects_data.get("config", {})
-        if "color_intensity" in fx_config:
-            st.session_state.int_color = fx_config["color_intensity"]
-        if "blur_strength" in fx_config:
-            st.session_state.int_blur = fx_config["blur_strength"]
-        if "shadow_opacity" in fx_config:
-            st.session_state.int_shadow = fx_config["shadow_opacity"]
-        if "underwater_intensity" in fx_config:
-            st.session_state.int_underwater = fx_config["underwater_intensity"]
-        if "caustics_intensity" in fx_config:
-            st.session_state.int_caustics = fx_config["caustics_intensity"]
-        if "edge_feather" in fx_config:
-            st.session_state.int_edge = fx_config["edge_feather"]
 
-        # Generation options
+        # Core intensity values
+        if "color_intensity" in fx_config:
+            st.session_state.int_color = float(fx_config["color_intensity"])
+        if "blur_strength" in fx_config:
+            st.session_state.int_blur = float(fx_config["blur_strength"])
+        if "shadow_opacity" in fx_config:
+            st.session_state.int_shadow = float(fx_config["shadow_opacity"])
+        if "underwater_intensity" in fx_config:
+            st.session_state.int_underwater = float(fx_config["underwater_intensity"])
+        if "caustics_intensity" in fx_config:
+            st.session_state.int_caustics = float(fx_config["caustics_intensity"])
+        if "edge_feather" in fx_config:
+            st.session_state.int_edge = int(fx_config["edge_feather"])
+
+        # Generation options (advanced)
         gen = config.get("generation", {})
         if "max_objects_per_image" in gen:
-            st.session_state.config_max_objects = gen["max_objects_per_image"]
+            st.session_state.config_max_objects = int(gen["max_objects_per_image"])
         if "overlap_threshold" in gen:
-            st.session_state.config_overlap = gen["overlap_threshold"]
+            st.session_state.config_overlap = float(gen["overlap_threshold"])
         if "depth_aware" in gen:
-            st.session_state.config_depth_aware = gen["depth_aware"]
+            st.session_state.config_depth_aware = bool(gen["depth_aware"])
 
         # Validation options
         val = config.get("validation", {})
         if "validate_quality" in val:
-            st.session_state.config_val_quality = val["validate_quality"]
+            st.session_state.config_val_quality = bool(val["validate_quality"])
         if "validate_physics" in val:
-            st.session_state.config_val_physics = val["validate_physics"]
+            st.session_state.config_val_physics = bool(val["validate_physics"])
 
         # Debug options
         debug = config.get("debug", {})
         if "save_pipeline_debug" in debug:
-            st.session_state.config_save_debug = debug["save_pipeline_debug"]
+            st.session_state.config_save_debug = bool(debug["save_pipeline_debug"])
 
-        # Targets per class (optional - only if present and user wants to override)
+        # Targets per class (optional - stored separately for user confirmation)
         if config.get("targets_per_class"):
             st.session_state.loaded_targets = config["targets_per_class"]
 
@@ -517,16 +528,17 @@ def render_configure_page():
     if fx_motion: effects.append("motion_blur")
     if fx_lighting: effects.append("lighting")
 
+    # Get intensity values from session state (more reliable than local vars)
     effects_config = {
-        "color_intensity": color_intensity if 'color_intensity' in dir() else 0.7,
-        "blur_strength": blur_strength if 'blur_strength' in dir() else 1.0,
-        "underwater_intensity": underwater_intensity if 'underwater_intensity' in dir() else 0.25,
-        "caustics_intensity": caustics_intensity if 'caustics_intensity' in dir() else 0.15,
-        "shadow_opacity": shadow_opacity if 'shadow_opacity' in dir() else 0.4,
-        "edge_feather": edge_feather if 'edge_feather' in dir() else 5,
+        "color_intensity": st.session_state.get("int_color", 0.7),
+        "blur_strength": st.session_state.get("int_blur", 1.0),
+        "underwater_intensity": st.session_state.get("int_underwater", 0.25),
+        "caustics_intensity": st.session_state.get("int_caustics", 0.15),
+        "shadow_opacity": st.session_state.get("int_shadow", 0.4),
+        "edge_feather": st.session_state.get("int_edge", 5),
         "lighting_type": "ambient",
         "lighting_intensity": 0.5,
-        "water_color": (20, 80, 120),
+        "water_color": [20, 80, 120],  # Use list for JSON serialization
         "water_clarity": "clear",
         "motion_blur_probability": 0.2,
     }
