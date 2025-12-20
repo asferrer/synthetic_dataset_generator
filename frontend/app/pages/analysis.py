@@ -1,7 +1,7 @@
 """
-Analysis Page
-=============
-COCO dataset analysis and visualization with enhanced UI.
+Analysis Page (Step 1)
+======================
+COCO dataset analysis with workflow stepper integration.
 """
 
 import json
@@ -9,45 +9,37 @@ import streamlit as st
 from pathlib import Path
 from collections import Counter
 from typing import Dict, List, Any, Optional
+import numpy as np
+import pandas as pd
 
 from app.components.ui import (
-    page_header, section_header, metric_card, metric_row,
-    alert_box, empty_state, spacer, divider_with_text
+    page_header, section_header, spacer, alert_box, empty_state,
+    workflow_stepper, workflow_navigation
 )
+from app.config.theme import get_colors_dict
 
 
 def analyze_coco_dataset(coco_data: Dict) -> Dict[str, Any]:
     """
     Analyze a COCO dataset and return statistics.
-
-    Args:
-        coco_data: Parsed COCO JSON data
-
-    Returns:
-        Dictionary with analysis results
     """
-    # Build category mapping
     categories = {cat["id"]: cat["name"] for cat in coco_data.get("categories", [])}
 
-    # Count annotations per class
     class_counts = Counter()
     for ann in coco_data.get("annotations", []):
         cat_id = ann.get("category_id")
         if cat_id in categories:
             class_counts[categories[cat_id]] += 1
 
-    # Image statistics
     num_images = len(coco_data.get("images", []))
     num_annotations = len(coco_data.get("annotations", []))
 
-    # Annotations per image
     anns_per_image = Counter()
     for ann in coco_data.get("annotations", []):
         anns_per_image[ann.get("image_id")] += 1
 
     ann_counts = list(anns_per_image.values()) if anns_per_image else [0]
 
-    # Bounding box statistics
     bbox_areas = []
     for ann in coco_data.get("annotations", []):
         bbox = ann.get("bbox", [0, 0, 0, 0])
@@ -55,7 +47,6 @@ def analyze_coco_dataset(coco_data: Dict) -> Dict[str, Any]:
             area = bbox[2] * bbox[3]
             bbox_areas.append(area)
 
-    import numpy as np
     bbox_areas = np.array(bbox_areas) if bbox_areas else np.array([0])
 
     return {
@@ -73,7 +64,6 @@ def analyze_coco_dataset(coco_data: Dict) -> Dict[str, Any]:
             "mean_bbox_area": np.mean(bbox_areas),
             "median_bbox_area": np.median(bbox_areas),
         },
-        "anns_per_image": dict(anns_per_image),
     }
 
 
@@ -82,17 +72,7 @@ def calculate_balancing_targets(
     strategy: str,
     selected_classes: List[str],
 ) -> Dict[str, int]:
-    """
-    Calculate synthetic instances needed per class.
-
-    Args:
-        analysis: Analysis results from analyze_coco_dataset
-        strategy: Balancing strategy (complete, partial, minority)
-        selected_classes: Classes to balance
-
-    Returns:
-        Dictionary mapping class name to required synthetic instances
-    """
+    """Calculate synthetic instances needed per class."""
     class_counts = analysis.get("class_counts", {})
     max_count = max(class_counts.values()) if class_counts else 0
 
@@ -102,408 +82,325 @@ def calculate_balancing_targets(
         current = class_counts.get(cls, 0)
 
         if strategy == "complete":
-            # Balance all to maximum
             targets[cls] = max(0, max_count - current)
-
         elif strategy == "partial":
-            # Balance to 75% of maximum
             target = int(max_count * 0.75)
             targets[cls] = max(0, target - current)
-
         elif strategy == "minority":
-            # Only balance classes below median
-            import numpy as np
             median = np.median(list(class_counts.values())) if class_counts else 0
             if current < median:
                 targets[cls] = max(0, int(median) - current)
             else:
                 targets[cls] = 0
-
         else:
             targets[cls] = 0
 
     return targets
 
 
+def _render_metric_card(title: str, value: str, icon: str, color: str = "primary", subtitle: str = "") -> None:
+    """Render a styled metric card."""
+    c = get_colors_dict()
+    color_map = {
+        "primary": c['primary'],
+        "success": c['success'],
+        "warning": c['warning'],
+        "error": c['error'],
+        "info": "#3b82f6",
+    }
+    accent = color_map.get(color, color_map["primary"])
+    subtitle_html = f'<div style="font-size: 0.7rem; color: {c["text_muted"]}; margin-top: 0.25rem;">{subtitle}</div>' if subtitle else ""
+
+    st.markdown(f"""
+    <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
+                border-radius: 0.75rem; padding: 1.25rem; text-align: center;
+                border-top: 3px solid {accent};">
+        <div style="font-size: 1.75rem; margin-bottom: 0.5rem;">{icon}</div>
+        <div style="font-size: 2rem; font-weight: 700; color: {accent}; line-height: 1.2;">{value}</div>
+        <div style="font-size: 0.8rem; color: {c['text_muted']}; margin-top: 0.5rem;
+                    text-transform: uppercase; letter-spacing: 0.05em;">{title}</div>
+        {subtitle_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def render_analysis_page():
-    """Render the COCO analysis page with enhanced UI"""
+    """Render the COCO analysis page (Step 1 of workflow)"""
+    c = get_colors_dict()
+
+    # Workflow stepper
+    current_step = st.session_state.get("workflow_step", 1)
+    completed = st.session_state.get("workflow_completed", [])
+    workflow_stepper(current_step=1, completed_steps=completed)
 
     page_header(
-        title="Dataset Analysis",
-        subtitle="Analyze your COCO dataset and plan synthetic data generation",
+        title="Análisis de Dataset",
+        subtitle="Paso 1: Analiza tu dataset COCO y planifica la generación de datos sintéticos",
         icon="📊"
     )
 
-    # File upload section
-    section_header("Data Source", icon="📁")
+    # Check if we already have data from Home
+    has_source = st.session_state.get("source_dataset") is not None
 
-    col1, col2 = st.columns([3, 1])
+    if not has_source:
+        # File upload section
+        section_header("Cargar Dataset", icon="📁")
 
-    with col1:
         upload_method = st.radio(
-            "Select input method",
-            ["Upload JSON file", "Enter file path"],
+            "Método de entrada",
+            ["Subir archivo JSON", "Introducir ruta"],
             horizontal=True,
-            key="analysis_input_method",
-            help="Choose how to provide your COCO annotation file"
+            key="analysis_input_method"
         )
 
         coco_data = None
 
-        if upload_method == "Upload JSON file":
+        if upload_method == "Subir archivo JSON":
             uploaded = st.file_uploader(
-                "Drop your COCO JSON file here",
+                "Arrastra tu archivo COCO JSON aquí",
                 type=["json"],
-                key="coco_upload",
-                help="Upload a COCO format annotation file"
+                key="coco_upload"
             )
 
             if uploaded:
                 try:
                     coco_data = json.load(uploaded)
-                    st.success(f"✅ Successfully loaded: **{uploaded.name}**")
+                    st.session_state.source_dataset = coco_data
+                    st.session_state.source_filename = uploaded.name
+                    st.success(f"Cargado: **{uploaded.name}**")
                 except Exception as e:
-                    alert_box(f"Failed to parse JSON: {e}", type="error")
-
+                    alert_box(f"Error al parsear JSON: {e}", type="error")
         else:
             json_path = st.text_input(
-                "COCO JSON path",
+                "Ruta del archivo COCO JSON",
                 placeholder="/app/datasets/annotations.json",
-                key="coco_path",
-                help="Enter the full path to your COCO annotation file"
+                key="coco_path"
             )
 
-            if json_path:
-                if Path(json_path).exists():
-                    try:
-                        with open(json_path) as f:
-                            coco_data = json.load(f)
-                        st.success(f"✅ Successfully loaded: **{json_path}**")
-                    except Exception as e:
-                        alert_box(f"Failed to load file: {e}", type="error")
-                else:
-                    alert_box(f"File not found: {json_path}", type="warning")
+            if json_path and Path(json_path).exists():
+                try:
+                    with open(json_path) as f:
+                        coco_data = json.load(f)
+                    st.session_state.source_dataset = coco_data
+                    st.session_state.source_filename = Path(json_path).name
+                    st.success(f"Cargado: **{json_path}**")
+                except Exception as e:
+                    alert_box(f"Error al cargar: {e}", type="error")
+            elif json_path:
+                alert_box(f"Archivo no encontrado: {json_path}", type="warning")
 
-    with col2:
-        st.markdown("""
-        <div class="metric-card">
-            <div style="font-weight: 600; margin-bottom: 0.5rem;">📋 Supported Formats</div>
-            <ul style="margin: 0; padding-left: 1.2rem; color: var(--color-text-secondary); font-size: 0.875rem;">
-                <li>COCO JSON format</li>
-                <li>Required: images, annotations, categories</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
+        if not st.session_state.get("source_dataset"):
+            spacer(32)
+            empty_state(
+                title="Sin Dataset Cargado",
+                message="Sube un archivo COCO JSON o introduce una ruta para comenzar el análisis.",
+                icon="📁"
+            )
+            return
 
-    if coco_data is None:
-        spacer(32)
-        empty_state(
-            title="No Dataset Loaded",
-            message="Upload a COCO JSON file or enter a file path to analyze your dataset.",
-            icon="📁"
-        )
-        return
+    # We have data - run analysis
+    coco_data = st.session_state.source_dataset
+    filename = st.session_state.get("source_filename", "dataset.json")
 
-    # Run analysis
-    with st.spinner("Analyzing dataset..."):
+    with st.spinner("Analizando dataset..."):
         analysis = analyze_coco_dataset(coco_data)
 
-    # Store in session
-    st.session_state["coco_analysis"] = analysis
-    st.session_state["coco_data"] = coco_data
+    st.session_state.analysis_result = analysis
 
-    spacer(24)
+    spacer(16)
+
+    # Dataset info banner
+    st.markdown(f"""
+    <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1rem;
+                display: flex; align-items: center; gap: 0.5rem;">
+        <span style="font-size: 1.25rem;">📄</span>
+        <span style="font-weight: 600; color: {c['text_primary']};">{filename}</span>
+        <span style="color: {c['text_muted']};">|</span>
+        <span style="color: {c['text_secondary']};">{analysis['num_images']:,} imágenes</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     # Dataset Overview
-    section_header("Dataset Overview", icon="📈")
+    section_header("Vista General", icon="📈")
 
-    metric_row([
-        {"title": "Total Images", "value": f"{analysis['num_images']:,}", "icon": "🖼️"},
-        {"title": "Total Annotations", "value": f"{analysis['num_annotations']:,}", "icon": "🏷️"},
-        {"title": "Classes", "value": analysis["num_classes"], "icon": "📦"},
-        {"title": "Avg. per Image", "value": f"{analysis['stats']['mean_anns_per_image']:.1f}", "icon": "📊"},
-    ])
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        _render_metric_card("Imágenes", f"{analysis['num_images']:,}", "🖼️", "primary")
+    with col2:
+        _render_metric_card("Anotaciones", f"{analysis['num_annotations']:,}", "🏷️", "info")
+    with col3:
+        _render_metric_card("Clases", str(analysis["num_classes"]), "📦", "success")
+    with col4:
+        _render_metric_card("Media/Imagen", f"{analysis['stats']['mean_anns_per_image']:.1f}", "📊", "warning")
 
     spacer(24)
 
     # Class Distribution
-    section_header("Class Distribution", icon="📊")
+    section_header("Distribución de Clases", icon="📊")
 
     class_counts = analysis["class_counts"]
 
     if class_counts:
-        import pandas as pd
-        import numpy as np
+        sorted_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        df = pd.DataFrame(sorted_classes, columns=["Clase", "Cantidad"])
 
-        # Sort by count descending
-        sorted_classes = sorted(
-            class_counts.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        df = pd.DataFrame(sorted_classes, columns=["Class", "Count"])
-
-        # Calculate imbalance metrics
-        max_count = df["Count"].max()
-        min_count = df["Count"].min()
+        max_count = df["Cantidad"].max()
+        min_count = df["Cantidad"].min()
         imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
 
         col1, col2 = st.columns([3, 1])
 
         with col1:
-            # Enhanced bar chart
-            st.markdown("""
-            <div style="background: var(--color-bg-card); padding: 1rem; border-radius: var(--radius-lg); border: 1px solid var(--color-border);">
-            """, unsafe_allow_html=True)
-
-            st.bar_chart(
-                df.set_index("Class"),
-                use_container_width=True,
-                height=300
-            )
-
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.bar_chart(df.set_index("Clase"), use_container_width=True, height=300)
 
         with col2:
-            # Imbalance metrics
-            metric_card(
-                title="Max Count",
-                value=f"{max_count:,}",
-                icon="📈"
-            )
-            spacer(8)
-            metric_card(
-                title="Min Count",
-                value=f"{min_count:,}",
-                icon="📉"
-            )
-            spacer(8)
+            _render_metric_card("Máximo", f"{max_count:,}", "📈", "success")
+            spacer(12)
+            _render_metric_card("Mínimo", f"{min_count:,}", "📉", "error")
+            spacer(12)
 
-            # Imbalance ratio with color coding
             if imbalance_ratio > 10:
-                imbalance_color = "error"
-                imbalance_status = "Critical"
+                imbalance_color, imbalance_status = "error", "Crítico"
             elif imbalance_ratio > 3:
-                imbalance_color = "warning"
-                imbalance_status = "High"
+                imbalance_color, imbalance_status = "warning", "Alto"
             else:
-                imbalance_color = "success"
-                imbalance_status = "OK"
+                imbalance_color, imbalance_status = "success", "OK"
 
-            metric_card(
-                title="Imbalance Ratio",
-                value=f"{imbalance_ratio:.1f}x",
-                icon="⚖️",
-                delta=imbalance_status,
-                delta_color="inverse" if imbalance_ratio > 3 else "normal",
-                color=imbalance_color
-            )
+            _render_metric_card("Desbalance", f"{imbalance_ratio:.1f}x", "⚖️", imbalance_color, imbalance_status)
 
         # Detailed table
-        with st.expander("📋 View Detailed Class Statistics", expanded=False):
-            df["Percentage"] = (df["Count"] / df["Count"].sum() * 100).round(1).astype(str) + "%"
-            df["Gap to Max"] = max_count - df["Count"]
-            df["Gap %"] = ((max_count - df["Count"]) / max_count * 100).round(1).astype(str) + "%"
-
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Class": st.column_config.TextColumn("Class", width="medium"),
-                    "Count": st.column_config.NumberColumn("Count", format="%d"),
-                    "Percentage": st.column_config.TextColumn("% of Total"),
-                    "Gap to Max": st.column_config.NumberColumn("Gap to Max", format="%d"),
-                    "Gap %": st.column_config.TextColumn("Gap %"),
-                }
-            )
+        with st.expander("📋 Estadísticas Detalladas por Clase"):
+            df["Porcentaje"] = (df["Cantidad"] / df["Cantidad"].sum() * 100).round(1).astype(str) + "%"
+            df["Gap al Máx"] = max_count - df["Cantidad"]
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
     spacer(24)
 
     # Balancing Configuration
-    section_header("Balancing Configuration", icon="⚖️")
+    section_header("Configuración de Balanceo", icon="⚖️")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("""
-        <div style="background: var(--color-bg-secondary); padding: 1rem; border-radius: var(--radius-md); margin-bottom: 1rem;">
-            <div style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0.5rem;">
-                Select a strategy to determine how synthetic data will be distributed across classes.
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; padding: 1rem; border-radius: 0.5rem;
+                    margin-bottom: 1rem; border-left: 3px solid {c['primary']};">
+            <div style="font-size: 0.85rem; color: {c['text_secondary']};">
+                Selecciona una estrategia para determinar cuántas imágenes sintéticas generar por clase.
             </div>
         </div>
         """, unsafe_allow_html=True)
 
         strategy = st.selectbox(
-            "Balancing Strategy",
-            ["complete", "partial", "minority"],
+            "Estrategia de Balanceo",
+            ["complete", "partial", "minority", "custom"],
             format_func=lambda x: {
-                "complete": "🎯 Complete - Balance all classes to maximum count",
-                "partial": "📊 Partial - Balance to 75% of maximum",
-                "minority": "📉 Minority - Only balance underrepresented classes",
+                "complete": "🎯 Completo - Balancear todas al máximo",
+                "partial": "📊 Parcial - Balancear al 75% del máximo",
+                "minority": "📉 Minoritarias - Solo clases subrepresentadas",
+                "custom": "✏️ Personalizado - Definir muestras por clase",
             }.get(x, x),
-            key="balancing_strategy",
-            help="Choose how to balance class distribution"
+            key="balancing_strategy"
         )
-
-        spacer(8)
 
         selected_classes = st.multiselect(
-            "Classes to Balance",
+            "Clases a Balancear",
             options=analysis["categories"],
             default=analysis["categories"],
-            key="selected_classes",
-            help="Select which classes to include in balancing"
+            key="selected_classes"
         )
+
+        # Custom samples per class
+        if strategy == "custom" and selected_classes:
+            st.markdown(f"""
+            <div style="background: {c['bg_tertiary']}; padding: 0.75rem; border-radius: 0.5rem;
+                        margin-top: 1rem; margin-bottom: 0.5rem;">
+                <div style="font-size: 0.8rem; font-weight: 600; color: {c['text_primary']};">
+                    Muestras a generar por clase:
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Initialize custom targets in session state if needed
+            if "custom_targets" not in st.session_state:
+                st.session_state.custom_targets = {}
+
+            custom_targets = {}
+            for cls in selected_classes:
+                current_count = class_counts.get(cls, 0)
+                default_val = st.session_state.custom_targets.get(cls, 0)
+                custom_targets[cls] = st.number_input(
+                    f"{cls} (actual: {current_count})",
+                    min_value=0,
+                    max_value=10000,
+                    value=default_val,
+                    step=10,
+                    key=f"custom_target_{cls}"
+                )
+            st.session_state.custom_targets = custom_targets
 
     with col2:
         if selected_classes:
-            targets = calculate_balancing_targets(
-                analysis, strategy, selected_classes
-            )
+            # Calculate targets based on strategy
+            if strategy == "custom":
+                targets = st.session_state.get("custom_targets", {})
+            else:
+                targets = calculate_balancing_targets(analysis, strategy, selected_classes)
 
             total_synthetic = sum(targets.values())
+            classes_to_generate = len([cls for cls in selected_classes if targets.get(cls, 0) > 0])
 
-            # Summary card
+            # Store targets
+            st.session_state.balancing_targets = targets
+
             st.markdown(f"""
-            <div class="metric-card" style="text-align: center; background: linear-gradient(135deg, var(--color-primary-light), var(--color-bg-card));">
-                <div style="font-size: 0.75rem; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em;">
-                    Total Synthetic Images Needed
+            <div style="background: linear-gradient(135deg, {c['primary']}, {c['primary_hover']});
+                        border-radius: 0.75rem; padding: 1.5rem; text-align: center; color: white;">
+                <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; opacity: 0.9;">
+                    Total Imágenes Sintéticas
                 </div>
-                <div style="font-size: 2.5rem; font-weight: 700; color: var(--color-primary); margin: 0.5rem 0;">
+                <div style="font-size: 3rem; font-weight: 700; margin: 0.5rem 0;">
                     {total_synthetic:,}
                 </div>
-                <div style="font-size: 0.875rem; color: var(--color-text-secondary);">
-                    across {len([c for c in selected_classes if targets.get(c, 0) > 0])} classes
+                <div style="font-size: 0.85rem; opacity: 0.9;">
+                    en {classes_to_generate} clases
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
             spacer(16)
 
-            # Target breakdown table
-            import pandas as pd
             target_df = pd.DataFrame([
-                {
-                    "Class": cls,
-                    "Current": class_counts.get(cls, 0),
-                    "Synthetic": targets.get(cls, 0),
-                    "Final": class_counts.get(cls, 0) + targets.get(cls, 0)
-                }
-                for cls in selected_classes
+                {"Clase": cls, "Actual": class_counts.get(cls, 0), "A Generar": targets.get(cls, 0)}
+                for cls in selected_classes if targets.get(cls, 0) > 0
             ])
 
-            st.dataframe(
-                target_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Class": st.column_config.TextColumn("Class"),
-                    "Current": st.column_config.NumberColumn("Current", format="%d"),
-                    "Synthetic": st.column_config.NumberColumn("To Generate", format="%d"),
-                    "Final": st.column_config.NumberColumn("Final Total", format="%d"),
-                }
-            )
-
-            # Store targets
-            st.session_state["balancing_targets"] = targets
+            if not target_df.empty:
+                st.dataframe(target_df, use_container_width=True, hide_index=True)
         else:
-            alert_box("Select at least one class to configure balancing.", type="info")
+            alert_box("Selecciona al menos una clase para configurar el balanceo.", type="info")
 
-    spacer(32)
+    # Mark step as ready and update workflow
+    if selected_classes and sum(st.session_state.get("balancing_targets", {}).values()) > 0:
+        st.session_state.workflow_step = max(st.session_state.get("workflow_step", 0), 1)
 
-    # Export & Actions
-    section_header("Export & Actions", icon="🚀")
+    spacer(16)
 
-    col1, col2, col3 = st.columns(3)
+    # Workflow navigation
+    can_proceed = bool(selected_classes and st.session_state.get("balancing_targets"))
 
-    with col1:
-        st.markdown("""
-        <div class="metric-card">
-            <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">📄</div>
-            <div style="font-weight: 600;">Export Report</div>
-            <div style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 1rem;">
-                Download analysis as JSON
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    action = workflow_navigation(
+        current_step=1,
+        can_go_next=can_proceed,
+        next_label="Configurar Generación",
+        on_next="② Configurar"
+    )
 
-        if st.button("📥 Download Report", key="export_analysis", use_container_width=True):
-            report = {
-                "summary": {
-                    "num_images": analysis["num_images"],
-                    "num_annotations": analysis["num_annotations"],
-                    "num_classes": analysis["num_classes"],
-                },
-                "class_distribution": analysis["class_counts"],
-                "statistics": {k: float(v) if hasattr(v, 'item') else v for k, v in analysis["stats"].items()},
-                "balancing": {
-                    "strategy": strategy,
-                    "selected_classes": selected_classes,
-                    "targets": targets if selected_classes else {},
-                },
-            }
-
-            report_json = json.dumps(report, indent=2)
-
-            st.download_button(
-                "💾 Save Report",
-                data=report_json,
-                file_name="analysis_report.json",
-                mime="application/json",
-                use_container_width=True
-            )
-
-    with col2:
-        st.markdown("""
-        <div class="metric-card">
-            <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">📊</div>
-            <div style="font-weight: 600;">Detailed Stats</div>
-            <div style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 1rem;">
-                View annotation statistics
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        with st.expander("📊 View Statistics"):
-            stats = analysis["stats"]
-            st.markdown(f"""
-            | Metric | Value |
-            |--------|-------|
-            | Mean annotations/image | {stats['mean_anns_per_image']:.2f} |
-            | Median annotations/image | {stats['median_anns_per_image']:.2f} |
-            | Std. dev. | {stats['std_anns_per_image']:.2f} |
-            | Min annotations | {stats['min_anns_per_image']:.0f} |
-            | Max annotations | {stats['max_anns_per_image']:.0f} |
-            | Mean bbox area | {stats['mean_bbox_area']:.0f} px² |
-            """)
-
-    with col3:
-        st.markdown("""
-        <div class="metric-card" style="border: 2px solid var(--color-primary);">
-            <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🚀</div>
-            <div style="font-weight: 600;">Start Generation</div>
-            <div style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 1rem;">
-                Proceed to image generation
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if selected_classes and sum(targets.values()) > 0:
-            if st.button(
-                "🎨 Proceed to Generation",
-                type="primary",
-                key="proceed_gen",
-                use_container_width=True
-            ):
-                st.session_state["proceed_to_generation"] = True
-                st.success("✅ Configuration saved! Navigate to the **Generation** tab to start.")
-        else:
-            st.button(
-                "🎨 Proceed to Generation",
-                disabled=True,
-                key="proceed_gen_disabled",
-                use_container_width=True,
-                help="Select classes and configure balancing first"
-            )
+    if action == "next" and can_proceed:
+        # Mark step 1 as completed
+        if 1 not in st.session_state.get("workflow_completed", []):
+            st.session_state.workflow_completed = st.session_state.get("workflow_completed", []) + [1]
+        st.session_state.workflow_step = 2
+        st.rerun()
