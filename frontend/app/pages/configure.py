@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 import streamlit as st
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import pandas as pd
 
 from app.components.ui import (
@@ -28,10 +28,7 @@ def _get_config_version() -> str:
     return "1.0"
 
 
-def _build_exportable_config(
-    backgrounds_dir: str,
-    objects_dir: str,
-    output_dir: str,
+def _build_effects_preset(
     effects: List[str],
     effects_config: Dict,
     max_objects: int,
@@ -40,60 +37,80 @@ def _build_exportable_config(
     validate_quality: bool,
     validate_physics: bool,
     save_debug: bool,
-    targets_per_class: Optional[Dict] = None,
 ) -> Dict:
-    """Build a configuration dictionary suitable for export."""
+    """Build an effects preset dictionary suitable for export.
+
+    Creates a reusable preset with ONLY effects and advanced options.
+    Does not include dataset-specific info (directories, targets, etc.).
+    """
     return {
-        "config_version": _get_config_version(),
+        "preset_version": _get_config_version(),
+        "preset_type": "effects_config",
         "created_at": datetime.now().isoformat(),
-        "directories": {
-            "backgrounds_dir": backgrounds_dir,
-            "objects_dir": objects_dir,
-            "output_dir": output_dir,
-        },
+        "description": "Preset de efectos y opciones avanzadas reutilizable",
+
+        # Effects configuration
         "effects": {
             "enabled": effects,
-            "config": effects_config,
+            "intensities": {
+                "color_intensity": effects_config.get("color_intensity", 0.7),
+                "blur_strength": effects_config.get("blur_strength", 1.0),
+                "shadow_opacity": effects_config.get("shadow_opacity", 0.4),
+                "underwater_intensity": effects_config.get("underwater_intensity", 0.25),
+                "caustics_intensity": effects_config.get("caustics_intensity", 0.15),
+                "edge_feather": effects_config.get("edge_feather", 5),
+                "lighting_intensity": effects_config.get("lighting_intensity", 0.5),
+                "motion_blur_probability": effects_config.get("motion_blur_probability", 0.2),
+            },
+            "parameters": {
+                "lighting_type": effects_config.get("lighting_type", "ambient"),
+                "water_color": list(effects_config.get("water_color", [20, 80, 120])),
+                "water_clarity": effects_config.get("water_clarity", "clear"),
+            },
         },
-        "generation": {
+
+        # Advanced generation options
+        "advanced_options": {
             "max_objects_per_image": max_objects,
             "overlap_threshold": overlap_threshold,
             "depth_aware": depth_aware,
         },
+
+        # Validation settings
         "validation": {
             "validate_quality": validate_quality,
             "validate_physics": validate_physics,
         },
+
+        # Debug settings
         "debug": {
             "save_pipeline_debug": save_debug,
         },
-        "targets_per_class": targets_per_class or {},
     }
 
 
-def _apply_loaded_config(config: Dict) -> bool:
-    """Apply a loaded configuration to session state. Returns True on success.
+def _apply_loaded_preset(preset: Dict) -> bool:
+    """Apply a loaded effects preset to session state. Returns True on success.
+
+    Supports both the new preset format (preset_version) and legacy config format
+    (config_version) for backward compatibility.
 
     Applies:
-    - Directory paths
     - Enabled effects (checkboxes)
-    - Effect intensity values (sliders)
+    - Effect intensity values and parameters (sliders)
     - Advanced generation options
     - Validation and debug settings
-    - Targets per class (optional)
+
+    Does NOT apply (dataset-specific, must be set manually):
+    - Directory paths
+    - Targets per class
     """
     try:
-        # Directories
-        dirs = config.get("directories", {})
-        if dirs.get("backgrounds_dir"):
-            st.session_state.config_bg_dir = dirs["backgrounds_dir"]
-        if dirs.get("objects_dir"):
-            st.session_state.config_obj_dir = dirs["objects_dir"]
-        if dirs.get("output_dir"):
-            st.session_state.config_output_dir = dirs["output_dir"]
+        # Detect format: new preset format vs legacy config format
+        is_new_format = "preset_version" in preset or "preset_type" in preset
 
         # Effects enabled (checkboxes)
-        effects_data = config.get("effects", {})
+        effects_data = preset.get("effects", {})
         enabled_effects = effects_data.get("enabled", [])
 
         st.session_state.fx_color = "color_correction" in enabled_effects
@@ -105,25 +122,36 @@ def _apply_loaded_config(config: Dict) -> bool:
         st.session_state.fx_motion = "motion_blur" in enabled_effects
         st.session_state.fx_lighting = "lighting" in enabled_effects
 
-        # Effects config (intensities from sliders)
-        fx_config = effects_data.get("config", {})
+        # Effects intensities - handle both formats
+        if is_new_format:
+            # New format: effects.intensities and effects.parameters
+            intensities = effects_data.get("intensities", {})
+            parameters = effects_data.get("parameters", {})
+        else:
+            # Legacy format: effects.config contains everything
+            intensities = effects_data.get("config", {})
+            parameters = effects_data.get("config", {})
 
         # Core intensity values
-        if "color_intensity" in fx_config:
-            st.session_state.int_color = float(fx_config["color_intensity"])
-        if "blur_strength" in fx_config:
-            st.session_state.int_blur = float(fx_config["blur_strength"])
-        if "shadow_opacity" in fx_config:
-            st.session_state.int_shadow = float(fx_config["shadow_opacity"])
-        if "underwater_intensity" in fx_config:
-            st.session_state.int_underwater = float(fx_config["underwater_intensity"])
-        if "caustics_intensity" in fx_config:
-            st.session_state.int_caustics = float(fx_config["caustics_intensity"])
-        if "edge_feather" in fx_config:
-            st.session_state.int_edge = int(fx_config["edge_feather"])
+        if "color_intensity" in intensities:
+            st.session_state.int_color = float(intensities["color_intensity"])
+        if "blur_strength" in intensities:
+            st.session_state.int_blur = float(intensities["blur_strength"])
+        if "shadow_opacity" in intensities:
+            st.session_state.int_shadow = float(intensities["shadow_opacity"])
+        if "underwater_intensity" in intensities:
+            st.session_state.int_underwater = float(intensities["underwater_intensity"])
+        if "caustics_intensity" in intensities:
+            st.session_state.int_caustics = float(intensities["caustics_intensity"])
+        if "edge_feather" in intensities:
+            st.session_state.int_edge = int(intensities["edge_feather"])
 
-        # Generation options (advanced)
-        gen = config.get("generation", {})
+        # Generation options (advanced) - handle both formats
+        if is_new_format:
+            gen = preset.get("advanced_options", {})
+        else:
+            gen = preset.get("generation", {})
+
         if "max_objects_per_image" in gen:
             st.session_state.config_max_objects = int(gen["max_objects_per_image"])
         if "overlap_threshold" in gen:
@@ -132,38 +160,34 @@ def _apply_loaded_config(config: Dict) -> bool:
             st.session_state.config_depth_aware = bool(gen["depth_aware"])
 
         # Validation options
-        val = config.get("validation", {})
+        val = preset.get("validation", {})
         if "validate_quality" in val:
             st.session_state.config_val_quality = bool(val["validate_quality"])
         if "validate_physics" in val:
             st.session_state.config_val_physics = bool(val["validate_physics"])
 
         # Debug options
-        debug = config.get("debug", {})
+        debug = preset.get("debug", {})
         if "save_pipeline_debug" in debug:
             st.session_state.config_save_debug = bool(debug["save_pipeline_debug"])
 
-        # Targets per class (optional - stored separately for user confirmation)
-        if config.get("targets_per_class"):
-            st.session_state.loaded_targets = config["targets_per_class"]
-
         return True
     except Exception as e:
-        st.error(f"Error al aplicar configuración: {e}")
+        st.error(f"Error al aplicar preset: {e}")
         return False
 
 
 def _render_config_management_section() -> None:
-    """Render the configuration import/export section."""
+    """Render the effects preset import/export section."""
     c = get_colors_dict()
 
-    with st.expander("💾 Gestión de Configuración", expanded=False):
+    with st.expander("💾 Presets de Efectos", expanded=False):
         st.markdown(f"""
         <div style="background: {c['info_bg']}; border: 1px solid {c['info']};
                     border-radius: 0.5rem; padding: 0.75rem; margin-bottom: 1rem;">
             <span style="font-size: 0.85rem; color: {c['text_secondary']};">
-                Guarda tu configuración actual para reutilizarla en futuras generaciones,
-                o carga una configuración previamente guardada.
+                Guarda tus efectos y opciones avanzadas como preset reutilizable.
+                Ideal para replicar configuraciones que funcionan bien (ej: efectos submarinos).
             </span>
         </div>
         """, unsafe_allow_html=True)
@@ -171,40 +195,46 @@ def _render_config_management_section() -> None:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown(f"**📥 Cargar Configuración**")
+            st.markdown(f"**📥 Cargar Preset**")
 
-            uploaded_config = st.file_uploader(
-                "Seleccionar archivo de configuración",
+            uploaded_preset = st.file_uploader(
+                "Seleccionar archivo de preset",
                 type=["json"],
-                key="config_upload",
+                key="preset_upload",
                 label_visibility="collapsed"
             )
 
-            if uploaded_config:
+            if uploaded_preset:
                 try:
-                    config_data = json.load(uploaded_config)
+                    preset_data = json.load(uploaded_preset)
 
-                    # Validate it's a valid config file
-                    if "config_version" not in config_data:
-                        st.error("❌ Archivo no válido: falta versión de configuración")
+                    # Validate it's a valid preset/config file (support both formats)
+                    has_version = "preset_version" in preset_data or "config_version" in preset_data
+                    if not has_version:
+                        st.error("❌ Archivo no válido: falta versión de preset")
                     else:
-                        # Show config preview
+                        # Determine format and get version
+                        is_new_format = "preset_version" in preset_data
+                        version = preset_data.get("preset_version") or preset_data.get("config_version", "N/A")
+                        effects_count = len(preset_data.get("effects", {}).get("enabled", []))
+
+                        # Show preset preview
                         st.markdown(f"""
                         <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
                                     border-radius: 0.5rem; padding: 0.75rem; margin: 0.5rem 0;">
-                            <div style="font-size: 0.75rem; color: {c['text_muted']};">Configuración detectada:</div>
+                            <div style="font-size: 0.75rem; color: {c['text_muted']};">Preset detectado:</div>
                             <div style="font-size: 0.85rem; color: {c['text_primary']}; margin-top: 0.25rem;">
-                                • Versión: {config_data.get('config_version', 'N/A')}<br>
-                                • Creada: {config_data.get('created_at', 'N/A')[:10] if config_data.get('created_at') else 'N/A'}<br>
-                                • Efectos: {len(config_data.get('effects', {}).get('enabled', []))}<br>
-                                • Targets: {len(config_data.get('targets_per_class', {}))} clases
+                                • Versión: {version}<br>
+                                • Creado: {preset_data.get('created_at', 'N/A')[:10] if preset_data.get('created_at') else 'N/A'}<br>
+                                • Efectos activos: {effects_count}<br>
+                                • Formato: {"Nuevo (effects preset)" if is_new_format else "Legacy (config)"}
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
 
-                        if st.button("✅ Aplicar Configuración", key="apply_config", use_container_width=True):
-                            if _apply_loaded_config(config_data):
-                                st.success("✅ Configuración aplicada correctamente")
+                        if st.button("✅ Aplicar Preset", key="apply_preset", use_container_width=True):
+                            if _apply_loaded_preset(preset_data):
+                                st.success("✅ Preset aplicado correctamente")
                                 st.rerun()
 
                 except json.JSONDecodeError:
@@ -213,21 +243,18 @@ def _render_config_management_section() -> None:
                     st.error(f"❌ Error: {e}")
 
         with col2:
-            st.markdown(f"**📤 Exportar Configuración Actual**")
+            st.markdown(f"**📤 Exportar Preset Actual**")
 
-            config_name = st.text_input(
-                "Nombre de la configuración",
-                value=f"config_{datetime.now().strftime('%Y%m%d_%H%M')}",
-                key="config_export_name",
+            preset_name = st.text_input(
+                "Nombre del preset",
+                value=f"effects_preset_{datetime.now().strftime('%Y%m%d_%H%M')}",
+                key="preset_export_name",
                 label_visibility="collapsed",
-                placeholder="Nombre para el archivo de configuración"
+                placeholder="Nombre para el archivo de preset"
             )
 
             # Get current values from session state or defaults
-            current_config = _build_exportable_config(
-                backgrounds_dir=st.session_state.get("config_bg_dir", "/app/datasets/Backgrounds_filtered"),
-                objects_dir=st.session_state.get("config_obj_dir", "/app/datasets/Objects"),
-                output_dir=st.session_state.get("config_output_dir", "/app/output/synthetic"),
+            current_preset = _build_effects_preset(
                 effects=[
                     eff for eff, key in [
                         ("color_correction", "fx_color"),
@@ -259,28 +286,27 @@ def _render_config_management_section() -> None:
                 validate_quality=st.session_state.get("config_val_quality", False),
                 validate_physics=st.session_state.get("config_val_physics", False),
                 save_debug=st.session_state.get("config_save_debug", False),
-                targets_per_class=st.session_state.get("balancing_targets", {}),
             )
 
-            config_json = json.dumps(current_config, indent=2, ensure_ascii=False)
+            preset_json = json.dumps(current_preset, indent=2, ensure_ascii=False)
 
             st.download_button(
-                "📥 Descargar Configuración",
-                data=config_json,
-                file_name=f"{config_name}.json",
+                "📥 Descargar Preset",
+                data=preset_json,
+                file_name=f"{preset_name}.json",
                 mime="application/json",
-                key="download_config",
+                key="download_preset",
                 use_container_width=True
             )
 
-            # Show current config summary
+            # Show current preset summary
             st.markdown(f"""
             <div style="background: {c['bg_tertiary']}; border-radius: 0.5rem;
                         padding: 0.5rem; margin-top: 0.5rem; font-size: 0.75rem;">
                 <span style="color: {c['text_muted']};">
-                    Efectos: {len(current_config['effects']['enabled'])} |
-                    Max obj: {current_config['generation']['max_objects_per_image']} |
-                    Targets: {len(current_config['targets_per_class'])} clases
+                    Efectos: {len(current_preset['effects']['enabled'])} |
+                    Max obj: {current_preset['advanced_options']['max_objects_per_image']} |
+                    Depth-aware: {"Sí" if current_preset['advanced_options']['depth_aware'] else "No"}
                 </span>
             </div>
             """, unsafe_allow_html=True)
@@ -308,37 +334,6 @@ def render_configure_page():
     # Get data from previous step
     targets = st.session_state.get("balancing_targets", {})
     analysis = st.session_state.get("analysis_result", {})
-
-    # Check if there are loaded targets from a config file
-    loaded_targets = st.session_state.get("loaded_targets")
-    if loaded_targets:
-        st.markdown(f"""
-        <div style="background: {c['warning_bg']}; border: 1px solid {c['warning']};
-                    border-radius: 0.5rem; padding: 0.75rem; margin-bottom: 1rem;
-                    display: flex; align-items: center; gap: 0.75rem;">
-            <span style="font-size: 1.25rem;">📋</span>
-            <div style="flex: 1;">
-                <div style="font-weight: 600; color: {c['text_primary']};">
-                    Targets cargados desde configuración
-                </div>
-                <div style="font-size: 0.8rem; color: {c['text_muted']};">
-                    {len(loaded_targets)} clases | {sum(loaded_targets.values()):,} imágenes totales
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col_apply, col_dismiss = st.columns(2)
-        with col_apply:
-            if st.button("✅ Usar targets cargados", key="use_loaded_targets", use_container_width=True):
-                st.session_state.balancing_targets = loaded_targets
-                targets = loaded_targets
-                del st.session_state.loaded_targets
-                st.rerun()
-        with col_dismiss:
-            if st.button("❌ Mantener actuales", key="dismiss_loaded_targets", use_container_width=True):
-                del st.session_state.loaded_targets
-                st.rerun()
 
     total_images = sum(targets.values())
 

@@ -34,17 +34,22 @@ def _make_json_serializable(obj):
 
 
 def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
-    """Save the generation configuration alongside the generated dataset.
+    """Save the effects and advanced options configuration as a reusable preset.
 
-    This allows users to retrieve and reuse the exact configuration
-    used for a specific generation job.
+    This creates a preset file that can be loaded in future generations to apply
+    the same effects configuration. Useful for replicating successful settings
+    (e.g., underwater effects that worked well).
 
-    Saves:
-    - Directories configuration
-    - Effects enabled and their intensity values
-    - Advanced generation options
+    Saves ONLY:
+    - Effects enabled (which realism effects are active)
+    - Effect intensity values and parameters
+    - Advanced generation options (max objects, overlap, depth-aware, etc.)
     - Validation settings
+
+    Does NOT save (dataset-specific):
+    - Directories
     - Targets per class
+    - Number of images
     """
     try:
         # Build job folder path
@@ -59,55 +64,57 @@ def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
         # Extract effects config with all intensity values
         effects_config = config.get("effects_config", {})
 
-        # Build comprehensive config with metadata
+        # Build preset config - ONLY effects and advanced options
         saved_config = {
-            "config_version": "1.0",
-            "job_id": job_id,
+            "preset_version": "1.0",
+            "preset_type": "effects_config",
             "created_at": datetime.now().isoformat(),
-            "directories": {
-                "backgrounds_dir": config.get("backgrounds_dir", ""),
-                "objects_dir": config.get("objects_dir", ""),
-                "output_dir": config.get("output_dir", ""),
-            },
+            "description": "Configuración de efectos y opciones avanzadas",
+
+            # Effects configuration
             "effects": {
                 "enabled": config.get("effects", []),
-                "config": {
-                    # Core intensity values
+                "intensities": {
                     "color_intensity": effects_config.get("color_intensity", 0.7),
                     "blur_strength": effects_config.get("blur_strength", 1.0),
                     "shadow_opacity": effects_config.get("shadow_opacity", 0.4),
                     "underwater_intensity": effects_config.get("underwater_intensity", 0.25),
                     "caustics_intensity": effects_config.get("caustics_intensity", 0.15),
                     "edge_feather": effects_config.get("edge_feather", 5),
-                    # Additional effect settings
-                    "lighting_type": effects_config.get("lighting_type", "ambient"),
                     "lighting_intensity": effects_config.get("lighting_intensity", 0.5),
-                    "water_color": list(effects_config.get("water_color", [20, 80, 120])),
-                    "water_clarity": effects_config.get("water_clarity", "clear"),
                     "motion_blur_probability": effects_config.get("motion_blur_probability", 0.2),
                 },
+                "parameters": {
+                    "lighting_type": effects_config.get("lighting_type", "ambient"),
+                    "water_color": list(effects_config.get("water_color", [20, 80, 120])),
+                    "water_clarity": effects_config.get("water_clarity", "clear"),
+                },
             },
-            "generation": {
-                "num_images": config.get("num_images", 0),
+
+            # Advanced generation options
+            "advanced_options": {
                 "max_objects_per_image": config.get("max_objects_per_image", 5),
                 "overlap_threshold": config.get("overlap_threshold", 0.1),
                 "depth_aware": config.get("depth_aware", True),
             },
+
+            # Validation settings
             "validation": {
                 "validate_quality": config.get("validate_quality", False),
                 "validate_physics": config.get("validate_physics", False),
             },
+
+            # Debug settings
             "debug": {
                 "save_pipeline_debug": config.get("save_pipeline_debug", False),
             },
-            "targets_per_class": config.get("targets_per_class", {}),
         }
 
         # Make sure everything is JSON serializable
         saved_config = _make_json_serializable(saved_config)
 
         # Save to job folder
-        config_path = job_path / "generation_config.json"
+        config_path = job_path / "effects_preset.json"
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(saved_config, f, indent=2, ensure_ascii=False)
 
