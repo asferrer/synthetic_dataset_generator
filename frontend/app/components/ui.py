@@ -5,8 +5,154 @@ Professional, consistent UI components for the Streamlit frontend.
 """
 
 import streamlit as st
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Callable
 from dataclasses import dataclass
+
+from app.config.theme import get_colors_dict
+
+
+# =============================================================================
+# WORKFLOW STEPPER
+# =============================================================================
+
+WORKFLOW_STEPS = [
+    ("① Análisis", "Analizar dataset"),
+    ("② Configurar", "Configurar generación"),
+    ("③ Generar", "Generar imágenes"),
+    ("④ Exportar", "Exportar formatos"),
+    ("⑤ Combinar", "Combinar datasets"),
+    ("⑥ Splits", "Crear splits"),
+]
+
+
+def workflow_stepper(
+    current_step: int,
+    completed_steps: Optional[List[int]] = None,
+    on_step_click: Optional[Callable[[int], None]] = None
+) -> None:
+    """
+    Render a visual workflow stepper showing progress through 6 steps.
+    Uses native Streamlit columns for better compatibility.
+
+    Args:
+        current_step: Current active step (1-6)
+        completed_steps: List of completed step numbers
+        on_step_click: Optional callback when a step is clicked
+    """
+    c = get_colors_dict()
+
+    if completed_steps is None:
+        completed_steps = []
+
+    # Use native Streamlit columns for layout
+    cols = st.columns(11)  # 6 steps + 5 connectors
+
+    step_labels = ["Análisis", "Configurar", "Generar", "Exportar", "Combinar", "Splits"]
+
+    col_idx = 0
+    for i in range(1, 7):
+        is_current = i == current_step
+        is_completed = i in completed_steps
+
+        if is_completed:
+            bg_color = c['success']
+            text_color = "white"
+            icon = "✓"
+        elif is_current:
+            bg_color = c['primary']
+            text_color = "white"
+            icon = str(i)
+        else:
+            bg_color = c['bg_tertiary']
+            text_color = c['text_muted']
+            icon = str(i)
+
+        opacity = "1" if (is_completed or i <= current_step) else "0.6"
+
+        with cols[col_idx]:
+            st.markdown(f"""<div style="text-align: center; opacity: {opacity};">
+<div style="width: 32px; height: 32px; border-radius: 50%; background: {bg_color}; margin: 0 auto; line-height: 32px; color: {text_color}; font-weight: 600; font-size: 0.85rem;">{icon}</div>
+<div style="font-size: 0.65rem; color: {c['text_muted']}; margin-top: 4px;">{step_labels[i-1]}</div>
+</div>""", unsafe_allow_html=True)
+
+        col_idx += 1
+
+        # Add connector line between steps
+        if i < 6:
+            line_color = c['success'] if i in completed_steps else c['border']
+            with cols[col_idx]:
+                st.markdown(f"""<div style="height: 2px; background: {line_color}; margin-top: 15px;"></div>""", unsafe_allow_html=True)
+            col_idx += 1
+
+
+def workflow_navigation(
+    current_step: int,
+    total_steps: int = 6,
+    can_go_next: bool = True,
+    next_label: str = "Siguiente",
+    on_next: Optional[str] = None,
+    on_prev: Optional[str] = None,
+    show_skip: bool = False
+) -> Optional[str]:
+    """
+    Render workflow navigation buttons (Previous/Next).
+
+    Args:
+        current_step: Current step number (1-6)
+        total_steps: Total number of steps
+        can_go_next: Whether the next button should be enabled
+        next_label: Label for the next button
+        on_next: Navigation key for next step
+        on_prev: Navigation key for previous step
+        show_skip: Whether to show a skip button
+
+    Returns:
+        Action taken: 'prev', 'next', 'skip', or None
+    """
+    c = get_colors_dict()
+
+    st.markdown(f"<hr style='border: none; border-top: 1px solid {c['border']}; margin: 1.5rem 0;'>",
+                unsafe_allow_html=True)
+
+    cols = st.columns([1, 2, 1]) if not show_skip else st.columns([1, 1, 1, 1])
+
+    action = None
+
+    with cols[0]:
+        if current_step > 1:
+            if st.button("← Anterior", key="wf_prev", use_container_width=True):
+                if on_prev:
+                    st.session_state.nav_menu = on_prev
+                action = "prev"
+
+    with cols[-1]:
+        if current_step < total_steps:
+            if st.button(
+                f"{next_label} →",
+                key="wf_next",
+                type="primary",
+                disabled=not can_go_next,
+                use_container_width=True
+            ):
+                if on_next:
+                    st.session_state.nav_menu = on_next
+                action = "next"
+        else:
+            if st.button(
+                "✓ Finalizar",
+                key="wf_finish",
+                type="primary",
+                disabled=not can_go_next,
+                use_container_width=True
+            ):
+                action = "finish"
+
+    if show_skip and len(cols) > 2:
+        with cols[2]:
+            if st.button("Saltar", key="wf_skip", use_container_width=True):
+                action = "skip"
+
+    return action
 
 
 # =============================================================================
@@ -34,37 +180,48 @@ def metric_card(
         help_text: Tooltip help text
         color: Card accent color
     """
-    color_classes = {
-        "default": "",
-        "primary": "border-primary",
-        "success": "text-success",
-        "warning": "text-warning",
-        "error": "text-error",
+    c = get_colors_dict()
+
+    border_colors = {
+        "default": c['border'],
+        "primary": c['primary'],
+        "success": c['success'],
+        "warning": c['warning'],
+        "error": c['error'],
+    }
+
+    text_colors = {
+        "default": c['text_primary'],
+        "primary": c['primary'],
+        "success": c['success'],
+        "warning": c['warning'],
+        "error": c['error'],
     }
 
     delta_html = ""
     if delta is not None:
         if isinstance(delta, (int, float)):
             delta_sign = "+" if delta > 0 else ""
-            delta_class = "positive" if delta > 0 else "negative"
+            delta_cls_color = c['success'] if delta > 0 else c['error']
             if delta_color == "inverse":
-                delta_class = "negative" if delta > 0 else "positive"
+                delta_cls_color = c['error'] if delta > 0 else c['success']
             elif delta_color == "off":
-                delta_class = ""
-            delta_html = f'<div class="metric-card-delta {delta_class}">{delta_sign}{delta}</div>'
+                delta_cls_color = c['text_muted']
+            delta_html = f'<div style="font-size: 0.875rem; margin-top: 0.25rem; color: {delta_cls_color};">{delta_sign}{delta}</div>'
         else:
-            delta_html = f'<div class="metric-card-delta">{delta}</div>'
+            delta_html = f'<div style="font-size: 0.875rem; margin-top: 0.25rem; color: {c["text_muted"]};">{delta}</div>'
 
-    icon_html = f'<span class="metric-icon">{icon}</span>' if icon else ""
-    help_attr = f'title="{help_text}"' if help_text else ""
+    icon_html = f'<span style="font-size: 1.25rem;">{icon}</span>' if icon else ""
+    border_color = border_colors.get(color, c['border'])
+    value_color = text_colors.get(color, c['text_primary'])
 
     st.markdown(f"""
-    <div class="metric-card {color_classes.get(color, '')}" {help_attr}>
-        <div class="metric-card-header">
-            <span class="metric-card-title">{title}</span>
+    <div style="background: {c['bg_card']}; border: 1px solid {border_color}; border-radius: 0.75rem; padding: 1rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="font-size: 0.75rem; color: {c['text_muted']}; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;">{title}</span>
             {icon_html}
         </div>
-        <div class="metric-card-value">{value}</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: {value_color}; line-height: 1.2;">{value}</div>
         {delta_html}
     </div>
     """, unsafe_allow_html=True)
@@ -99,6 +256,7 @@ def status_badge(
     Returns:
         HTML string for the badge
     """
+    c = get_colors_dict()
     icons = {
         "success": "✓",
         "warning": "⚠",
@@ -106,8 +264,17 @@ def status_badge(
         "info": "ℹ",
         "default": "",
     }
+    colors = {
+        "success": (c['success_bg'], c['success']),
+        "warning": (c['warning_bg'], c['warning']),
+        "error": (c['error_bg'], c['error']),
+        "info": (c['info_bg'], c['info']),
+        "default": (c['bg_tertiary'], c['text_secondary']),
+    }
+
     badge_icon = icon or icons.get(status, "")
-    return f'<span class="badge {status}">{badge_icon} {text}</span>'
+    bg, fg = colors.get(status, colors["default"])
+    return f'<span style="display: inline-flex; align-items: center; padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: {bg}; color: {fg};">{badge_icon} {text}</span>'
 
 
 def alert_box(
@@ -125,18 +292,27 @@ def alert_box(
         icon: Custom icon (optional)
         dismissible: Whether alert can be dismissed
     """
+    c = get_colors_dict()
     icons = {
         "info": "ℹ️",
         "success": "✅",
         "warning": "⚠️",
         "error": "❌",
     }
+    colors = {
+        "info": (c['info_bg'], c['info']),
+        "success": (c['success_bg'], c['success']),
+        "warning": (c['warning_bg'], c['warning']),
+        "error": (c['error_bg'], c['error']),
+    }
+
     alert_icon = icon or icons.get(type, "ℹ️")
+    bg, border = colors.get(type, colors["info"])
 
     st.markdown(f"""
-    <div class="status-card {type}">
-        <span class="status-icon">{alert_icon}</span>
-        <span class="status-message">{message}</span>
+    <div style="padding: 1rem; border-radius: 0.5rem; display: flex; align-items: center; gap: 0.5rem; background-color: {bg}; border-left: 4px solid {border};">
+        <span style="font-size: 1.25rem;">{alert_icon}</span>
+        <span style="color: {c['text_primary']};">{message}</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -160,12 +336,13 @@ def section_header(
         subtitle: Optional subtitle
         divider: Show bottom divider
     """
-    subtitle_html = f'<p class="section-subtitle text-muted">{subtitle}</p>' if subtitle else ""
+    c = get_colors_dict()
+    subtitle_html = f'<p style="color: {c["text_muted"]}; margin-top: 0.25rem; font-size: 0.875rem;">{subtitle}</p>' if subtitle else ""
 
     st.markdown(f"""
-    <div class="section-header">
-        <span class="section-icon">{icon}</span>
-        <h3 class="section-title">{title}</h3>
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin: 1.5rem 0 1rem 0; padding-bottom: 0.5rem; border-bottom: 2px solid {c['primary']};">
+        <span style="font-size: 1.25rem;">{icon}</span>
+        <h3 style="font-size: 1.125rem; font-weight: 600; color: {c['text_primary']}; margin: 0;">{title}</h3>
     </div>
     {subtitle_html}
     """, unsafe_allow_html=True)
@@ -184,14 +361,15 @@ def page_header(
         subtitle: Page subtitle
         icon: Page icon/emoji
     """
+    c = get_colors_dict()
     icon_html = f'<span style="font-size: 2.5rem; margin-right: 0.5rem;">{icon}</span>' if icon else ""
-    subtitle_html = f'<p class="page-subtitle">{subtitle}</p>' if subtitle else ""
+    subtitle_html = f'<p style="font-size: 1rem; color: {c["text_muted"]}; margin-top: 0.5rem;">{subtitle}</p>' if subtitle else ""
 
     st.markdown(f"""
-    <div class="page-header">
+    <div style="margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid {c['border']};">
         <div style="display: flex; align-items: center;">
             {icon_html}
-            <h1 class="page-title">{title}</h1>
+            <h1 style="font-size: 1.875rem; font-weight: 700; color: {c['text_primary']}; margin: 0;">{title}</h1>
         </div>
         {subtitle_html}
     </div>
@@ -219,21 +397,24 @@ def service_card(
         port: Service port
         details: Additional service details
     """
+    c = get_colors_dict()
     status_lower = status.lower()
-    status_icon = {
-        "healthy": "🟢",
-        "degraded": "🟡",
-        "unhealthy": "🔴",
-    }.get(status_lower, "⚪")
+    status_configs = {
+        "healthy": ("🟢", c['success'], c['success_bg']),
+        "degraded": ("🟡", c['warning'], c['warning_bg']),
+        "unhealthy": ("🔴", c['error'], c['error_bg']),
+    }
+    status_icon, status_color, status_bg = status_configs.get(status_lower, ("⚪", c['text_muted'], c['bg_tertiary']))
 
-    latency_html = f'<span class="service-latency">{latency:.0f}ms</span>' if latency else ""
-    port_html = f'<span class="service-port">:{port}</span>' if port else ""
+    latency_html = f'<span style="font-size: 0.75rem; color: {c["text_muted"]};">{latency:.0f}ms</span>' if latency else ""
+    port_html = f'<span style="font-size: 0.75rem; color: {c["text_muted"]};">:{port}</span>' if port else ""
 
     st.markdown(f"""
-    <div class="service-card {status_lower}">
-        <div class="service-card-header">
-            <span class="service-name">{name.capitalize()}{port_html}</span>
-            <span class="service-status {status_lower}">{status_icon} {status.upper()}</span>
+    <div style="background: {c['bg_card']}; border: 1px solid {c['border']}; border-radius: 0.75rem; padding: 1rem; position: relative; overflow: hidden;">
+        <div style="position: absolute; top: 0; left: 0; right: 0; height: 3px; background: {status_color};"></div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="font-weight: 600; font-size: 1rem; color: {c['text_primary']};">{name.capitalize()}{port_html}</span>
+            <span style="padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; background: {status_bg}; color: {status_color};">{status_icon} {status.upper()}</span>
         </div>
         {latency_html}
     </div>
@@ -266,26 +447,33 @@ def progress_card(
         status: Current status
         subtitle: Optional subtitle
     """
+    c = get_colors_dict()
     percentage = (current / total * 100) if total > 0 else 0
     status_colors = {
-        "running": "var(--color-primary)",
-        "completed": "var(--color-success)",
-        "failed": "var(--color-error)",
+        "running": c['primary'],
+        "completed": c['success'],
+        "failed": c['error'],
     }
-    color = status_colors.get(status, "var(--color-primary)")
+    status_bgs = {
+        "running": c['primary_light'],
+        "completed": c['success_bg'],
+        "failed": c['error_bg'],
+    }
+    color = status_colors.get(status, c['primary'])
+    bg = status_bgs.get(status, c['primary_light'])
 
     st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-card-header">
-            <span class="metric-card-title">{title}</span>
-            <span class="badge {'success' if status == 'completed' else 'primary' if status == 'running' else 'error'}">{status.upper()}</span>
+    <div style="background: {c['bg_card']}; border: 1px solid {c['border']}; border-radius: 0.75rem; padding: 1rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="font-size: 0.75rem; color: {c['text_muted']}; font-weight: 500; text-transform: uppercase;">{title}</span>
+            <span style="padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.7rem; font-weight: 600; background: {bg}; color: {color};">{status.upper()}</span>
         </div>
-        <div class="metric-card-value">{current} / {total}</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: {c['text_primary']};">{current} / {total}</div>
         <div style="margin-top: 0.5rem;">
-            <div style="background: var(--color-bg-tertiary); border-radius: 9999px; height: 8px; overflow: hidden;">
-                <div style="background: {color}; width: {percentage}%; height: 100%; border-radius: 9999px; transition: width 0.3s ease;"></div>
+            <div style="background: {c['bg_tertiary']}; border-radius: 9999px; height: 8px; overflow: hidden;">
+                <div style="background: {color}; width: {percentage}%; height: 100%; border-radius: 9999px;"></div>
             </div>
-            <div class="text-muted" style="font-size: 0.75rem; margin-top: 0.25rem;">{percentage:.1f}%</div>
+            <div style="font-size: 0.75rem; color: {c['text_muted']}; margin-top: 0.25rem;">{percentage:.1f}%</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -303,6 +491,7 @@ def stat_grid(stats: List[Dict[str, Any]], columns: int = 4) -> None:
         stats: List of stat dictionaries with 'label', 'value', and optional 'icon'
         columns: Number of columns
     """
+    c = get_colors_dict()
     cols = st.columns(columns)
     for i, stat in enumerate(stats):
         with cols[i % columns]:
@@ -310,8 +499,8 @@ def stat_grid(stats: List[Dict[str, Any]], columns: int = 4) -> None:
             st.markdown(f"""
             <div style="text-align: center; padding: 1rem;">
                 <div style="font-size: 2rem;">{icon}</div>
-                <div style="font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary);">{stat['value']}</div>
-                <div style="font-size: 0.875rem; color: var(--color-text-muted);">{stat['label']}</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: {c['text_primary']};">{stat['value']}</div>
+                <div style="font-size: 0.875rem; color: {c['text_muted']};">{stat['label']}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -324,12 +513,13 @@ def info_table(data: Dict[str, Any], title: Optional[str] = None) -> None:
         data: Dictionary of key-value pairs
         title: Optional table title
     """
+    c = get_colors_dict()
     if title:
         st.markdown(f"**{title}**")
 
     rows = "".join([
-        f'<tr><td style="color: var(--color-text-muted); padding: 0.5rem 1rem 0.5rem 0;">{k}</td>'
-        f'<td style="font-weight: 500; padding: 0.5rem 0;">{v}</td></tr>'
+        f'<tr><td style="color: {c["text_muted"]}; padding: 0.5rem 1rem 0.5rem 0;">{k}</td>'
+        f'<td style="font-weight: 500; color: {c["text_primary"]}; padding: 0.5rem 0;">{v}</td></tr>'
         for k, v in data.items()
     ])
 
@@ -364,11 +554,12 @@ def empty_state(
     Returns:
         True if action button was clicked, False otherwise
     """
+    c = get_colors_dict()
     st.markdown(f"""
-    <div style="text-align: center; padding: 3rem 2rem; background: var(--color-bg-secondary); border-radius: var(--radius-lg); border: 1px dashed var(--color-border);">
+    <div style="text-align: center; padding: 3rem 2rem; background: {c['bg_secondary']}; border-radius: 0.75rem; border: 1px dashed {c['border']};">
         <div style="font-size: 4rem; margin-bottom: 1rem;">{icon}</div>
-        <h3 style="color: var(--color-text-primary); margin-bottom: 0.5rem;">{title}</h3>
-        <p style="color: var(--color-text-muted); max-width: 400px; margin: 0 auto;">{message}</p>
+        <h3 style="color: {c['text_primary']}; margin-bottom: 0.5rem;">{title}</h3>
+        <p style="color: {c['text_muted']}; max-width: 400px; margin: 0 auto;">{message}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -391,10 +582,11 @@ def loading_placeholder(message: str = "Loading...", height: int = 200) -> None:
         message: Loading message
         height: Placeholder height in pixels
     """
+    c = get_colors_dict()
     st.markdown(f"""
-    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: {height}px; background: var(--color-bg-secondary); border-radius: var(--radius-lg);">
-        <div class="animate-pulse" style="font-size: 2rem; margin-bottom: 0.5rem;">⏳</div>
-        <p style="color: var(--color-text-muted);">{message}</p>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: {height}px; background: {c['bg_secondary']}; border-radius: 0.75rem;">
+        <div style="font-size: 2rem; margin-bottom: 0.5rem;">⏳</div>
+        <p style="color: {c['text_muted']};">{message}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -486,9 +678,10 @@ def form_section(title: str, icon: str = "") -> None:
         title: Section title
         icon: Section icon
     """
+    c = get_colors_dict()
     st.markdown(f"""
-    <div style="margin: 1.5rem 0 1rem 0; padding-bottom: 0.5rem; border-bottom: 1px solid var(--color-border);">
-        <span style="font-weight: 600; color: var(--color-text-primary);">{icon} {title}</span>
+    <div style="margin: 1.5rem 0 1rem 0; padding-bottom: 0.5rem; border-bottom: 1px solid {c['border']};">
+        <span style="font-weight: 600; color: {c['text_primary']};">{icon} {title}</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -504,10 +697,11 @@ def spacer(height: int = 24) -> None:
 
 def divider_with_text(text: str) -> None:
     """Render a divider with centered text."""
+    c = get_colors_dict()
     st.markdown(f"""
     <div style="display: flex; align-items: center; margin: 1.5rem 0;">
-        <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
-        <span style="padding: 0 1rem; color: var(--color-text-muted); font-size: 0.875rem;">{text}</span>
-        <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+        <div style="flex: 1; height: 1px; background: {c['border']};"></div>
+        <span style="padding: 0 1rem; color: {c['text_muted']}; font-size: 0.875rem;">{text}</span>
+        <div style="flex: 1; height: 1px; background: {c['border']};"></div>
     </div>
     """, unsafe_allow_html=True)
