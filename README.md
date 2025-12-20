@@ -17,6 +17,10 @@ Generate high-quality synthetic datasets for underwater object detection with in
 ## Table of Contents
 
 - [Features](#-features)
+- [Frontend UI](#-frontend-ui)
+- [Workflow System](#-workflow-system)
+- [Effects Presets](#-effects-presets)
+- [Post-Processing Tools](#-post-processing-tools)
 - [Architecture](#-architecture)
 - [Generation Pipeline](#-generation-pipeline)
 - [Scene Analysis & Placement](#-scene-analysis--placement-decisions)
@@ -81,6 +85,215 @@ docker-compose -f docker-compose.microservices.yml build
 # Skip tests for emergency builds
 docker build --target production services/augmentor/
 ```
+
+---
+
+## Frontend UI
+
+### Professional Interface
+
+The Streamlit-based frontend provides a modern, professional interface for synthetic data generation:
+
+| Feature | Description |
+|---------|-------------|
+| **6-Step Workflow Wizard** | Guided process from analysis to final splits |
+| **Visual Progress Stepper** | Track progress through the generation pipeline |
+| **Light/Dark Themes** | Native Streamlit theme support |
+| **Responsive Design** | Optimized for various screen sizes |
+| **Real-time Monitoring** | Live job progress with ETA estimates |
+
+### Navigation Structure
+
+```
+┌─────────────────────────┐
+│       🔬 SDG            │
+│   Synthetic Data Gen    │
+├─────────────────────────┤
+│  🏠 Home                │  ← Quick start + status
+├─────────────────────────┤
+│  WORKFLOW PRINCIPAL     │
+│  ─────────────────────  │
+│  ① Análisis            │  ← Upload and analyze JSON
+│  ② Configuración       │  ← Configure generation
+│  ③ Generación          │  ← Batch + monitor
+│  ④ Exportar            │  ← Export formats
+│  ⑤ Combinar            │  ← Merge datasets
+│  ⑥ Splits              │  ← Train/Val/Test
+├─────────────────────────┤
+│  HERRAMIENTAS           │
+│  ─────────────────────  │
+│  🏷️ Etiquetas          │  ← Label management
+│  📊 Monitor            │  ← Job monitoring
+│  🔧 Servicios          │  ← Microservices status
+│  📚 Docs               │  ← Documentation
+├─────────────────────────┤
+│  [Estado: 5/5 ✓]       │  ← Mini service status
+└─────────────────────────┘
+```
+
+---
+
+## Workflow System
+
+### 6-Step Generation Workflow
+
+The application follows a structured workflow for synthetic data generation:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         SYNTHETIC GENERATION FLOW                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  [1. ANÁLISIS]  →  [2. CONFIGURAR]  →  [3. GENERAR]  →  [4. EXPORTAR]  │
+│                                                                          │
+│  Upload COCO       Configure          Launch batch      Export to       │
+│  JSON and          effects and        and monitor       YOLO/VOC/etc    │
+│  analyze           balancing          progress                           │
+│                                                    ↓                     │
+│                                            [5. COMBINAR]                 │
+│                                                                          │
+│                                            Merge with original           │
+│                                            or other datasets             │
+│                                                    ↓                     │
+│                                            [6. SPLITS]                   │
+│                                                                          │
+│                                            Train/Val/Test                │
+│                                            or K-Fold                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step Details
+
+| Step | Page | Description |
+|------|------|-------------|
+| **1. Análisis** | Upload & analyze | Load COCO JSON, view class distribution, configure balancing strategy |
+| **2. Configurar** | Configure | Set effects, directories, intensity sliders, advanced options |
+| **3. Generar** | Generate | Launch batch job, monitor progress, view previews |
+| **4. Exportar** | Export | Export to COCO, YOLO, Pascal VOC, CreateML formats |
+| **5. Combinar** | Combine | Merge synthetic dataset with original or other datasets |
+| **6. Splits** | Splits | Create train/val/test splits or K-Fold cross-validation |
+
+### Balancing Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| **Complete** | Balance all classes to match the maximum count |
+| **Partial** | Balance to 75% of the maximum count |
+| **Minority** | Only augment underrepresented classes (below median) |
+| **Custom** | Manually specify samples per class |
+
+---
+
+## Effects Presets
+
+### Reusable Configuration Presets
+
+Save and load effects configurations as reusable presets. Ideal for replicating successful settings across different datasets.
+
+**Key Features:**
+- Save only effects and advanced options (no dataset-specific info)
+- Auto-save preset when generation completes
+- Backward compatibility with legacy config format
+- Import/export via JSON files
+
+### Preset Structure
+
+```json
+{
+  "preset_version": "1.0",
+  "preset_type": "effects_config",
+  "created_at": "2024-12-20T01:08:00",
+  "description": "Preset de efectos y opciones avanzadas reutilizable",
+
+  "effects": {
+    "enabled": ["color_correction", "blur_matching", "shadows", "caustics", "underwater", "edge_smoothing"],
+    "intensities": {
+      "color_intensity": 0.7,
+      "blur_strength": 1.0,
+      "shadow_opacity": 0.4,
+      "underwater_intensity": 0.25,
+      "caustics_intensity": 0.15,
+      "edge_feather": 5,
+      "lighting_intensity": 0.5,
+      "motion_blur_probability": 0.2
+    },
+    "parameters": {
+      "lighting_type": "ambient",
+      "water_color": [20, 80, 120],
+      "water_clarity": "clear"
+    }
+  },
+
+  "advanced_options": {
+    "max_objects_per_image": 5,
+    "overlap_threshold": 0.1,
+    "depth_aware": true
+  },
+
+  "validation": {
+    "validate_quality": false,
+    "validate_physics": false
+  },
+
+  "debug": {
+    "save_pipeline_debug": false
+  }
+}
+```
+
+### Using Presets
+
+1. **Export Current Settings**: Click "Descargar Preset" in the Configure page
+2. **Import Preset**: Upload a JSON preset file and click "Aplicar Preset"
+3. **Auto-saved**: Presets are automatically saved to `effects_preset.json` in the job output folder
+
+---
+
+## Post-Processing Tools
+
+### Independent Tools
+
+The application includes standalone post-processing tools that work with any COCO dataset:
+
+| Tool | Description |
+|------|-------------|
+| **🏷️ Labels** | Rename, merge, delete, and reorder categories |
+| **📤 Export** | Convert to YOLO, Pascal VOC, CreateML formats |
+| **✂️ Splits** | Create train/val/test or K-Fold splits |
+| **⚖️ Balancing** | Oversample/undersample classes |
+| **📊 Monitor** | View all generation jobs and their status |
+
+### Export Formats
+
+| Format | Output | Use Case |
+|--------|--------|----------|
+| **COCO JSON** | `annotations.json` | Default format, native to the tool |
+| **YOLO** | `.txt` + `data.yaml` | Ultralytics YOLO training |
+| **Pascal VOC** | `.xml` per image | Classic object detection format |
+| **CreateML** | `annotations.json` | Apple Core ML training |
+
+### Dataset Splitting
+
+**Train/Val/Test Split:**
+- Configurable ratios (default: 70/20/10)
+- Stratified splitting to maintain class distribution
+- Random seed for reproducibility
+
+**K-Fold Cross-Validation:**
+- 2-10 folds supported
+- Stratified K-Fold option
+- Generates separate JSON files per fold
+
+### Dataset Combination
+
+Merge multiple COCO datasets with intelligent ID management:
+
+| Strategy | Description |
+|----------|-------------|
+| **ID Offset** | Add offset to avoid ID collisions |
+| **ID Reassign** | Reassign all IDs starting from 1 |
+| **Category Unify** | Merge categories with same name |
+| **Category Separate** | Keep categories separate with suffix |
 
 ---
 
@@ -868,7 +1081,27 @@ synthetic_dataset_generator/
 |       +-- Dockerfile
 |
 +-- frontend/                      # Streamlit UI
-|   +-- app.py
+|   +-- app/
+|   |   +-- main.py               # Application entry point
+|   |   +-- config/
+|   |   |   +-- theme.py          # Light/Dark theme system
+|   |   |   +-- styles.py         # Custom CSS styles
+|   |   +-- components/
+|   |   |   +-- ui.py             # Reusable UI components
+|   |   |   +-- api_client.py     # Gateway API client
+|   |   +-- pages/
+|   |   |   +-- analysis.py       # Step 1: Dataset analysis
+|   |   |   +-- configure.py      # Step 2: Generation config
+|   |   |   +-- generation.py     # Step 3: Batch generation
+|   |   |   +-- export.py         # Step 4: Export formats
+|   |   |   +-- combine.py        # Step 5: Merge datasets
+|   |   |   +-- splits.py         # Step 6: Train/Val/Test splits
+|   |   |   +-- post_processing.py # Standalone tools
+|   |   +-- utils/
+|   |       +-- merger.py         # Dataset merger utility
+|   |       +-- label_manager.py  # Label management
+|   |       +-- export_manager.py # Export utilities
+|   |       +-- dataset_splitter.py # Split utilities
 |   +-- Dockerfile
 |
 +-- src/                          # Legacy monolithic code
@@ -882,6 +1115,12 @@ synthetic_dataset_generator/
 |   +-- cache/                    # Caustics cache
 |
 +-- output/                       # Generated images
+|   +-- synthetic/
+|       +-- job_<id>/
+|           +-- images/           # Generated images
+|           +-- synthetic_dataset.json
+|           +-- effects_preset.json  # Auto-saved preset
+|           +-- pipeline_debug/   # Debug images (if enabled)
 |
 +-- docker-compose.microservices.yml
 +-- docker-compose.yml            # Single container mode
