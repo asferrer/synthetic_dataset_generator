@@ -5,12 +5,12 @@ Professional styling for the Streamlit frontend.
 """
 
 import streamlit as st
-from .theme import get_theme_css, ThemeManager
+from .theme import get_theme_css, get_theme_colors
 
 
 def get_custom_css() -> str:
     """Generate complete custom CSS"""
-    colors = ThemeManager.get_theme_colors()
+    colors = get_theme_colors()
     theme_vars = get_theme_css()
 
     return f"""
@@ -27,9 +27,40 @@ def get_custom_css() -> str:
         max-width: 100%;
     }}
 
-    /* Hide Streamlit branding */
+    /* Force dark/light background on main app */
+    [data-testid="stAppViewContainer"] {{
+        background-color: {colors.bg_primary} !important;
+    }}
+
+    .main {{
+        background-color: {colors.bg_primary} !important;
+    }}
+
+    [data-testid="stMain"] {{
+        background-color: {colors.bg_primary} !important;
+    }}
+
+    /* Ensure proper text colors */
+    .main .block-container,
+    .main .block-container p,
+    .main .block-container span,
+    .main .block-container label {{
+        color: {colors.text_primary};
+    }}
+
+    /* Hide Streamlit branding and auto-navigation */
     #MainMenu {{visibility: hidden;}}
     footer {{visibility: hidden;}}
+
+    /* Hide automatic page navigation tabs */
+    [data-testid="stSidebarNav"] {{
+        display: none !important;
+    }}
+
+    /* Hide header decoration if present */
+    header[data-testid="stHeader"] {{
+        background: transparent;
+    }}
 
     /* Scrollbar styling */
     ::-webkit-scrollbar {{
@@ -516,12 +547,42 @@ def get_custom_css() -> str:
        SLIDER STYLES
        ============================================ */
 
+    /* Slider track (background) */
     .stSlider > div > div {{
-        background-color: var(--color-bg-tertiary);
+        background-color: {colors.bg_tertiary} !important;
     }}
 
+    /* Slider filled part */
     .stSlider > div > div > div {{
-        background-color: var(--color-primary);
+        background-color: {colors.primary} !important;
+    }}
+
+    /* Target specific slider elements */
+    [data-testid="stSlider"] [data-baseweb="slider"] > div {{
+        background-color: {colors.bg_tertiary} !important;
+    }}
+
+    [data-testid="stSlider"] [data-baseweb="slider"] > div > div {{
+        background-color: {colors.primary} !important;
+    }}
+
+    /* Slider thumb */
+    [data-testid="stSlider"] [role="slider"] {{
+        background-color: {colors.primary} !important;
+        border-color: {colors.primary} !important;
+    }}
+
+    /* Slider track - more specific selectors */
+    [data-baseweb="slider"] [data-testid="stTickBar"] {{
+        background: {colors.bg_tertiary} !important;
+    }}
+
+    div[data-baseweb="slider"] > div:first-child {{
+        background-color: {colors.bg_tertiary} !important;
+    }}
+
+    div[data-baseweb="slider"] > div:first-child > div {{
+        background-color: {colors.primary} !important;
     }}
 
     /* ============================================
