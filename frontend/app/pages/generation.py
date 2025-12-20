@@ -21,11 +21,30 @@ from app.components.ui import (
 from app.config.theme import get_colors_dict
 
 
+def _make_json_serializable(obj):
+    """Convert non-JSON-serializable objects to serializable format."""
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_make_json_serializable(item) for item in obj]
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        return str(obj)
+
+
 def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
     """Save the generation configuration alongside the generated dataset.
 
     This allows users to retrieve and reuse the exact configuration
     used for a specific generation job.
+
+    Saves:
+    - Directories configuration
+    - Effects enabled and their intensity values
+    - Advanced generation options
+    - Validation settings
+    - Targets per class
     """
     try:
         # Build job folder path
@@ -37,7 +56,10 @@ def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
         if not job_path.exists():
             job_path = base_output  # Fallback
 
-        # Build config with metadata
+        # Extract effects config with all intensity values
+        effects_config = config.get("effects_config", {})
+
+        # Build comprehensive config with metadata
         saved_config = {
             "config_version": "1.0",
             "job_id": job_id,
@@ -49,7 +71,21 @@ def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
             },
             "effects": {
                 "enabled": config.get("effects", []),
-                "config": config.get("effects_config", {}),
+                "config": {
+                    # Core intensity values
+                    "color_intensity": effects_config.get("color_intensity", 0.7),
+                    "blur_strength": effects_config.get("blur_strength", 1.0),
+                    "shadow_opacity": effects_config.get("shadow_opacity", 0.4),
+                    "underwater_intensity": effects_config.get("underwater_intensity", 0.25),
+                    "caustics_intensity": effects_config.get("caustics_intensity", 0.15),
+                    "edge_feather": effects_config.get("edge_feather", 5),
+                    # Additional effect settings
+                    "lighting_type": effects_config.get("lighting_type", "ambient"),
+                    "lighting_intensity": effects_config.get("lighting_intensity", 0.5),
+                    "water_color": list(effects_config.get("water_color", [20, 80, 120])),
+                    "water_clarity": effects_config.get("water_clarity", "clear"),
+                    "motion_blur_probability": effects_config.get("motion_blur_probability", 0.2),
+                },
             },
             "generation": {
                 "num_images": config.get("num_images", 0),
@@ -66,6 +102,9 @@ def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
             },
             "targets_per_class": config.get("targets_per_class", {}),
         }
+
+        # Make sure everything is JSON serializable
+        saved_config = _make_json_serializable(saved_config)
 
         # Save to job folder
         config_path = job_path / "generation_config.json"
