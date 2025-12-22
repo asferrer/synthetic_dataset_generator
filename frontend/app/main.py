@@ -45,6 +45,8 @@ WORKFLOW_NAV = {
 
 # Tools (independent access)
 TOOLS_NAV = {
+    "🎯 Extraer Objetos": "extract_objects",
+    "🔬 SAM3": "sam3_tool",
     "🏷️ Etiquetas": "labels",
     "📤 Exportar": "export_tool",
     "🔗 Combinar": "combine_tool",
@@ -255,6 +257,10 @@ def main():
         render_splits_page()
 
     # Tools pages
+    elif current_page == "🎯 Extraer Objetos":
+        render_object_extraction_page()
+    elif current_page == "🔬 SAM3":
+        render_sam3_tool_page()
     elif current_page == "🏷️ Etiquetas":
         render_labels_page()
     elif current_page == "📤 Exportar":
@@ -363,6 +369,26 @@ def render_splits_page():
     """Render splits page (Step 6 of workflow)"""
     from app.pages.splits import render_splits_page as splits
     splits()
+
+
+# =============================================================================
+# PAGE: Object Extraction (Tool)
+# =============================================================================
+
+def render_object_extraction_page():
+    """Render object extraction tool page"""
+    from app.pages.object_extraction import render_object_extraction_page as extraction
+    extraction()
+
+
+# =============================================================================
+# PAGE: SAM3 Tool
+# =============================================================================
+
+def render_sam3_tool_page():
+    """Render SAM3 segmentation tool page"""
+    from app.pages.sam3_tool import render_sam3_tool_page as sam3
+    sam3()
 
 
 # =============================================================================
@@ -553,47 +579,72 @@ def render_splits_tool_page():
 # =============================================================================
 
 def render_monitor_tool_page():
-    """Render the job monitoring tool page - shows all background generation jobs"""
+    """Render the job monitoring tool page - shows all background jobs"""
+    import time
     from app.config.theme import get_colors_dict
     c = get_colors_dict()
 
     page_header(
         title="Monitor de Jobs",
-        subtitle="Monitoriza todos los trabajos de generación sintética en ejecución o completados",
+        subtitle="Monitoriza todos los trabajos en ejecución o completados",
         icon="📊"
     )
 
-    # Manual refresh button
-    if st.button("🔄 Actualizar Estado", key="monitor_refresh_btn"):
-        st.rerun()
-
-    spacer(16)
-
-    # Fetch all jobs
+    # Fetch all jobs from different sources
     from app.components.api_client import get_api_client
     client = get_api_client()
-    jobs_response = client.list_jobs()
 
-    if jobs_response.get("error"):
-        alert_box(f"Error al obtener jobs: {jobs_response.get('error')}", type="error")
-        return
+    # Generation jobs (from augmentor)
+    gen_jobs_response = client.list_jobs()
+    gen_jobs = gen_jobs_response.get("jobs", [])
+    for job in gen_jobs:
+        job["job_type"] = "generation"
 
-    jobs = jobs_response.get("jobs", [])
+    # Extraction jobs (from segmentation)
+    extract_jobs_response = client.list_extraction_jobs()
+    extract_jobs = extract_jobs_response.get("jobs", [])
+
+    # SAM3 conversion jobs (from segmentation)
+    sam3_jobs_response = client.list_sam3_jobs()
+    sam3_jobs = sam3_jobs_response.get("jobs", [])
+
+    # Combine all jobs
+    jobs = gen_jobs + extract_jobs + sam3_jobs
 
     if not jobs:
         empty_state(
             title="No hay trabajos",
-            message="No hay trabajos de generación en el sistema. Inicia una generación desde el workflow.",
+            message="No hay trabajos en el sistema. Inicia una generacion, extraccion o conversion SAM3.",
             icon="📭"
         )
         return
 
-    # Categorize jobs
+    # Categorize jobs by status
     active_jobs = [j for j in jobs if j.get("status") in ["processing", "queued", "pending"]]
     completed_jobs = [j for j in jobs if j.get("status") == "completed"]
     failed_jobs = [j for j in jobs if j.get("status") in ["failed", "cancelled", "error"]]
 
-    # Summary cards
+    # Count by type
+    gen_count = len([j for j in jobs if j.get("job_type") == "generation"])
+    extract_count = len([j for j in jobs if j.get("job_type") == "extraction"])
+    sam3_count = len([j for j in jobs if j.get("job_type") == "sam3_conversion"])
+
+    # Auto-refresh indicator for active jobs
+    if active_jobs:
+        col_refresh, col_status = st.columns([3, 1])
+        with col_refresh:
+            st.caption("🔄 Auto-actualizando cada 2 segundos...")
+        with col_status:
+            if st.button("⏹️ Pausar", key="pause_refresh"):
+                st.session_state["monitor_paused"] = True
+                st.rerun()
+    else:
+        if st.button("🔄 Actualizar Estado", key="monitor_refresh_btn"):
+            st.rerun()
+
+    spacer(8)
+
+    # Summary cards - row 1: status
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -636,14 +687,45 @@ def render_monitor_tool_page():
         </div>
         """, unsafe_allow_html=True)
 
+    # Summary cards - row 2: by type
+    spacer(8)
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                    border-radius: 0.5rem; padding: 0.75rem; text-align: center;">
+            <div style="font-size: 1.25rem; font-weight: 600;">🎨 {gen_count}</div>
+            <div style="font-size: 0.75rem; color: {c['text_muted']};">Generacion</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                    border-radius: 0.5rem; padding: 0.75rem; text-align: center;">
+            <div style="font-size: 1.25rem; font-weight: 600;">🎯 {extract_count}</div>
+            <div style="font-size: 0.75rem; color: {c['text_muted']};">Extraccion</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                    border-radius: 0.5rem; padding: 0.75rem; text-align: center;">
+            <div style="font-size: 1.25rem; font-weight: 600;">🔬 {sam3_count}</div>
+            <div style="font-size: 0.75rem; color: {c['text_muted']};">SAM3 Conversion</div>
+        </div>
+        """, unsafe_allow_html=True)
+
     spacer(24)
 
-    # Active jobs section
+    # Active jobs section - DETAILED VIEW
     if active_jobs:
         section_header("Jobs Activos", icon="⏳")
 
         for job in active_jobs:
-            _render_job_card(job, c, client, is_active=True)
+            _render_detailed_job_card(job, c, client)
 
         spacer(16)
 
@@ -665,18 +747,180 @@ def render_monitor_tool_page():
             for job in failed_jobs[:5]:
                 _render_job_card(job, c, client, is_active=False)
 
+    # Auto-refresh for active jobs (at the end to avoid blocking UI)
+    if active_jobs and not st.session_state.get("monitor_paused"):
+        time.sleep(2)
+        st.rerun()
+    elif st.session_state.get("monitor_paused"):
+        st.session_state.pop("monitor_paused", None)
 
-def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> None:
-    """Render a single job card"""
+
+def _render_detailed_job_card(job: dict, c: dict, client) -> None:
+    """Render a detailed job card with full progress visualization for active jobs"""
+    from datetime import datetime
+
     job_id = job.get("job_id", "unknown")
     status = job.get("status", "unknown")
-    generated = job.get("images_generated", 0)
-    rejected = job.get("images_rejected", 0)
-    pending = job.get("images_pending", 0)
-    total = generated + rejected + pending if pending > 0 else generated + rejected
-    output_dir = job.get("output_dir", "")
-    created_at = job.get("created_at", "")
-    error = job.get("error", "")
+    job_type = job.get("job_type", "generation")
+
+    # Job type styling and data extraction
+    if job_type == "generation":
+        type_icon, type_label = "🎨", "Generacion"
+        done = job.get("images_generated", 0)
+        failed = job.get("images_rejected", 0)
+        pending = job.get("images_pending", 0)
+        total = done + failed + pending if pending > 0 else done + failed
+        current_info = job.get("current_category", "")
+    elif job_type == "extraction":
+        type_icon, type_label = "🎯", "Extraccion de Objetos"
+        done = job.get("extracted_objects", 0)
+        failed = job.get("failed_objects", 0)
+        total = job.get("total_objects", 0)
+        pending = max(0, total - done - failed)
+        current_info = job.get("current_category", "")
+    elif job_type == "sam3_conversion":
+        type_icon, type_label = "🔬", "Conversion SAM3"
+        done = job.get("converted_annotations", 0)
+        skipped = job.get("skipped_annotations", 0)
+        failed = job.get("failed_annotations", 0)
+        total = job.get("total_annotations", 0)
+        pending = max(0, total - done - skipped - failed)
+        current_info = job.get("current_image", "")
+    else:
+        type_icon, type_label = "❔", "Desconocido"
+        done, failed, pending, total = 0, 0, 0, 0
+        current_info = ""
+
+    progress = done / total if total > 0 else 0
+
+    # Calculate elapsed time from started_at (for active jobs) or processing_time_ms (for completed)
+    elapsed_seconds = 0
+    started_at = job.get("started_at")
+    if started_at and status in ["processing", "queued"]:
+        try:
+            start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            elapsed_seconds = (datetime.now() - start_time.replace(tzinfo=None)).total_seconds()
+        except (ValueError, TypeError):
+            elapsed_seconds = job.get("processing_time_ms", 0) / 1000
+    else:
+        elapsed_seconds = job.get("processing_time_ms", 0) / 1000
+
+    # Estimate remaining time
+    if done > 0 and elapsed_seconds > 0:
+        rate = done / elapsed_seconds  # items per second
+        remaining_items = pending
+        eta_seconds = remaining_items / rate if rate > 0 else 0
+        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s" if eta_seconds > 60 else f"{int(eta_seconds)}s"
+    else:
+        eta_str = "Calculando..."
+
+    elapsed_str = f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s" if elapsed_seconds > 60 else f"{int(elapsed_seconds)}s"
+
+    # Main container
+    st.markdown(f"""
+    <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
+                border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1rem;
+                border-left: 4px solid {c['warning']};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <span style="font-size: 2rem;">{type_icon}</span>
+                <div>
+                    <div style="font-weight: 700; font-size: 1.1rem; color: {c['text_primary']};">{type_label}</div>
+                    <div style="font-family: monospace; font-size: 0.75rem; color: {c['text_muted']};">ID: {job_id[:20]}...</div>
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 2rem; font-weight: 700; color: {c['primary']};">{progress*100:.1f}%</div>
+                <div style="font-size: 0.75rem; color: {c['text_muted']};">completado</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Progress bar
+    st.progress(progress)
+
+    # Stats row
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Completados", f"{done:,}", help=f"De {total:,} total")
+    with col2:
+        if job_type == "sam3_conversion":
+            st.metric("Omitidos", f"{skipped:,}")
+        else:
+            st.metric("Pendientes", f"{pending:,}")
+    with col3:
+        st.metric("Fallidos", f"{failed:,}")
+    with col4:
+        st.metric("Tiempo", elapsed_str)
+
+    # Current activity and ETA
+    col_left, col_right = st.columns(2)
+    with col_left:
+        if current_info:
+            st.caption(f"📍 Procesando: **{current_info}**")
+        else:
+            st.caption("📍 Procesando...")
+    with col_right:
+        st.caption(f"⏱️ Tiempo restante estimado: **{eta_str}**")
+
+    # Category breakdown for extraction jobs
+    if job_type == "extraction":
+        categories_progress = job.get("categories_progress", {})
+        if categories_progress:
+            with st.expander("📊 Progreso por Categoria", expanded=False):
+                for cat_name, cat_count in categories_progress.items():
+                    st.write(f"• {cat_name}: {cat_count} objetos")
+
+    # Separator
+    st.markdown("<hr style='margin: 1rem 0; border: none; border-top: 1px solid #333;'>", unsafe_allow_html=True)
+
+
+def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> None:
+    """Render a single job card for any job type"""
+    job_id = job.get("job_id", "unknown")
+    status = job.get("status", "unknown")
+    job_type = job.get("job_type", "generation")
+
+    # Job type styling
+    if job_type == "generation":
+        type_icon, type_label = "🎨", "Generacion"
+        # Generation job fields
+        done = job.get("images_generated", 0)
+        failed = job.get("images_rejected", 0)
+        pending = job.get("images_pending", 0)
+        total = done + failed + pending if pending > 0 else done + failed
+        label1, val1 = "Generadas", done
+        label2, val2 = "Rechazadas", failed
+        label3, val3 = "Pendientes", pending
+    elif job_type == "extraction":
+        type_icon, type_label = "🎯", "Extraccion"
+        # Extraction job fields
+        done = job.get("extracted_objects", 0)
+        failed = job.get("failed_objects", 0)
+        total = job.get("total_objects", 0)
+        pending = max(0, total - done - failed)
+        label1, val1 = "Extraidos", done
+        label2, val2 = "Fallidos", failed
+        label3, val3 = "Pendientes", pending
+    elif job_type == "sam3_conversion":
+        type_icon, type_label = "🔬", "SAM3"
+        # SAM3 conversion job fields
+        done = job.get("converted_annotations", 0)
+        skipped = job.get("skipped_annotations", 0)
+        failed = job.get("failed_annotations", 0)
+        total = job.get("total_annotations", 0)
+        pending = max(0, total - done - skipped - failed)
+        label1, val1 = "Convertidos", done
+        label2, val2 = "Omitidos", skipped
+        label3, val3 = "Fallidos", failed
+    else:
+        type_icon, type_label = "❔", "Desconocido"
+        done, failed, pending, total = 0, 0, 0, 0
+        label1, val1 = "Completados", 0
+        label2, val2 = "Fallidos", 0
+        label3, val3 = "Pendientes", 0
 
     # Status styling
     if status == "completed":
@@ -692,7 +936,7 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
     else:
         status_color, status_icon = c['text_muted'], "❔"
 
-    progress = generated / total if total > 0 else 0
+    progress = done / total if total > 0 else 0
 
     st.markdown(f"""
     <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
@@ -701,8 +945,12 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
             <div style="display: flex; align-items: center; gap: 0.5rem;">
                 <span style="font-size: 1.25rem;">{status_icon}</span>
-                <span style="font-family: monospace; font-weight: 600; color: {c['text_primary']};">
-                    {job_id[:20]}...
+                <span style="background: {c['bg_secondary']}; padding: 0.15rem 0.4rem; border-radius: 0.25rem;
+                            font-size: 0.7rem; color: {c['text_secondary']};">
+                    {type_icon} {type_label}
+                </span>
+                <span style="font-family: monospace; font-weight: 600; color: {c['text_primary']}; font-size: 0.85rem;">
+                    {job_id[:16]}...
                 </span>
             </div>
             <span style="font-size: 0.75rem; color: {status_color}; font-weight: 600;">
@@ -711,16 +959,16 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         </div>
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; font-size: 0.8rem;">
             <div>
-                <span style="color: {c['text_muted']};">Generadas:</span>
-                <span style="color: {c['success']}; font-weight: 600;"> {generated}</span>
+                <span style="color: {c['text_muted']};">{label1}:</span>
+                <span style="color: {c['success']}; font-weight: 600;"> {val1}</span>
             </div>
             <div>
-                <span style="color: {c['text_muted']};">Rechazadas:</span>
-                <span style="color: {c['error']}; font-weight: 600;"> {rejected}</span>
+                <span style="color: {c['text_muted']};">{label2}:</span>
+                <span style="color: {c['error'] if 'Fallid' in label2 or 'Rechaz' in label2 else c['text_secondary']}; font-weight: 600;"> {val2}</span>
             </div>
             <div>
-                <span style="color: {c['text_muted']};">Pendientes:</span>
-                <span style="font-weight: 600;"> {pending}</span>
+                <span style="color: {c['text_muted']};">{label3}:</span>
+                <span style="font-weight: 600;"> {val3}</span>
             </div>
             <div>
                 <span style="color: {c['text_muted']};">Progreso:</span>
@@ -734,8 +982,8 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
     if is_active and total > 0:
         st.progress(progress)
 
-    # Action buttons for active jobs
-    if is_active:
+    # Action buttons for active jobs (only for generation jobs that support cancellation)
+    if is_active and job_type == "generation":
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             if st.button("👁️ Ver Detalles", key=f"view_{job_id}", use_container_width=True):
@@ -750,10 +998,6 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
-
-    # Show error if present
-    if error:
-        st.error(f"Error: {error}")
 
 
 # =============================================================================
