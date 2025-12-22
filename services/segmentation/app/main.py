@@ -19,18 +19,34 @@ Endpoints:
 Debug Endpoints (Explainability):
 - POST /debug/analyze - Analyze with full debug visualization and logs
 - POST /debug/compatibility - Check compatibility with decision explanation
+
+Object Extraction Endpoints:
+- POST /extract/analyze-dataset - Analyze dataset annotation types
+- POST /extract/objects - Extract objects from dataset (async)
+- GET /extract/jobs/{job_id} - Get extraction job status
+- POST /extract/single-object - Extract single object (preview)
+
+SAM3 Tool Endpoints:
+- POST /sam3/segment-image - Segment single image with box/point prompt
+- POST /sam3/convert-dataset - Convert bbox to segmentation (async)
+- GET /sam3/jobs/{job_id} - Get conversion job status
 """
 
 import os
 import time
+import json
 import logging
+import asyncio
+import uuid
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from contextlib import asynccontextmanager
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models.schemas import (
@@ -49,6 +65,25 @@ from app.models.schemas import (
     DebugCompatibilityResponse,
 )
 from app.scene_analyzer import SemanticSceneAnalyzer
+from app.object_extractor import ObjectExtractor
+from app.models.extraction_schemas import (
+    AnalyzeDatasetRequest,
+    AnalyzeDatasetResponse,
+    CategoryInfo,
+    ExtractObjectsRequest,
+    ExtractObjectsResponse,
+    ExtractionJobStatus,
+    ExtractSingleObjectRequest,
+    ExtractSingleObjectResponse,
+    SAM3SegmentImageRequest,
+    SAM3SegmentImageResponse,
+    SAM3ConvertDatasetRequest,
+    SAM3ConvertDatasetResponse,
+    SAM3ConversionJobStatus,
+    JobStatus,
+    AnnotationType,
+    ExtractionMethod,
+)
 
 import base64
 
@@ -84,9 +119,17 @@ class ServiceState:
     device: str = "cpu"
     sam3_available: bool = False
     gpu_available: bool = False
+    object_extractor: Optional[ObjectExtractor] = None
 
 
 state = ServiceState()
+
+# Job tracking for async operations
+extraction_jobs: Dict[str, Dict[str, Any]] = {}
+sam3_conversion_jobs: Dict[str, Dict[str, Any]] = {}
+
+# Thread pool for CPU-bound operations
+thread_pool = ThreadPoolExecutor(max_workers=2)
 
 
 def init_scene_analyzer():
@@ -112,6 +155,16 @@ def init_scene_analyzer():
     )
 
     logger.info(f"Scene analyzers initialized (SAM3: {state.sam3_available})")
+
+
+def init_object_extractor():
+    """Initialize object extractor with shared SAM3 model"""
+    state.object_extractor = ObjectExtractor(
+        sam3_model=state.sam3_model,
+        sam3_processor=state.sam3_processor,
+        device=state.device
+    )
+    logger.info(f"ObjectExtractor initialized (SAM3: {state.sam3_available})")
 
 
 def init_sam3():
@@ -170,6 +223,7 @@ async def lifespan(app: FastAPI):
     # Initialize models
     init_sam3()
     init_scene_analyzer()
+    init_object_extractor()
 
     logger.info("Segmentation Service ready")
     yield
@@ -722,6 +776,614 @@ async def debug_check_compatibility(request: DebugCompatibilityRequest):
             alternatives=[],
             error=str(e),
         )
+
+
+# =========================================================================
+# OBJECT EXTRACTION ENDPOINTS
+# =========================================================================
+
+@app.post("/extract/analyze-dataset", response_model=AnalyzeDatasetResponse, tags=["Object Extraction"])
+async def analyze_dataset_for_extraction(request: AnalyzeDatasetRequest):
+    """
+    Analyze a COCO dataset to determine annotation types.
+
+    Returns counts of annotations with segmentation vs bbox-only,
+    and a recommendation for extraction method.
+    """
+    try:
+        # Get COCO data
+        coco_data = None
+        if request.coco_data:
+            coco_data = request.coco_data
+        elif request.coco_json_path:
+            json_path = Path(request.coco_json_path)
+            if not json_path.exists():
+                raise FileNotFoundError(f"COCO JSON not found: {request.coco_json_path}")
+            with open(json_path, 'r') as f:
+                coco_data = json.load(f)
+        else:
+            raise ValueError("Either coco_data or coco_json_path must be provided")
+
+        # Analyze dataset
+        analysis = state.object_extractor.analyze_dataset(coco_data)
+
+        # Convert categories to CategoryInfo
+        categories = [
+            CategoryInfo(
+                id=cat["id"],
+                name=cat["name"],
+                count=cat["count"],
+                with_segmentation=cat["with_segmentation"],
+                bbox_only=cat["bbox_only"]
+            )
+            for cat in analysis["categories"]
+        ]
+
+        return AnalyzeDatasetResponse(
+            success=True,
+            total_images=analysis["total_images"],
+            total_annotations=analysis["total_annotations"],
+            annotations_with_segmentation=analysis["annotations_with_segmentation"],
+            annotations_bbox_only=analysis["annotations_bbox_only"],
+            categories=categories,
+            recommendation=analysis["recommendation"],
+            sample_annotation=analysis["sample_annotation"]
+        )
+
+    except Exception as e:
+        logger.error(f"Dataset analysis failed: {e}")
+        return AnalyzeDatasetResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/extract/objects", response_model=ExtractObjectsResponse, tags=["Object Extraction"])
+async def extract_objects(request: ExtractObjectsRequest):
+    """
+    Extract objects from a COCO dataset as transparent PNG images.
+
+    Runs asynchronously. Use GET /extract/jobs/{job_id} to track progress.
+    """
+    try:
+        # Get COCO data
+        coco_data = None
+        source_path = ""
+        if request.coco_data:
+            coco_data = request.coco_data
+            source_path = "uploaded_data"
+            logger.info(f"Received COCO data with {len(coco_data.get('annotations', []))} annotations")
+        elif request.coco_json_path:
+            json_path = Path(request.coco_json_path)
+            if not json_path.exists():
+                raise FileNotFoundError(f"COCO JSON not found: {request.coco_json_path}")
+            with open(json_path, 'r') as f:
+                coco_data = json.load(f)
+            source_path = request.coco_json_path
+        else:
+            raise ValueError("Either coco_data or coco_json_path must be provided")
+
+        # Validate images directory
+        images_dir = Path(request.images_dir)
+        if not images_dir.exists():
+            raise FileNotFoundError(f"Images directory not found: {request.images_dir}")
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        # Count total objects to extract
+        categories = {c["id"]: c["name"] for c in coco_data.get("categories", [])}
+        if request.categories_to_extract:
+            valid_cat_ids = {cid for cid, name in categories.items() if name in request.categories_to_extract}
+        else:
+            valid_cat_ids = set(categories.keys())
+
+        total_objects = sum(
+            1 for ann in coco_data.get("annotations", [])
+            if ann.get("category_id") in valid_cat_ids
+            and ann.get("bbox", [0, 0, 0, 0])[2] * ann.get("bbox", [0, 0, 0, 0])[3] >= request.min_object_area
+        )
+
+        extraction_jobs[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.QUEUED,
+            "total_objects": total_objects,
+            "extracted_objects": 0,
+            "failed_objects": 0,
+            "current_category": "",
+            "categories_progress": {},
+            "output_dir": request.output_dir,
+            "errors": [],
+            "extracted_files": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None
+        }
+
+        # Define extraction task
+        async def run_extraction():
+            extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
+            extraction_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            def progress_callback(progress):
+                # This callback runs from a thread pool, but dict updates are atomic in CPython
+                extraction_jobs[job_id]["extracted_objects"] = progress["extracted"]
+                extraction_jobs[job_id]["failed_objects"] = progress["failed"]
+                extraction_jobs[job_id]["current_category"] = progress.get("current_category", "")
+                extraction_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+
+            try:
+                result = await state.object_extractor.extract_from_dataset(
+                    coco_data=coco_data,
+                    images_dir=str(images_dir),
+                    output_dir=request.output_dir,
+                    categories_to_extract=request.categories_to_extract or None,
+                    use_sam3_for_bbox=request.use_sam3_for_bbox,
+                    padding=request.padding,
+                    min_object_area=request.min_object_area,
+                    save_individual_coco=request.save_individual_coco,
+                    progress_callback=progress_callback
+                )
+
+                extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+                extraction_jobs[job_id]["extracted_objects"] = result["extracted"]
+                extraction_jobs[job_id]["failed_objects"] = result["failed"]
+                extraction_jobs[job_id]["categories_progress"] = result["by_category"]
+                extraction_jobs[job_id]["errors"] = result.get("errors", [])[:100]
+                extraction_jobs[job_id]["extracted_files"] = result.get("extracted_files", [])[:1000]
+                extraction_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
+
+            except Exception as e:
+                # Use logger.exception to get full traceback for debugging
+                logger.exception(f"Extraction job {job_id} failed: {e}")
+                extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                extraction_jobs[job_id]["errors"].append(str(e))
+
+            finally:
+                # Always set completed_at, even if job failed
+                extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        # Run in background using asyncio.create_task for proper async execution
+        asyncio.create_task(run_extraction())
+        logger.info(f"Started extraction job {job_id} with {total_objects} objects")
+
+        return ExtractObjectsResponse(
+            success=True,
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            message=f"Extraction job queued. {total_objects} objects to extract."
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start extraction: {e}")
+        return ExtractObjectsResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.get("/extract/jobs", tags=["Object Extraction"])
+async def list_extraction_jobs():
+    """List all extraction jobs."""
+    jobs = []
+    for job_id, job in extraction_jobs.items():
+        # Convert JobStatus enum to string for JSON serialization
+        status = job.get("status", "unknown")
+        status_str = status.value if hasattr(status, 'value') else str(status)
+        jobs.append({
+            "job_id": job_id,
+            "job_type": "extraction",
+            "status": status_str,
+            "total_objects": job.get("total_objects", 0),
+            "extracted_objects": job.get("extracted_objects", 0),
+            "failed_objects": job.get("failed_objects", 0),
+            "current_category": job.get("current_category", ""),
+            "output_dir": job.get("output_dir", ""),
+            "started_at": job.get("started_at"),
+            "completed_at": job.get("completed_at"),
+            "processing_time_ms": job.get("processing_time_ms", 0),
+        })
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/extract/jobs/{job_id}", response_model=ExtractionJobStatus, tags=["Object Extraction"])
+async def get_extraction_job_status(job_id: str):
+    """Get the status of an extraction job."""
+    if job_id not in extraction_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = extraction_jobs[job_id]
+    return ExtractionJobStatus(**job)
+
+
+@app.post("/extract/single-object", response_model=ExtractSingleObjectResponse, tags=["Object Extraction"])
+async def extract_single_object(request: ExtractSingleObjectRequest):
+    """
+    Extract a single object for preview.
+
+    Returns the extracted object as base64-encoded PNG with transparency.
+    """
+    start_time = time.time()
+
+    try:
+        # Load image
+        image = None
+        if request.image_base64:
+            img_data = base64.b64decode(request.image_base64)
+            nparr = np.frombuffer(img_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        elif request.image_path:
+            image_path = Path(request.image_path)
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image not found: {request.image_path}")
+            image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+
+        if image is None:
+            raise ValueError("Failed to load image")
+
+        # Extract object
+        result = await state.object_extractor.extract_single_object(
+            image=image,
+            annotation=request.annotation,
+            category_name=request.category_name,
+            use_sam3=request.use_sam3,
+            padding=request.padding
+        )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        if not result["success"]:
+            return ExtractSingleObjectResponse(
+                success=False,
+                processing_time_ms=processing_time,
+                error=result.get("error", "Unknown error")
+            )
+
+        return ExtractSingleObjectResponse(
+            success=True,
+            cropped_image_base64=result["cropped_image_base64"],
+            mask_base64=result.get("mask_base64"),
+            annotation_type=AnnotationType(result["annotation_type"]),
+            method_used=ExtractionMethod(result["method_used"]),
+            original_bbox=result["original_bbox"],
+            extracted_size=result["extracted_size"],
+            mask_coverage=result["mask_coverage"],
+            processing_time_ms=processing_time
+        )
+
+    except Exception as e:
+        logger.error(f"Single object extraction failed: {e}")
+        return ExtractSingleObjectResponse(
+            success=False,
+            processing_time_ms=(time.time() - start_time) * 1000,
+            error=str(e)
+        )
+
+
+# =========================================================================
+# SAM3 TOOL ENDPOINTS
+# =========================================================================
+
+@app.post("/sam3/segment-image", response_model=SAM3SegmentImageResponse, tags=["SAM3 Tool"])
+async def sam3_segment_image(request: SAM3SegmentImageRequest):
+    """
+    Segment an object in an image using SAM3 with box or point prompt.
+
+    Returns the segmentation mask and polygon coordinates.
+    """
+    start_time = time.time()
+
+    if not state.sam3_available:
+        return SAM3SegmentImageResponse(
+            success=False,
+            processing_time_ms=(time.time() - start_time) * 1000,
+            error="SAM3 not available"
+        )
+
+    try:
+        import torch
+        from PIL import Image as PILImage
+
+        # Load image
+        image = None
+        if request.image_base64:
+            img_data = base64.b64decode(request.image_base64)
+            nparr = np.frombuffer(img_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        elif request.image_path:
+            image_path = Path(request.image_path)
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image not found: {request.image_path}")
+            image = cv2.imread(str(image_path))
+
+        if image is None:
+            raise ValueError("Failed to load image")
+
+        h, w = image.shape[:2]
+
+        # Convert to PIL
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = PILImage.fromarray(image_rgb)
+
+        # Prepare inputs based on prompt type
+        inputs = None
+        if request.bbox:
+            x, y, bw, bh = request.bbox
+            input_box = [[x, y, x + bw, y + bh]]
+            inputs = state.sam3_processor(
+                images=pil_image,
+                input_boxes=[input_box],
+                return_tensors="pt"
+            ).to(state.device)
+        elif request.point:
+            input_point = [[request.point]]
+            input_label = [[1]]  # 1 = foreground
+            inputs = state.sam3_processor(
+                images=pil_image,
+                input_points=input_point,
+                input_labels=input_label,
+                return_tensors="pt"
+            ).to(state.device)
+        elif request.text_prompt:
+            inputs = state.sam3_processor(
+                images=pil_image,
+                text=request.text_prompt,
+                return_tensors="pt"
+            ).to(state.device)
+        else:
+            raise ValueError("Must provide bbox, point, or text_prompt")
+
+        # Run SAM3
+        with torch.no_grad():
+            outputs = state.sam3_model(**inputs)
+
+        # Post-process masks
+        masks = state.sam3_processor.post_process_masks(
+            outputs.pred_masks,
+            inputs["original_sizes"],
+            inputs["reshaped_input_sizes"]
+        )
+
+        if len(masks) == 0 or len(masks[0]) == 0:
+            return SAM3SegmentImageResponse(
+                success=False,
+                processing_time_ms=(time.time() - start_time) * 1000,
+                error="No mask generated"
+            )
+
+        # Get best mask
+        if hasattr(outputs, 'iou_scores') and outputs.iou_scores is not None:
+            best_idx = outputs.iou_scores[0].argmax().item()
+            mask = masks[0][best_idx]
+            confidence = float(outputs.iou_scores[0][best_idx].cpu().item())
+        else:
+            mask = masks[0][0]
+            confidence = 1.0
+
+        mask_np = mask.cpu().numpy().astype(np.uint8) * 255
+
+        # Ensure correct size
+        if mask_np.shape != (h, w):
+            mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # Calculate bbox and area
+        contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
+            bbox = [float(x), float(y), float(bw), float(bh)]
+        else:
+            bbox = [0.0, 0.0, float(w), float(h)]
+
+        area = int(np.sum(mask_np > 0))
+
+        # Convert to polygon if requested
+        segmentation_polygon = None
+        segmentation_coco = None
+        if request.return_polygon:
+            polygons = state.object_extractor.mask_to_polygon(
+                mask_np,
+                simplify=request.simplify_polygon,
+                tolerance=request.simplify_tolerance
+            )
+            if polygons:
+                segmentation_coco = polygons
+                # Convert to [[x,y], [x,y], ...] format
+                segmentation_polygon = [
+                    [[polygons[0][i], polygons[0][i+1]] for i in range(0, len(polygons[0]), 2)]
+                ]
+
+        # Encode mask if requested
+        mask_base64 = None
+        if request.return_mask:
+            success, encoded = cv2.imencode('.png', mask_np)
+            if success:
+                mask_base64 = base64.b64encode(encoded.tobytes()).decode('utf-8')
+
+        return SAM3SegmentImageResponse(
+            success=True,
+            mask_base64=mask_base64,
+            segmentation_polygon=segmentation_polygon[0] if segmentation_polygon else None,
+            segmentation_coco=segmentation_coco,
+            bbox=bbox,
+            area=area,
+            confidence=confidence,
+            processing_time_ms=(time.time() - start_time) * 1000
+        )
+
+    except Exception as e:
+        logger.error(f"SAM3 segmentation failed: {e}")
+        return SAM3SegmentImageResponse(
+            success=False,
+            processing_time_ms=(time.time() - start_time) * 1000,
+            error=str(e)
+        )
+
+
+@app.post("/sam3/convert-dataset", response_model=SAM3ConvertDatasetResponse, tags=["SAM3 Tool"])
+async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
+    """
+    Convert bbox-only annotations to segmentations using SAM3.
+
+    Runs asynchronously. Use GET /sam3/jobs/{job_id} to track progress.
+    """
+    if not state.sam3_available:
+        return SAM3ConvertDatasetResponse(
+            success=False,
+            error="SAM3 not available"
+        )
+
+    try:
+        # Get COCO data
+        coco_data = None
+        if request.coco_data:
+            coco_data = request.coco_data
+        elif request.coco_json_path:
+            json_path = Path(request.coco_json_path)
+            if not json_path.exists():
+                raise FileNotFoundError(f"COCO JSON not found: {request.coco_json_path}")
+            with open(json_path, 'r') as f:
+                coco_data = json.load(f)
+        else:
+            raise ValueError("Either coco_data or coco_json_path must be provided")
+
+        # Validate images directory
+        images_dir = Path(request.images_dir)
+        if not images_dir.exists():
+            raise FileNotFoundError(f"Images directory not found: {request.images_dir}")
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        # Count annotations to convert
+        categories = {c["id"]: c["name"] for c in coco_data.get("categories", [])}
+        if request.categories_to_convert:
+            valid_cat_ids = {cid for cid, name in categories.items() if name in request.categories_to_convert}
+        else:
+            valid_cat_ids = set(categories.keys())
+
+        total_annotations = 0
+        for ann in coco_data.get("annotations", []):
+            if ann.get("category_id") not in valid_cat_ids:
+                continue
+            ann_type = state.object_extractor.detect_annotation_type(ann)
+            if ann_type == AnnotationType.BBOX_ONLY or request.overwrite_existing:
+                total_annotations += 1
+
+        sam3_conversion_jobs[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.QUEUED,
+            "total_annotations": total_annotations,
+            "converted_annotations": 0,
+            "skipped_annotations": 0,
+            "failed_annotations": 0,
+            "current_image": "",
+            "categories_progress": {},
+            "output_path": request.output_path,
+            "errors": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None
+        }
+
+        # Define conversion task
+        async def run_conversion():
+            sam3_conversion_jobs[job_id]["status"] = JobStatus.PROCESSING
+            sam3_conversion_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            def progress_callback(progress):
+                # This callback runs from a thread pool, but dict updates are atomic in CPython
+                sam3_conversion_jobs[job_id]["converted_annotations"] = progress["converted"]
+                sam3_conversion_jobs[job_id]["skipped_annotations"] = progress["skipped"]
+                sam3_conversion_jobs[job_id]["failed_annotations"] = progress["failed"]
+                sam3_conversion_jobs[job_id]["current_image"] = progress.get("current_image", "")
+                sam3_conversion_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+
+            try:
+                result = await state.object_extractor.convert_bbox_to_segmentation(
+                    coco_data=coco_data,
+                    images_dir=str(images_dir),
+                    output_path=request.output_path,
+                    categories_to_convert=request.categories_to_convert or None,
+                    overwrite_existing=request.overwrite_existing,
+                    simplify_polygons=request.simplify_polygons,
+                    simplify_tolerance=request.simplify_tolerance,
+                    progress_callback=progress_callback
+                )
+
+                if result.get("success"):
+                    sam3_conversion_jobs[job_id]["status"] = JobStatus.COMPLETED
+                else:
+                    sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
+
+                sam3_conversion_jobs[job_id]["converted_annotations"] = result.get("converted", 0)
+                sam3_conversion_jobs[job_id]["skipped_annotations"] = result.get("skipped", 0)
+                sam3_conversion_jobs[job_id]["failed_annotations"] = result.get("failed", 0)
+                sam3_conversion_jobs[job_id]["categories_progress"] = result.get("by_category", {})
+                sam3_conversion_jobs[job_id]["errors"] = result.get("errors", [])[:100]
+                sam3_conversion_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
+
+            except Exception as e:
+                # Use logger.exception to get full traceback for debugging
+                logger.exception(f"Conversion job {job_id} failed: {e}")
+                sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
+                sam3_conversion_jobs[job_id]["errors"].append(str(e))
+
+            finally:
+                # Always set completed_at, even if job failed
+                sam3_conversion_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        # Run in background using asyncio.create_task for proper async execution
+        asyncio.create_task(run_conversion())
+        logger.info(f"Started SAM3 conversion job {job_id} with {total_annotations} annotations")
+
+        return SAM3ConvertDatasetResponse(
+            success=True,
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            message=f"Conversion job queued. {total_annotations} annotations to convert."
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start conversion: {e}")
+        return SAM3ConvertDatasetResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.get("/sam3/jobs", tags=["SAM3 Tool"])
+async def list_sam3_conversion_jobs():
+    """List all SAM3 conversion jobs."""
+    jobs = []
+    for job_id, job in sam3_conversion_jobs.items():
+        # Convert JobStatus enum to string for JSON serialization
+        status = job.get("status", "unknown")
+        status_str = status.value if hasattr(status, 'value') else str(status)
+        jobs.append({
+            "job_id": job_id,
+            "job_type": "sam3_conversion",
+            "status": status_str,
+            "total_annotations": job.get("total_annotations", 0),
+            "converted_annotations": job.get("converted_annotations", 0),
+            "skipped_annotations": job.get("skipped_annotations", 0),
+            "failed_annotations": job.get("failed_annotations", 0),
+            "current_image": job.get("current_image", ""),
+            "output_path": job.get("output_path", ""),
+            "started_at": job.get("started_at"),
+            "completed_at": job.get("completed_at"),
+            "processing_time_ms": job.get("processing_time_ms", 0),
+        })
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/sam3/jobs/{job_id}", response_model=SAM3ConversionJobStatus, tags=["SAM3 Tool"])
+async def get_sam3_conversion_job_status(job_id: str):
+    """Get the status of a SAM3 conversion job."""
+    if job_id not in sam3_conversion_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = sam3_conversion_jobs[job_id]
+    return SAM3ConversionJobStatus(**job)
 
 
 if __name__ == "__main__":
