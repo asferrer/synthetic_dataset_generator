@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
+SEGMENTATION_URL = os.environ.get("SEGMENTATION_SERVICE_URL", "http://localhost:8002")
 
 
 @dataclass
@@ -257,6 +258,251 @@ class APIClient:
                 return {"success": False, "error": response.text}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+    # =========================================================================
+    # Object Extraction Endpoints (Segmentation Service)
+    # =========================================================================
+
+    def analyze_dataset_annotations(
+        self,
+        coco_data: Optional[Dict[str, Any]] = None,
+        coco_json_path: Optional[str] = None,
+        images_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Analyze a COCO dataset to determine annotation types"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/extract/analyze-dataset",
+                json={
+                    "coco_data": coco_data,
+                    "coco_json_path": coco_json_path,
+                    "images_dir": images_dir,
+                },
+                timeout=120.0,  # Increased for large datasets
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout analizando dataset en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def extract_objects(
+        self,
+        images_dir: str,
+        output_dir: str,
+        coco_data: Optional[Dict[str, Any]] = None,
+        coco_json_path: Optional[str] = None,
+        categories_to_extract: Optional[List[str]] = None,
+        use_sam3_for_bbox: bool = True,
+        padding: int = 5,
+        min_object_area: int = 100,
+        save_individual_coco: bool = True,
+    ) -> Dict[str, Any]:
+        """Extract objects from a COCO dataset as transparent PNGs"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/extract/objects",
+                json={
+                    "coco_data": coco_data,
+                    "coco_json_path": coco_json_path,
+                    "images_dir": images_dir,
+                    "output_dir": output_dir,
+                    "categories_to_extract": categories_to_extract or [],
+                    "use_sam3_for_bbox": use_sam3_for_bbox,
+                    "padding": padding,
+                    "min_object_area": min_object_area,
+                    "save_individual_coco": save_individual_coco,
+                },
+                timeout=60.0,  # Should return quickly since it's async
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando extraccion en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_extraction_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get status of an extraction job"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/extract/jobs/{job_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def extract_single_object(
+        self,
+        annotation: Dict[str, Any],
+        category_name: str,
+        image_path: Optional[str] = None,
+        image_base64: Optional[str] = None,
+        use_sam3: bool = False,
+        padding: int = 5,
+    ) -> Dict[str, Any]:
+        """Extract a single object for preview"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/extract/single-object",
+                json={
+                    "image_path": image_path,
+                    "image_base64": image_base64,
+                    "annotation": annotation,
+                    "category_name": category_name,
+                    "use_sam3": use_sam3,
+                    "padding": padding,
+                },
+                timeout=60.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # SAM3 Tool Endpoints (Segmentation Service)
+    # =========================================================================
+
+    def sam3_segment_image(
+        self,
+        bbox: Optional[List[float]] = None,
+        point: Optional[List[int]] = None,
+        text_prompt: Optional[str] = None,
+        image_path: Optional[str] = None,
+        image_base64: Optional[str] = None,
+        return_polygon: bool = True,
+        return_mask: bool = True,
+        simplify_polygon: bool = True,
+        simplify_tolerance: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Segment an image using SAM3 with box, point, or text prompt"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/sam3/segment-image",
+                json={
+                    "image_path": image_path,
+                    "image_base64": image_base64,
+                    "bbox": bbox,
+                    "point": point,
+                    "text_prompt": text_prompt,
+                    "return_polygon": return_polygon,
+                    "return_mask": return_mask,
+                    "simplify_polygon": simplify_polygon,
+                    "simplify_tolerance": simplify_tolerance,
+                },
+                timeout=60.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def sam3_convert_dataset(
+        self,
+        images_dir: str,
+        output_path: str,
+        coco_data: Optional[Dict[str, Any]] = None,
+        coco_json_path: Optional[str] = None,
+        categories_to_convert: Optional[List[str]] = None,
+        overwrite_existing: bool = False,
+        simplify_polygons: bool = True,
+        simplify_tolerance: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Convert bbox annotations to segmentations using SAM3"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/sam3/convert-dataset",
+                json={
+                    "coco_data": coco_data,
+                    "coco_json_path": coco_json_path,
+                    "images_dir": images_dir,
+                    "output_path": output_path,
+                    "categories_to_convert": categories_to_convert or [],
+                    "overwrite_existing": overwrite_existing,
+                    "simplify_polygons": simplify_polygons,
+                    "simplify_tolerance": simplify_tolerance,
+                },
+                timeout=60.0,  # Should return quickly since it's async
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando conversion en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_sam3_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get status of a SAM3 conversion job"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/sam3/jobs/{job_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_segmentation_health(self) -> Dict[str, Any]:
+        """Get health status of segmentation service"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/health",
+                timeout=30.0  # Increased timeout for busy service
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"HTTP {response.status_code}: {response.text[:100]}", "status": "unhealthy"}
+        except httpx.TimeoutException:
+            return {"error": f"Timeout conectando a {SEGMENTATION_URL}", "status": "unhealthy"}
+        except httpx.ConnectError:
+            return {"error": f"No se puede conectar a {SEGMENTATION_URL}", "status": "unhealthy"}
+        except Exception as e:
+            return {"error": str(e), "status": "unhealthy"}
+
+    def list_extraction_jobs(self) -> Dict[str, Any]:
+        """List all extraction jobs from segmentation service"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/extract/jobs",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"jobs": [], "total": 0, "error": response.text}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
+
+    def list_sam3_jobs(self) -> Dict[str, Any]:
+        """List all SAM3 conversion jobs from segmentation service"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/sam3/jobs",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"jobs": [], "total": 0, "error": response.text}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
 
 
 # Global client instance
