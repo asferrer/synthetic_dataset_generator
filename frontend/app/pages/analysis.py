@@ -16,6 +16,7 @@ from app.components.ui import (
     page_header, section_header, spacer, alert_box, empty_state,
     workflow_stepper, workflow_navigation
 )
+from app.components.api_client import get_api_client
 from app.config.theme import get_colors_dict
 
 
@@ -234,6 +235,115 @@ def render_analysis_page():
         _render_metric_card("Clases", str(analysis["num_classes"]), "📦", "success")
     with col4:
         _render_metric_card("Media/Imagen", f"{analysis['stats']['mean_anns_per_image']:.1f}", "📊", "warning")
+
+    spacer(24)
+
+    # Object Source Selection
+    section_header("Fuente de Objetos", icon="🎯")
+
+    object_source = st.radio(
+        "Selecciona la fuente de objetos para la generación sintética",
+        options=["existing", "extract"],
+        format_func=lambda x: {
+            "existing": "📂 Usar objetos existentes (carpeta de objetos recortados)",
+            "extract": "✨ Extraer nuevos objetos desde este dataset",
+        }.get(x, x),
+        horizontal=True,
+        key="object_source_selection"
+    )
+
+    st.session_state.object_source = object_source
+
+    if object_source == "extract":
+        # Analyze annotations to determine extraction method
+        client = get_api_client()
+
+        with st.spinner("Analizando anotaciones del dataset..."):
+            annotation_analysis = client.analyze_dataset_annotations(coco_data=coco_data)
+
+        if annotation_analysis.get("success", True):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Con Segmentación",
+                    annotation_analysis.get("annotations_with_segmentation", 0),
+                    help="Anotaciones con máscara de segmentación (polígono o RLE)"
+                )
+
+            with col2:
+                st.metric(
+                    "Solo BBox",
+                    annotation_analysis.get("annotations_bbox_only", 0),
+                    help="Anotaciones que solo tienen bounding box"
+                )
+
+            with col3:
+                # Check SAM3 availability
+                health = client.get_segmentation_health()
+                sam3_available = health.get("sam3_available", False)
+                st.metric(
+                    "SAM3 Disponible",
+                    "Sí" if sam3_available else "No",
+                    help="SAM3 puede segmentar automáticamente objetos sin máscara"
+                )
+
+            # Recommendation based on analysis
+            recommendation = annotation_analysis.get("recommendation", "")
+
+            if recommendation == "use_masks":
+                alert_box(
+                    "Todas las anotaciones tienen segmentación. Los objetos se extraerán usando las máscaras existentes.",
+                    type="success",
+                    icon="✅"
+                )
+            elif recommendation == "use_sam3":
+                if sam3_available:
+                    alert_box(
+                        "Las anotaciones no tienen máscaras. SAM3 segmentará automáticamente los objetos usando los bounding boxes.",
+                        type="info",
+                        icon="🤖"
+                    )
+                else:
+                    alert_box(
+                        "Las anotaciones no tienen máscaras y SAM3 no está disponible. Solo se podrá recortar por bounding box (sin transparencia).",
+                        type="warning",
+                        icon="⚠️"
+                    )
+            elif recommendation == "mixed":
+                alert_box(
+                    f"Dataset mixto: {annotation_analysis.get('annotations_with_segmentation', 0)} con máscara, "
+                    f"{annotation_analysis.get('annotations_bbox_only', 0)} solo bbox. "
+                    f"{'SAM3 procesará las que no tienen máscara.' if sam3_available else 'Las sin máscara se recortarán por bbox.'}",
+                    type="info",
+                    icon="📊"
+                )
+
+            spacer(12)
+
+            # Button to go to extraction tool
+            if st.button("🎯 Ir a Herramienta de Extracción", type="primary", use_container_width=True):
+                # Store dataset info for extraction tool
+                st.session_state.extract_coco_data = coco_data
+                st.session_state.extract_coco_filename = filename
+                st.session_state.nav_menu = "🎯 Extraer Objetos"
+                st.rerun()
+        else:
+            alert_box(
+                f"Error al analizar anotaciones: {annotation_analysis.get('error', 'Error desconocido')}",
+                type="error"
+            )
+    else:
+        # Using existing objects
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; padding: 1rem; border-radius: 0.5rem;
+                    border-left: 3px solid {c['success']};">
+            <div style="font-size: 0.85rem; color: {c['text_secondary']};">
+                Se usarán los objetos del directorio configurado en el siguiente paso.
+                Asegúrate de tener objetos recortados en formato PNG con transparencia.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     spacer(24)
 
