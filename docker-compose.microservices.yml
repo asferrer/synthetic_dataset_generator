@@ -20,7 +20,7 @@ services:
       - shared_data:/shared
       # Dataset con Backgrounds_filtered/ y Objects/
       # Configura DATASET_PATH en .env.microservices
-      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
     depends_on:
       depth:
         condition: service_healthy
@@ -90,6 +90,10 @@ services:
     volumes:
       - shared_data:/shared
       - checkpoints:/app/checkpoints
+      # Dataset para lectura de imagenes (extraccion de objetos)
+      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+      # Output para objetos extraidos (escritura)
+      - ./output:/app/output
     deploy:
       resources:
         reservations:
@@ -100,8 +104,8 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
       interval: 30s
-      timeout: 10s
-      retries: 3
+      timeout: 15s
+      retries: 5
       start_period: 120s
     networks:
       - synth-network
@@ -149,7 +153,7 @@ services:
       - shared_data:/shared
       - checkpoints:/app/checkpoints
       # Dataset con Backgrounds_filtered/ y Objects/
-      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
       # Output para imágenes generadas
       - ./output:/app/output
     deploy:
@@ -186,6 +190,7 @@ services:
       - "8501:8501"
     environment:
       - GATEWAY_URL=http://gateway:8000
+      - SEGMENTATION_SERVICE_URL=http://segmentation:8002
       - PYTHONUNBUFFERED=1
       # Rutas por defecto para datasets
       - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
@@ -194,11 +199,14 @@ services:
     volumes:
       - shared_data:/shared:ro
       # Dataset con Backgrounds_filtered/ y Objects/
-      - ${DATASET_PATH:-./datasets}:/app/datasets:ro
+      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
       # Output para imágenes generadas (lectura/escritura)
       - ./output:/app/output
     depends_on:
-      - gateway
+      gateway:
+        condition: service_healthy
+      segmentation:
+        condition: service_healthy
     networks:
       - synth-network
     restart: unless-stopped
