@@ -26,11 +26,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy requirements and install dependencies
-COPY requirements.txt .
+COPY effects/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app/ ./app/
+COPY effects/app/ ./app/
 
 # Create directories for shared volumes
 RUN mkdir -p /shared/images /shared/effects /shared/output /app/cache

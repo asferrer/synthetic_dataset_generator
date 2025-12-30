@@ -27,7 +27,7 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 # Install pip packages
-COPY requirements.txt .
+COPY services/augmentor/requirements.txt .
 RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir -r requirements.txt
 
@@ -42,12 +42,18 @@ ENV PYTHONPATH=/app
 FROM base AS test
 
 # Install test dependencies
-COPY requirements-test.txt .
+COPY services/augmentor/requirements-test.txt .
 RUN pip3 install --no-cache-dir -r requirements-test.txt
 
+# Copy shared module first (needed for imports)
+COPY services/shared/ ./shared/
+
+# Copy configuration files
+COPY config/ ./config/
+
 # Copy application and tests
-COPY app/ ./app/
-COPY tests/ ./tests/
+COPY services/augmentor/app/ ./app/
+COPY services/augmentor/tests/ ./tests/
 
 # Run tests - build fails if tests fail
 RUN python -m pytest tests/ -v --tb=short -x
@@ -63,8 +69,12 @@ FROM base AS production
 # Copy marker from test stage - this creates a dependency, ensuring tests run
 COPY --from=test /app/.tests_passed /app/.tests_passed
 
-# Copy application code
-COPY app/ ./app/
+# Copy shared module and application code
+COPY services/shared/ ./shared/
+COPY services/augmentor/app/ ./app/
+
+# Copy configuration files
+COPY config/ ./config/
 
 # Expose port
 EXPOSE 8004
