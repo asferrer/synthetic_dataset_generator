@@ -193,6 +193,24 @@ class ComposeBatchRequest(BaseModel):
         description="Save intermediate pipeline images for first iteration (for documentation/paper)"
     )
 
+    # Parallel Processing
+    parallel: bool = Field(
+        True,
+        description="Enable parallel batch processing (4x faster throughput)"
+    )
+    concurrent_limit: int = Field(
+        4,
+        ge=1,
+        le=8,
+        description="Max images to process concurrently (2-8, recommended: 4)"
+    )
+    vram_threshold: float = Field(
+        0.7,
+        ge=0.5,
+        le=0.9,
+        description="VRAM usage threshold to trigger cleanup (0.5-0.9, recommended: 0.7)"
+    )
+
 
 class ValidateRequest(BaseModel):
     """Request to validate a composed image"""
@@ -261,6 +279,7 @@ class ComposeBatchResponse(BaseModel):
     images_generated: int = 0
     images_rejected: int = 0
     images_pending: int = 0
+    total_items: int = 0  # Total target samples to generate
 
     # Results (if completed)
     synthetic_counts: Dict[str, int] = Field(default_factory=dict)

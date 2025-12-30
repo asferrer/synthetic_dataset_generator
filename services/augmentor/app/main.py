@@ -13,9 +13,12 @@ Endpoints:
 """
 
 import os
+import sys
+import json
 import uuid
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 from contextlib import asynccontextmanager
 
@@ -23,6 +26,11 @@ import torch
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+
+# Add shared module to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from shared.job_database import JobDatabase, get_job_db
+from shared.job_logger import JobLogger
 
 from app.models.schemas import (
     # Requests
@@ -54,7 +62,9 @@ class ServiceState:
         self.physics_validator = None
         self.gpu_available = False
         self.gpu_name = None
-        self.jobs: Dict[str, dict] = {}  # In-memory job queue
+        self.db: Optional[JobDatabase] = None  # Database for job persistence
+        # In-memory cache for active jobs (for quick access during processing)
+        self._active_jobs_cache: Dict[str, dict] = {}
 
     async def initialize(self):
         """Initialize service components"""
@@ -105,6 +115,34 @@ state = ServiceState()
 async def lifespan(app: FastAPI):
     """Initialize and cleanup service resources"""
     logger.info("Starting Augmentor Service...")
+
+    # Initialize database
+    try:
+        state.db = get_job_db()
+        logger.info("Job database initialized")
+
+        # Recover interrupted jobs
+        processing_jobs = state.db.list_jobs(service="augmentor", status="processing")
+        for job in processing_jobs:
+            output_path = job.get("output_path", "")
+            progress_file = Path(output_path) / "progress.json" if output_path else None
+
+            if progress_file and progress_file.exists():
+                # Has checkpoint - mark as resumable
+                state.db.update_job_status(job["id"], "interrupted")
+                logger.info(f"Job {job['id']} marked as interrupted - can be resumed")
+            else:
+                # No checkpoint - mark as failed
+                state.db.complete_job(
+                    job["id"],
+                    "failed",
+                    error_message="Service restarted without checkpoint"
+                )
+                logger.warning(f"Job {job['id']} marked as failed - no checkpoint found")
+
+    except Exception as e:
+        logger.error(f"Failed to initialize job database: {e}")
+
     await state.initialize()
     logger.info("Augmentor Service ready")
     yield
@@ -335,28 +373,39 @@ async def compose_batch(request: ComposeBatchRequest, background_tasks: Backgrou
     if not state.composer:
         raise HTTPException(status_code=503, detail="Composer not initialized")
 
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
     # Create job with unique output directory
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     job_output_dir = os.path.join(request.output_dir, job_id)
-    job = {
-        "id": job_id,
-        "status": "queued",
-        "request": request.model_dump(),
+
+    # Create job in database
+    state.db.create_job(
+        job_id=job_id,
+        job_type="generation",
+        service="augmentor",
+        request_params=request.model_dump(),
+        total_items=request.num_images,
+        output_path=job_output_dir
+    )
+
+    # Cache in memory for quick access during processing
+    state._active_jobs_cache[job_id] = {
+        "cancelled": False,
         "output_dir": job_output_dir,
-        "images_generated": 0,
-        "images_rejected": 0,
-        "images_pending": request.num_images,
-        "synthetic_counts": {},
-        "created_at": datetime.now().isoformat(),
-        "started_at": None,
-        "completed_at": None,
-        "error": None,
-        "cancelled": False,  # Flag for cancellation
     }
-    state.jobs[job_id] = job
+
+    # Log job creation
+    job_logger = JobLogger(job_id, state.db)
+    job_logger.info("Job created", {
+        "num_images": request.num_images,
+        "targets_per_class": request.targets_per_class,
+        "output_dir": job_output_dir
+    })
 
     # Start background task
-    background_tasks.add_task(run_batch_composition, job_id, request)
+    background_tasks.add_task(run_batch_composition, job_id, request, job_output_dir)
 
     return ComposeBatchResponse(
         success=True,
@@ -372,23 +421,33 @@ async def get_job_status(job_id: str):
     """
     Get the status of a batch composition job.
     """
-    if job_id not in state.jobs:
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    job = state.db.get_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    job = state.jobs[job_id]
+    # Extract progress details
+    progress = job.get("progress_details") or {}
+    result = job.get("result_summary") or {}
+
+    total_items = job.get("total_items", 0)
+    processed = job.get("processed_items", 0)
 
     return ComposeBatchResponse(
-        success=job["error"] is None,
+        success=job["error_message"] is None,
         job_id=job_id,
         status=job["status"],
-        images_generated=job["images_generated"],
-        images_rejected=job["images_rejected"],
-        images_pending=job["images_pending"],
-        synthetic_counts=job["synthetic_counts"],
-        output_coco_path=job.get("output_coco_path"),
-        output_dir=job.get("output_dir"),
-        processing_time_ms=0,
-        error=job["error"],
+        images_generated=processed,
+        images_rejected=job.get("failed_items", 0),
+        images_pending=max(0, total_items - processed),
+        total_items=total_items,
+        synthetic_counts=progress.get("synthetic_counts", {}),
+        output_coco_path=result.get("output_coco_path"),
+        output_dir=job.get("output_path"),
+        processing_time_ms=job.get("processing_time_ms", 0),
+        error=job.get("error_message"),
     )
 
 
@@ -400,25 +459,34 @@ async def list_jobs():
     Returns a list of all jobs with their current status, progress, and output location.
     Jobs are sorted by creation time (most recent first).
     """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    jobs = state.db.list_jobs(service="augmentor", job_type="generation")
+
     jobs_list = []
-    for job_id, job in state.jobs.items():
+    for job in jobs:
+        progress = job.get("progress_details") or {}
+        result = job.get("result_summary") or {}
+
+        total_items = job.get("total_items", 0)
+        processed = job.get("processed_items", 0)
+
         jobs_list.append({
-            "job_id": job_id,
+            "job_id": job["id"],
             "status": job["status"],
-            "images_generated": job["images_generated"],
-            "images_rejected": job["images_rejected"],
-            "images_pending": job["images_pending"],
-            "synthetic_counts": job["synthetic_counts"],
-            "created_at": job["created_at"],
+            "images_generated": processed,
+            "images_rejected": job.get("failed_items", 0),
+            "images_pending": max(0, total_items - processed),
+            "total_items": total_items,
+            "synthetic_counts": progress.get("synthetic_counts", {}),
+            "created_at": job.get("created_at"),
             "started_at": job.get("started_at"),
             "completed_at": job.get("completed_at"),
-            "output_dir": job.get("output_dir"),
-            "output_coco_path": job.get("output_coco_path"),
-            "error": job.get("error"),
+            "output_dir": job.get("output_path"),
+            "output_coco_path": result.get("output_coco_path"),
+            "error": job.get("error_message"),
         })
-
-    # Sort by creation time (most recent first)
-    jobs_list.sort(key=lambda x: x["created_at"], reverse=True)
 
     return {"jobs": jobs_list, "total": len(jobs_list)}
 
@@ -431,10 +499,12 @@ async def cancel_job(job_id: str):
     Sets the cancelled flag which stops the job at the next iteration.
     Already generated images are preserved.
     """
-    if job_id not in state.jobs:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
 
-    job = state.jobs[job_id]
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     # Check if job can be cancelled
     if job["status"] in ["completed", "failed", "cancelled"]:
@@ -445,14 +515,18 @@ async def cancel_job(job_id: str):
             "status": job["status"],
         }
 
-    # Set cancellation flag
-    job["cancelled"] = True
+    # Set cancellation flag in cache
+    if job_id in state._active_jobs_cache:
+        state._active_jobs_cache[job_id]["cancelled"] = True
     logger.info(f"Cancellation requested for job {job_id}")
+
+    # Log cancellation request
+    job_logger = JobLogger(job_id, state.db)
+    job_logger.info("Cancellation requested")
 
     # If job is still queued, mark as cancelled immediately
     if job["status"] == "queued":
-        job["status"] = "cancelled"
-        job["completed_at"] = datetime.now().isoformat()
+        state.db.complete_job(job_id, "cancelled")
         return {
             "success": True,
             "job_id": job_id,
@@ -468,34 +542,247 @@ async def cancel_job(job_id: str):
     }
 
 
-async def run_batch_composition(job_id: str, request: ComposeBatchRequest):
-    """Background task for batch composition"""
-    job = state.jobs[job_id]
+@app.post("/jobs/{job_id}/resume", tags=["Composition"])
+async def resume_job(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Resume an interrupted job from its checkpoint.
+
+    Only works for jobs with status 'interrupted' that have a saved checkpoint.
+    The job will continue from where it left off.
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    if not state.composer:
+        raise HTTPException(status_code=503, detail="Composer not initialized")
+
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Check if job can be resumed
+    if job["status"] not in ["interrupted", "failed"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job status is '{job['status']}', only 'interrupted' or 'failed' jobs can be resumed"
+        )
+
+    output_dir = job.get("output_path")
+    if not output_dir:
+        raise HTTPException(status_code=400, detail="Job has no output directory")
+
+    # Load checkpoint
+    checkpoint = load_checkpoint(output_dir)
+    if not checkpoint:
+        raise HTTPException(
+            status_code=400,
+            detail="No checkpoint found. Use /jobs/{job_id}/retry to restart from scratch"
+        )
+
+    # Get original request params
+    request_params = job.get("request_params")
+    if not request_params:
+        raise HTTPException(status_code=400, detail="Original request parameters not found")
+
+    # Create request object from stored params
+    request = ComposeBatchRequest(**request_params)
+
+    # Update job status
+    state.db.update_job_status(job_id, "queued")
+
+    # Cache for cancellation
+    state._active_jobs_cache[job_id] = {
+        "cancelled": False,
+        "output_dir": output_dir,
+    }
+
+    # Log resume
+    job_logger = JobLogger(job_id, state.db)
+    job_logger.info("Job resumed from checkpoint", {
+        "checkpoint_generated": checkpoint.get("generated", 0),
+        "checkpoint_rejected": checkpoint.get("rejected", 0),
+    })
+
+    # Start background task with resume info
+    background_tasks.add_task(
+        run_batch_composition_resume,
+        job_id,
+        request,
+        output_dir,
+        checkpoint
+    )
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": f"Job resumed from checkpoint ({checkpoint.get('generated', 0)} images already generated)",
+        "status": "queued",
+        "checkpoint": checkpoint,
+    }
+
+
+@app.post("/jobs/{job_id}/retry", tags=["Composition"])
+async def retry_job(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Retry a failed job from scratch.
+
+    Creates a new job with the same parameters as the original.
+    The original job is preserved in history.
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    if not state.composer:
+        raise HTTPException(status_code=503, detail="Composer not initialized")
+
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Check if job can be retried
+    if job["status"] not in ["failed", "cancelled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job status is '{job['status']}', only 'failed' or 'cancelled' jobs can be retried"
+        )
+
+    # Get original request params
+    request_params = job.get("request_params")
+    if not request_params:
+        raise HTTPException(status_code=400, detail="Original request parameters not found")
+
+    # Create request object from stored params
+    request = ComposeBatchRequest(**request_params)
+
+    # Create NEW job with new ID
+    new_job_id = f"job_{uuid.uuid4().hex[:12]}"
+    new_output_dir = os.path.join(request.output_dir, new_job_id)
+
+    # Create job in database
+    state.db.create_job(
+        job_id=new_job_id,
+        job_type="generation",
+        service="augmentor",
+        request_params=request_params,
+        total_items=request.num_images,
+        output_path=new_output_dir
+    )
+
+    # Cache for cancellation
+    state._active_jobs_cache[new_job_id] = {
+        "cancelled": False,
+        "output_dir": new_output_dir,
+    }
+
+    # Log retry
+    job_logger = JobLogger(new_job_id, state.db)
+    job_logger.info("Job created as retry", {"original_job_id": job_id})
+
+    # Start background task
+    background_tasks.add_task(run_batch_composition, new_job_id, request, new_output_dir)
+
+    return {
+        "success": True,
+        "job_id": new_job_id,
+        "original_job_id": job_id,
+        "message": "New job created as retry of original",
+        "status": "queued",
+    }
+
+
+@app.get("/jobs/{job_id}/logs", tags=["Composition"])
+async def get_job_logs(job_id: str, level: Optional[str] = None, limit: int = 100):
+    """
+    Get logs for a specific job.
+
+    ## Parameters
+    - **level**: Filter by log level (INFO, WARNING, ERROR)
+    - **limit**: Maximum number of logs to return
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    logs = state.db.get_job_logs(job_id, level=level, limit=limit)
+
+    return {
+        "job_id": job_id,
+        "logs": logs,
+        "total": len(logs),
+    }
+
+
+async def run_batch_composition_resume(
+    job_id: str,
+    request: ComposeBatchRequest,
+    job_output_dir: str,
+    checkpoint: dict
+):
+    """Background task for resuming batch composition from checkpoint"""
+    import time
+    start_time = time.time()
+
+    job_logger = JobLogger(job_id, state.db)
 
     # Check if already cancelled before starting
-    if job.get("cancelled", False):
-        job["status"] = "cancelled"
-        job["completed_at"] = datetime.now().isoformat()
-        logger.info(f"Job {job_id} was cancelled before starting")
+    cache = state._active_jobs_cache.get(job_id, {})
+    if cache.get("cancelled", False):
+        state.db.complete_job(job_id, "cancelled")
+        job_logger.info("Job cancelled before resuming")
         return
 
-    job["status"] = "processing"
-    job["started_at"] = datetime.now().isoformat()
-
-    # Use the job-specific output directory
-    job_output_dir = job["output_dir"]
+    # Update status to processing
+    state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+    job_logger.start("Resuming batch composition from checkpoint")
 
     # Cancellation check callback
     def check_cancelled() -> bool:
-        return job.get("cancelled", False)
+        cache = state._active_jobs_cache.get(job_id, {})
+        return cache.get("cancelled", False)
 
     try:
+        # Calculate remaining work
+        already_generated = checkpoint.get("generated", 0)
+        remaining_images = request.num_images - already_generated
+
+        if remaining_images <= 0:
+            # Job was already complete
+            state.db.complete_job(
+                job_id,
+                "completed",
+                result_summary={
+                    "images_generated": already_generated,
+                    "images_rejected": checkpoint.get("rejected", 0),
+                    "synthetic_counts": checkpoint.get("synthetic_counts", {}),
+                },
+                processing_time_ms=0
+            )
+            job_logger.complete("Job already completed (no remaining images)")
+            return
+
+        # Calculate remaining targets per class
+        existing_counts = checkpoint.get("synthetic_counts", {})
+        original_targets = checkpoint.get("targets_per_class") or request.targets_per_class
+        remaining_targets = None
+
+        if original_targets:
+            remaining_targets = {}
+            for cls, target in original_targets.items():
+                current = existing_counts.get(cls, 0)
+                remaining = max(0, target - current)
+                if remaining > 0:
+                    remaining_targets[cls] = remaining
+
+        # Run composition for remaining images
         result = await state.composer.compose_batch(
             backgrounds_dir=request.backgrounds_dir,
             objects_dir=request.objects_dir,
-            output_dir=job_output_dir,  # Use job-specific output dir
-            num_images=request.num_images,
-            targets_per_class=request.targets_per_class,
+            output_dir=job_output_dir,
+            num_images=remaining_images,
+            targets_per_class=remaining_targets,
             max_objects_per_image=request.max_objects_per_image,
             effects=request.effects,
             effects_config=request.effects_config,
@@ -504,40 +791,272 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest):
             validate_quality=request.validate_quality,
             validate_physics=request.validate_physics,
             reject_invalid=request.reject_invalid,
-            save_pipeline_debug=request.save_pipeline_debug,  # NEW: save pipeline steps
-            progress_callback=lambda p: update_job_progress(job_id, p),
-            cancel_check=check_cancelled,  # NEW: cancellation check
+            save_pipeline_debug=request.save_pipeline_debug,
+            progress_callback=lambda p: update_job_progress(
+                job_id,
+                {
+                    "generated": already_generated + p.get("generated", 0),
+                    "rejected": checkpoint.get("rejected", 0) + p.get("rejected", 0),
+                    "pending": p.get("pending", 0),
+                    "counts": merge_counts(existing_counts, p.get("counts", {})),
+                    "current_class": p.get("current_class", ""),
+                },
+                job_output_dir,
+                request
+            ),
+            cancel_check=check_cancelled,
+            resume_from_index=checkpoint.get("last_image_index", -1) + 1,
         )
 
-        # Check if job was cancelled
-        if job.get("cancelled", False):
-            job["status"] = "cancelled"
-            logger.info(f"Job {job_id} was cancelled after {result.images_generated} images")
-        else:
-            job["status"] = "completed"
+        processing_time = (time.time() - start_time) * 1000
 
-        job["images_generated"] = result.images_generated
-        job["images_rejected"] = result.images_rejected
-        job["images_pending"] = 0
-        job["synthetic_counts"] = result.synthetic_counts
-        job["output_coco_path"] = result.output_coco_path
-        job["completed_at"] = datetime.now().isoformat()
+        # Merge final counts
+        final_counts = merge_counts(existing_counts, result.synthetic_counts)
+        total_generated = already_generated + result.images_generated
+        total_rejected = checkpoint.get("rejected", 0) + result.images_rejected
+
+        # Check if job was cancelled
+        if check_cancelled():
+            state.db.complete_job(
+                job_id,
+                "cancelled",
+                result_summary={
+                    "images_generated": total_generated,
+                    "images_rejected": total_rejected,
+                    "synthetic_counts": final_counts,
+                    "output_coco_path": result.output_coco_path,
+                },
+                processing_time_ms=processing_time
+            )
+            job_logger.info(f"Job cancelled after {total_generated} total images")
+        else:
+            state.db.complete_job(
+                job_id,
+                "completed",
+                result_summary={
+                    "images_generated": total_generated,
+                    "images_rejected": total_rejected,
+                    "synthetic_counts": final_counts,
+                    "output_coco_path": result.output_coco_path,
+                },
+                processing_time_ms=processing_time
+            )
+            job_logger.complete("Batch composition completed (resumed)", {
+                "images_generated": total_generated,
+                "new_images": result.images_generated,
+            })
+
+        # Update final progress in DB
+        state.db.update_job_progress(
+            job_id,
+            processed_items=total_generated,
+            failed_items=total_rejected,
+            progress_details={"synthetic_counts": final_counts}
+        )
 
     except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"Resumed batch job {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id,
+            "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time
+        )
+        job_logger.fail(f"Resumed batch composition failed: {e}", e)
+
+    finally:
+        # Clean up cache
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+
+
+def merge_counts(existing: dict, new: dict) -> dict:
+    """Merge two count dictionaries"""
+    result = existing.copy()
+    for key, value in new.items():
+        result[key] = result.get(key, 0) + value
+    return result
+
+
+async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_output_dir: str):
+    """Background task for batch composition"""
+    import time
+    start_time = time.time()
+
+    job_logger = JobLogger(job_id, state.db)
+
+    # Check if already cancelled before starting
+    cache = state._active_jobs_cache.get(job_id, {})
+    if cache.get("cancelled", False):
+        state.db.complete_job(job_id, "cancelled")
+        job_logger.info("Job cancelled before starting")
+        return
+
+    # Update status to processing
+    state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+    job_logger.start("Starting batch composition")
+
+    # Cancellation check callback
+    def check_cancelled() -> bool:
+        cache = state._active_jobs_cache.get(job_id, {})
+        return cache.get("cancelled", False)
+
+    try:
+        # Choose parallel or sequential processing based on request
+        if request.parallel:
+            job_logger.info(f"Starting PARALLEL batch (concurrent_limit={request.concurrent_limit})")
+            result = await state.composer.compose_batch_parallel(
+                backgrounds_dir=request.backgrounds_dir,
+                objects_dir=request.objects_dir,
+                output_dir=job_output_dir,
+                num_images=request.num_images,
+                targets_per_class=request.targets_per_class,
+                max_objects_per_image=request.max_objects_per_image,
+                concurrent_limit=request.concurrent_limit,
+                vram_threshold=request.vram_threshold,
+                effects_config=request.effects_config,
+                depth_aware=request.depth_aware,
+                validate_quality=request.validate_quality,
+                quality_threshold=0.7,
+                progress_callback=lambda p: update_job_progress(job_id, p, job_output_dir, request),
+                cancel_check=check_cancelled,
+            )
+        else:
+            job_logger.info("Starting SEQUENTIAL batch (legacy mode)")
+            result = await state.composer.compose_batch(
+                backgrounds_dir=request.backgrounds_dir,
+                objects_dir=request.objects_dir,
+                output_dir=job_output_dir,
+                num_images=request.num_images,
+                targets_per_class=request.targets_per_class,
+                max_objects_per_image=request.max_objects_per_image,
+                effects=request.effects,
+                effects_config=request.effects_config,
+                depth_aware=request.depth_aware,
+                depth_service_url=request.depth_service_url,
+                validate_quality=request.validate_quality,
+                validate_physics=request.validate_physics,
+                reject_invalid=request.reject_invalid,
+                save_pipeline_debug=request.save_pipeline_debug,
+                progress_callback=lambda p: update_job_progress(job_id, p, job_output_dir, request),
+                cancel_check=check_cancelled,
+            )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        # Check if job was cancelled
+        if check_cancelled():
+            state.db.complete_job(
+                job_id,
+                "cancelled",
+                result_summary={
+                    "images_generated": result.images_generated,
+                    "images_rejected": result.images_rejected,
+                    "synthetic_counts": result.synthetic_counts,
+                    "output_coco_path": result.output_coco_path,
+                },
+                processing_time_ms=processing_time
+            )
+            job_logger.info(f"Job cancelled after {result.images_generated} images")
+        else:
+            state.db.complete_job(
+                job_id,
+                "completed",
+                result_summary={
+                    "images_generated": result.images_generated,
+                    "images_rejected": result.images_rejected,
+                    "synthetic_counts": result.synthetic_counts,
+                    "output_coco_path": result.output_coco_path,
+                },
+                processing_time_ms=processing_time
+            )
+            job_logger.complete("Batch composition completed", {
+                "images_generated": result.images_generated,
+                "images_rejected": result.images_rejected,
+            })
+
+        # Update final progress in DB
+        state.db.update_job_progress(
+            job_id,
+            processed_items=result.images_generated,
+            failed_items=result.images_rejected,
+            progress_details={"synthetic_counts": result.synthetic_counts}
+        )
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
         logger.exception(f"Batch job {job_id} failed: {e}")
-        job["status"] = "failed"
-        job["error"] = str(e)
-        job["completed_at"] = datetime.now().isoformat()
+        state.db.complete_job(
+            job_id,
+            "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time
+        )
+        job_logger.fail(f"Batch composition failed: {e}", e)
+
+    finally:
+        # Clean up cache
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
 
 
-def update_job_progress(job_id: str, progress: dict):
-    """Update job progress from callback"""
-    if job_id in state.jobs:
-        job = state.jobs[job_id]
-        job["images_generated"] = progress.get("generated", 0)
-        job["images_rejected"] = progress.get("rejected", 0)
-        job["images_pending"] = progress.get("pending", 0)
-        job["synthetic_counts"] = progress.get("counts", {})
+def update_job_progress(job_id: str, progress: dict, output_dir: str = None, request: ComposeBatchRequest = None):
+    """Update job progress from callback and save checkpoint"""
+    generated = progress.get("generated", 0)
+    rejected = progress.get("rejected", 0)
+    pending = progress.get("pending", 0)
+    synthetic_counts = progress.get("counts", {})
+
+    # Update database
+    if state.db:
+        state.db.update_job_progress(
+            job_id,
+            processed_items=generated,
+            failed_items=rejected,
+            current_item=progress.get("current_class", ""),
+            progress_details={"synthetic_counts": synthetic_counts, "pending": pending}
+        )
+
+    # Save checkpoint every 10 images
+    if output_dir and generated > 0 and generated % 10 == 0:
+        save_checkpoint(job_id, output_dir, progress, request)
+
+
+def save_checkpoint(job_id: str, output_dir: str, progress: dict, request: ComposeBatchRequest = None):
+    """Save progress checkpoint to file for resume capability"""
+    try:
+        checkpoint_path = Path(output_dir) / "progress.json"
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        checkpoint = {
+            "job_id": job_id,
+            "generated": progress.get("generated", 0),
+            "rejected": progress.get("rejected", 0),
+            "synthetic_counts": progress.get("counts", {}),
+            "targets_per_class": request.targets_per_class if request else None,
+            "num_images": request.num_images if request else None,
+            "last_image_index": progress.get("generated", 0) - 1,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+
+    except Exception as e:
+        logger.warning(f"Failed to save checkpoint for job {job_id}: {e}")
+
+
+def load_checkpoint(output_dir: str) -> Optional[dict]:
+    """Load progress checkpoint from file"""
+    try:
+        checkpoint_path = Path(output_dir) / "progress.json"
+        if checkpoint_path.exists():
+            with open(checkpoint_path, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load checkpoint from {output_dir}: {e}")
+    return None
 
 
 # =============================================================================
@@ -676,6 +1195,149 @@ async def estimate_lighting(request: LightingRequest):
             processing_time_ms=(time.time() - start_time) * 1000,
             error=str(e),
         )
+
+
+# =============================================================================
+# Object Size Configuration Endpoints
+# =============================================================================
+
+@app.get("/config/object-sizes", tags=["Configuration"])
+async def get_object_sizes():
+    """
+    Get all configured object sizes.
+
+    Returns dictionary of {class_name: size_in_meters}.
+    """
+    try:
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
+        return {
+            "sizes": config.get_all_sizes(),
+            "reference_distance": config.get_reference_distance()
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get object sizes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def get_object_size(class_name: str):
+    """
+    Get the size for a specific object class.
+
+    Args:
+        class_name: Object class name
+
+    Returns:
+        Size in meters
+    """
+    try:
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
+        size = config.get_size(class_name)
+        return {
+            "class_name": class_name,
+            "size": size
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get object size for {class_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def update_object_size(class_name: str, size: float):
+    """
+    Update the size for a specific object class.
+
+    Args:
+        class_name: Object class name
+        size: Size in meters (must be > 0)
+
+    Returns:
+        Success status
+    """
+    try:
+        if size <= 0:
+            raise HTTPException(status_code=400, detail="Size must be positive")
+
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
+        config.set_size(class_name, size)
+
+        logger.info(f"Updated size for {class_name}: {size}m")
+        return {
+            "success": True,
+            "class_name": class_name,
+            "size": size
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to update object size for {class_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/config/object-sizes/batch", tags=["Configuration"])
+async def update_multiple_object_sizes(sizes: Dict[str, float]):
+    """
+    Update multiple object sizes at once.
+
+    Args:
+        sizes: Dictionary of {class_name: size_in_meters}
+
+    Returns:
+        Success status with updated count
+    """
+    try:
+        # Validate all sizes
+        for class_name, size in sizes.items():
+            if size <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Size for {class_name} must be positive"
+                )
+
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
+        config.update_sizes(sizes)
+
+        logger.info(f"Updated {len(sizes)} object sizes")
+        return {
+            "success": True,
+            "updated_count": len(sizes),
+            "classes": list(sizes.keys())
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to update object sizes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def delete_object_size(class_name: str):
+    """
+    Delete the size configuration for an object class.
+
+    Args:
+        class_name: Object class name to remove
+
+    Returns:
+        Success status
+    """
+    try:
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
+        config.delete_size(class_name)
+
+        logger.info(f"Deleted size configuration for {class_name}")
+        return {
+            "success": True,
+            "class_name": class_name
+        }
+    except Exception as e:
+        logger.exception(f"Failed to delete object size for {class_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

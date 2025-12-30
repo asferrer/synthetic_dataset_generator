@@ -10,6 +10,8 @@ Migrated from SyntheticDataAugmentor for microservice architecture.
 import os
 import cv2
 import json
+import gc
+import torch
 import glob
 import random
 import asyncio
@@ -44,6 +46,91 @@ class ComposeResult:
     objects_placed: int = 0
     depth_used: bool = False
     effects_applied: List[str] = field(default_factory=list)
+
+
+# =============================================================================
+# VRAM Monitor for Parallel Processing
+# =============================================================================
+
+class VRAMMonitor:
+    """Monitors VRAM usage and triggers cleanup when needed."""
+
+    def __init__(self, threshold: float = 0.7, device: int = 0):
+        """
+        Initialize VRAM monitor.
+
+        Args:
+            threshold: VRAM usage fraction to trigger cleanup (default 0.7 = 70%)
+            device: CUDA device ID to monitor (default 0)
+        """
+        self.threshold = threshold
+        self.device = device
+        self.last_check = 0
+        self.check_interval = 5  # Check every 5 iterations
+
+    def get_vram_usage(self) -> float:
+        """
+        Returns VRAM usage as fraction (0.0-1.0).
+
+        Returns:
+            VRAM usage fraction, or 0.0 if CUDA not available
+        """
+        if not torch.cuda.is_available():
+            return 0.0
+
+        try:
+            allocated = torch.cuda.memory_allocated(self.device)
+            total = torch.cuda.get_device_properties(self.device).total_memory
+            return allocated / total
+        except Exception as e:
+            logger.warning(f"Failed to get VRAM usage: {e}")
+            return 0.0
+
+    def get_vram_stats(self) -> Dict[str, float]:
+        """
+        Get detailed VRAM statistics.
+
+        Returns:
+            Dict with allocated_gb, reserved_gb, total_gb, usage_fraction
+        """
+        if not torch.cuda.is_available():
+            return {}
+
+        try:
+            allocated = torch.cuda.memory_allocated(self.device) / 1024**3
+            reserved = torch.cuda.memory_reserved(self.device) / 1024**3
+            total = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
+            usage = allocated / (total or 1)
+
+            return {
+                'allocated_gb': allocated,
+                'reserved_gb': reserved,
+                'total_gb': total,
+                'usage_fraction': usage,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get VRAM stats: {e}")
+            return {}
+
+    def should_cleanup(self) -> bool:
+        """
+        Check if cleanup is needed (VRAM > threshold).
+
+        Returns:
+            True if VRAM usage exceeds threshold
+        """
+        self.last_check += 1
+        if self.last_check % self.check_interval == 0:
+            usage = self.get_vram_usage()
+            if usage > self.threshold:
+                stats = self.get_vram_stats()
+                logger.warning(
+                    f"VRAM at {usage*100:.1f}% "
+                    f"({stats.get('allocated_gb', 0):.2f}GB / {stats.get('total_gb', 32):.0f}GB), "
+                    f"triggering cleanup"
+                )
+                return True
+        return False
 
 
 @dataclass
@@ -124,32 +211,22 @@ UNDERWATER_VISIBILITY = {
 }
 
 
-def get_real_world_size(object_class: str) -> float:
-    """Get the real-world size of an object in meters."""
-    class_lower = object_class.lower().strip()
+def get_real_world_size(object_class: str, config=None) -> float:
+    """
+    Get the real-world size of an object in meters.
 
-    # Direct match
-    if class_lower in REAL_WORLD_SIZES:
-        return REAL_WORLD_SIZES[class_lower]
+    Args:
+        object_class: Object class name
+        config: Optional ObjectSizeConfig instance. If None, uses global config.
 
-    # Keyword matching
-    keyword_map = {
-        'fish': ['fish', 'tuna', 'salmon', 'bass', 'trout', 'cod'],
-        'shark': ['shark', 'tiburon'],
-        'plastic_bottle': ['bottle', 'botella'],
-        'can': ['can', 'lata', 'aluminum'],
-        'plastic': ['plastic', 'plastico', 'wrapper', 'bag'],
-        'tire': ['tire', 'tyre', 'llanta', 'neumatico'],
-        'rope': ['rope', 'cuerda', 'line', 'string'],
-        'net': ['net', 'red', 'fishing'],
-        'debris': ['debris', 'trash', 'waste', 'basura', 'residuo'],
-    }
+    Returns:
+        Size in meters
+    """
+    if config is None:
+        from app.config_manager import get_object_size_config
+        config = get_object_size_config()
 
-    for key, keywords in keyword_map.items():
-        if any(kw in class_lower for kw in keywords):
-            return REAL_WORLD_SIZES.get(key, REAL_WORLD_SIZES['default'])
-
-    return REAL_WORLD_SIZES['default']
+    return config.get_size(object_class)
 
 
 # =============================================================================
@@ -650,6 +727,7 @@ class ImageComposer:
         save_pipeline_debug: bool = False,
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        resume_from_index: int = 0,
     ) -> BatchResult:
         """
         Compose multiple synthetic images in batch.
@@ -671,6 +749,7 @@ class ImageComposer:
             save_pipeline_debug: Save intermediate pipeline images for first iteration
             progress_callback: Callback for progress updates
             cancel_check: Callback that returns True if job should be cancelled
+            resume_from_index: Starting image index for resume (0 = start fresh)
 
         Returns:
             BatchResult with generation statistics
@@ -726,12 +805,37 @@ class ImageComposer:
         total_required = sum(required.values())
         all_annotations = []
 
+        # Load existing COCO if resuming
+        existing_coco = None
+        if resume_from_index > 0:
+            coco_path = os.path.join(output_dir, "synthetic_dataset.json")
+            if os.path.exists(coco_path):
+                try:
+                    with open(coco_path, 'r') as f:
+                        existing_coco = json.load(f)
+                    logger.info(f"Loaded existing COCO with {len(existing_coco.get('images', []))} images for resume")
+                except Exception as e:
+                    logger.warning(f"Failed to load existing COCO: {e}")
+
         # Generation loop
         generated = 0
+        image_index = resume_from_index  # Start naming from this index
         rejected = 0
-        max_iterations = num_images * 10  # Safety limit
+        max_iterations = num_images * 5  # Safety limit - optimizado para hardware potente (96GB RAM)
 
         for iteration in range(max_iterations):
+            # Garbage collection y CUDA cache cleanup cada 10 iteraciones
+            if iteration > 0 and iteration % 10 == 0:
+                # Force GPU sync, Python GC, then CUDA cache clear
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    allocated = torch.cuda.memory_allocated(0) / 1024**3
+                    reserved = torch.cuda.memory_reserved(0) / 1024**3
+                    logger.info(f"GPU cleanup at iteration {iteration}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
             # Check for cancellation
             if cancel_check and cancel_check():
                 logger.info(f"Batch composition cancelled after {generated} images")
@@ -775,10 +879,10 @@ class ImageComposer:
                     rotation=None,  # Random
                 ))
 
-            # Compose image
-            output_path = os.path.join(images_dir, f"synthetic_{generated:05d}.jpg")
+            # Compose image - use image_index for naming
+            output_path = os.path.join(images_dir, f"synthetic_{image_index:05d}.jpg")
 
-            # Pass debug_dir only for first iteration
+            # Pass debug_dir only for first iteration of this batch
             current_debug_dir = debug_dir if (save_pipeline_debug and generated == 0) else None
 
             try:
@@ -795,24 +899,32 @@ class ImageComposer:
                 )
 
                 if compose_result.objects_placed > 0:
+                    # Collect annotations for COCO (use current image_index before incrementing)
+                    all_annotations.append({
+                        'image_name': f"synthetic_{image_index:05d}.jpg",
+                        'width': bg_image.shape[1],
+                        'height': bg_image.shape[0],
+                        'annotations': compose_result.annotations,
+                    })
+
                     generated += 1
+                    image_index += 1
 
                     # Update class counts
                     for ann in compose_result.annotations:
                         result.synthetic_counts[ann.class_name] = \
                             result.synthetic_counts.get(ann.class_name, 0) + 1
 
-                    # Collect annotations for COCO
-                    all_annotations.append({
-                        'image_name': f"synthetic_{generated-1:05d}.jpg",
-                        'width': bg_image.shape[1],
-                        'height': bg_image.shape[0],
-                        'annotations': compose_result.annotations,
-                    })
-
             except Exception as e:
                 logger.warning(f"Failed to compose image: {e}")
                 rejected += 1
+                # Limpieza de memoria antes de continue
+                if 'bg_image' in locals():
+                    del bg_image
+                if 'depth_map' in locals() and depth_map is not None:
+                    del depth_map
+                if 'objects' in locals():
+                    del objects
                 continue
 
             # Progress callback
@@ -824,15 +936,347 @@ class ImageComposer:
                     'counts': result.synthetic_counts,
                 })
 
-        # Generate COCO JSON
+            # Limpieza de memoria al final de cada iteración exitosa
+            if 'compose_result' in locals():
+                del compose_result
+            if 'objects' in locals():
+                del objects
+            # Clear CUDA cache after each image to prevent fragmentation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Note: bg_image and depth_map are deleted in next iteration when reloaded
+
+        # Generate COCO JSON (merge with existing if resuming)
         coco_path = os.path.join(output_dir, "synthetic_dataset.json")
-        self._generate_coco_json(all_annotations, available_classes, coco_path)
+        self._generate_coco_json(
+            all_annotations,
+            available_classes,
+            coco_path,
+            existing_coco=existing_coco
+        )
 
         result.images_generated = generated
         result.images_rejected = rejected
         result.output_coco_path = coco_path
 
-        logger.info(f"Batch complete: {generated} generated, {rejected} rejected")
+        logger.info(f"Batch complete: {generated} generated, {rejected} rejected (resume_from_index={resume_from_index})")
+        return result
+
+    async def _cleanup_vram(self):
+        """Aggressive VRAM cleanup for parallel processing."""
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            stats = VRAMMonitor().get_vram_stats()
+            logger.info(
+                f"VRAM cleanup executed: "
+                f"{stats.get('allocated_gb', 0):.2f}GB / {stats.get('total_gb', 32):.0f}GB"
+            )
+
+    async def _compose_single_with_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        counters: Dict[str, int],
+        counters_lock: asyncio.Lock,
+        vram_monitor: VRAMMonitor,
+        bg_files: List[str],
+        objects_by_class: Dict[str, List[Dict]],
+        available_classes: List[str],
+        required: Dict[str, int],
+        max_objects_per_image: int,
+        output_dir: str,
+        images_dir: str,
+        depth_aware: bool,
+        validate_quality: bool,
+        quality_threshold: float,
+        effects_config: Optional[EffectsConfig],
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Composes a single image with semaphore control for parallel processing.
+
+        This worker method handles resource locking, error recovery, and VRAM management.
+
+        Returns:
+            Dict with compose_result and image_index, or None if failed
+        """
+        async with semaphore:  # Max N concurrent (configurable)
+            try:
+                # Get unique image index atomically
+                async with counters_lock:
+                    if counters['generated'] >= counters['target']:
+                        return None  # Already reached target
+                    image_index = counters['image_index']
+                    counters['image_index'] += 1
+
+                # Check for cancellation
+                if cancel_check and cancel_check():
+                    return None
+
+                # Select background
+                bg_file = random.choice(bg_files)
+                bg_image = cv2.imread(bg_file)
+                if bg_image is None:
+                    async with counters_lock:
+                        counters['rejected'] += 1
+                    return None
+
+                # Get depth map if needed
+                depth_map = None
+                if depth_aware:
+                    depth_map = await self._get_depth_map(bg_image)
+
+                # Determine which classes still need instances
+                async with counters_lock:
+                    still_needed = [
+                        cls for cls in available_classes
+                        if counters['counts'][cls] < required[cls]
+                    ]
+
+                if not still_needed:
+                    return None  # All classes satisfied
+
+                # Select objects to place
+                num_objects = random.randint(1, min(max_objects_per_image, len(still_needed)))
+                selected_classes = random.sample(still_needed, k=num_objects)
+
+                # Create object placements
+                objects = []
+                for cls in selected_classes:
+                    obj_data = random.choice(objects_by_class[cls])
+                    objects.append(ObjectPlacement(
+                        image_path=obj_data['path'],
+                        class_name=cls,
+                        position=None,  # Auto-place
+                        scale=None,     # Depth-aware
+                        rotation=None,  # Random
+                    ))
+
+                # Compose image
+                output_path = os.path.join(images_dir, f"synthetic_{image_index:05d}.jpg")
+
+                compose_result = await self.compose(
+                    background_path=bg_file,
+                    objects=objects,
+                    output_path=output_path,
+                    depth_map=depth_map,
+                    validate_quality=validate_quality,
+                    quality_threshold=quality_threshold,
+                    effects_config=effects_config,
+                )
+
+                if compose_result.objects_placed == 0:
+                    async with counters_lock:
+                        counters['rejected'] += 1
+                    return None
+
+                # Update counters atomically
+                async with counters_lock:
+                    counters['generated'] += 1
+                    for ann in compose_result.annotations:
+                        counters['counts'][ann.class_name] += 1
+
+                # Check VRAM after each image
+                if vram_monitor.should_cleanup():
+                    await self._cleanup_vram()
+
+                return {
+                    'compose_result': compose_result,
+                    'image_index': image_index,
+                }
+
+            except Exception as e:
+                logger.warning(f"Failed to compose image in parallel worker: {e}")
+                async with counters_lock:
+                    counters['rejected'] += 1
+                return None
+
+            finally:
+                # Per-task cleanup
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+    async def compose_batch_parallel(
+        self,
+        num_images: int,
+        backgrounds_dir: str,
+        objects_dir: str,
+        output_dir: str,
+        concurrent_limit: int = 4,
+        vram_threshold: float = 0.7,
+        depth_aware: bool = True,
+        max_objects_per_image: int = 10,
+        targets_per_class: Optional[Dict[str, int]] = None,
+        resume_from_index: int = 0,
+        validate_quality: bool = False,
+        quality_threshold: float = 0.7,
+        effects_config: Optional[EffectsConfig] = None,
+        progress_callback: Optional[Callable] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> BatchResult:
+        """
+        Composes a batch of synthetic images with PARALLEL processing.
+
+        This method processes multiple images concurrently to maximize CPU/GPU utilization.
+
+        Args:
+            concurrent_limit: Max images to process simultaneously (default 4)
+            vram_threshold: VRAM usage % to trigger cleanup (default 0.7 = 70%)
+            ... (other args same as compose_batch)
+
+        Returns:
+            BatchResult with generation statistics
+        """
+        logger.info(
+            f"Starting PARALLEL batch composition: {num_images} images, "
+            f"{concurrent_limit} concurrent, {vram_threshold*100:.0f}% VRAM threshold"
+        )
+
+        # Setup
+        result = BatchResult()
+        images_dir = os.path.join(output_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
+
+        # Load backgrounds and objects
+        bg_files = glob.glob(os.path.join(backgrounds_dir, "**/*.jpg"), recursive=True) + \
+                   glob.glob(os.path.join(backgrounds_dir, "**/*.png"), recursive=True)
+
+        if not bg_files:
+            raise ValueError(f"No background images found in {backgrounds_dir}")
+
+        # Group objects by class
+        objects_by_class = defaultdict(list)
+        for obj_file in glob.glob(os.path.join(objects_dir, "**/*.png"), recursive=True):
+            class_name = os.path.basename(os.path.dirname(obj_file))
+            objects_by_class[class_name].append({'path': obj_file})
+
+        available_classes = list(objects_by_class.keys())
+        if not available_classes:
+            raise ValueError(f"No object classes found in {objects_dir}")
+
+        # Determine required counts per class
+        if targets_per_class:
+            required = targets_per_class
+        else:
+            count_per_class = max(1, num_images // len(available_classes))
+            required = {cls: count_per_class for cls in available_classes}
+
+        # Resume support - load existing COCO if resuming
+        existing_coco = None
+        if resume_from_index > 0:
+            coco_path = os.path.join(output_dir, "synthetic_dataset.json")
+            if os.path.exists(coco_path):
+                with open(coco_path, 'r') as f:
+                    existing_coco = json.load(f)
+                logger.info(f"Resuming from image {resume_from_index}, loaded existing COCO")
+
+        # Shared state with locks
+        counters = {
+            'generated': 0,
+            'rejected': 0,
+            'image_index': resume_from_index,
+            'target': num_images,
+            'counts': defaultdict(int),
+        }
+        counters_lock = asyncio.Lock()
+
+        # Semaphore for concurrency control
+        semaphore = asyncio.Semaphore(concurrent_limit)
+
+        # VRAM monitor
+        vram_monitor = VRAMMonitor(threshold=vram_threshold)
+
+        # Task tracking
+        tasks = []
+        all_results = []
+
+        max_iterations = num_images * 5  # Safety limit
+
+        for iteration in range(max_iterations):
+            # Check if target reached
+            async with counters_lock:
+                if counters['generated'] >= num_images:
+                    break
+
+            # Create worker task
+            task = asyncio.create_task(
+                self._compose_single_with_semaphore(
+                    semaphore=semaphore,
+                    counters=counters,
+                    counters_lock=counters_lock,
+                    vram_monitor=vram_monitor,
+                    bg_files=bg_files,
+                    objects_by_class=objects_by_class,
+                    available_classes=available_classes,
+                    required=required,
+                    max_objects_per_image=max_objects_per_image,
+                    output_dir=output_dir,
+                    images_dir=images_dir,
+                    depth_aware=depth_aware,
+                    validate_quality=validate_quality,
+                    quality_threshold=quality_threshold,
+                    effects_config=effects_config,
+                    cancel_check=cancel_check,
+                )
+            )
+            tasks.append(task)
+
+            # Wait for some tasks to complete if queue is full
+            if len(tasks) >= concurrent_limit * 2:
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    result_data = await task
+                    if result_data:
+                        all_results.append(result_data)
+                tasks = list(pending)
+
+                # Progress callback
+                if progress_callback:
+                    async with counters_lock:
+                        progress_callback({
+                            'generated': counters['generated'],
+                            'rejected': counters['rejected'],
+                            'pending': num_images - counters['generated'],
+                            'counts': dict(counters['counts']),
+                        })
+
+        # Wait for remaining tasks
+        if tasks:
+            done, _ = await asyncio.wait(tasks)
+            for task in done:
+                result_data = await task
+                if result_data:
+                    all_results.append(result_data)
+
+        # Collect all annotations
+        all_annotations = []
+        for result_data in all_results:
+            compose_result = result_data['compose_result']
+            image_index = result_data['image_index']
+            for ann in compose_result.annotations:
+                all_annotations.append(ann)
+
+        # Generate COCO JSON
+        coco_path = os.path.join(output_dir, "synthetic_dataset.json")
+        self._generate_coco_json(
+            all_annotations,
+            available_classes,
+            coco_path,
+            existing_coco=existing_coco
+        )
+
+        async with counters_lock:
+            result.images_generated = counters['generated']
+            result.images_rejected = counters['rejected']
+            result.synthetic_counts = dict(counters['counts'])
+        result.output_coco_path = coco_path
+
+        logger.info(
+            f"PARALLEL batch complete: {result.images_generated} generated, "
+            f"{result.images_rejected} rejected in {concurrent_limit}x parallel mode"
+        )
         return result
 
     async def estimate_lighting(
@@ -1061,6 +1505,66 @@ class ImageComposer:
             # Create object mask in full image coordinates
             obj_mask_full = np.zeros((bg_h, bg_w), dtype=np.uint8)
             obj_mask_full[y_start_bg:y_end_bg, x_start_bg:x_end_bg] = mask_bin_eff
+
+            # Recalculate bounding box to include shadows and all visual effects
+            # This ensures annotations cover the entire visible region (object + shadows + blur)
+            if EffectType.SHADOWS in effects or EffectType.MOTION_BLUR in effects:
+                try:
+                    # Define search region (expand bbox by shadow blur size)
+                    x1_old, y1_old, x2_old, y2_old = bbox
+                    max_shadow_extent = 80  # Max shadow blur + offset
+
+                    # Expand search region
+                    search_x1 = max(0, x1_old - max_shadow_extent)
+                    search_y1 = max(0, y1_old - max_shadow_extent)
+                    search_x2 = min(bg_w, x2_old + max_shadow_extent)
+                    search_y2 = min(bg_h, y2_old + max_shadow_extent)
+
+                    # Extract search regions from both images
+                    roi_result = result[search_y1:search_y2, search_x1:search_x2]
+                    roi_composite = composite[search_y1:search_y2, search_x1:search_x2]
+
+                    # Detect changes in the search region
+                    diff = cv2.absdiff(roi_result, roi_composite)
+                    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+
+                    # Use adaptive threshold to handle varying shadow intensities
+                    # Threshold at 5 (shadows are subtle, typically 3-15 intensity change)
+                    _, visible_mask = cv2.threshold(diff_gray, 5, 255, cv2.THRESH_BINARY)
+
+                    # Apply morphological operations to clean up noise and connect shadow regions
+                    kernel_small = np.ones((3, 3), np.uint8)
+                    visible_mask = cv2.morphologyEx(visible_mask, cv2.MORPH_OPEN, kernel_small)  # Remove noise
+                    kernel_large = np.ones((7, 7), np.uint8)
+                    visible_mask = cv2.morphologyEx(visible_mask, cv2.MORPH_CLOSE, kernel_large)  # Connect regions
+
+                    # Find contours in the search region
+                    contours, _ = cv2.findContours(visible_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        # Get bounding box of the largest contour
+                        largest_contour = max(contours, key=cv2.contourArea)
+                        x_rel, y_rel, w_rel, h_rel = cv2.boundingRect(largest_contour)
+
+                        # Convert back to full image coordinates
+                        x_new = search_x1 + x_rel
+                        y_new = search_y1 + y_rel
+
+                        # Expand bbox to include detected region (union)
+                        x1_new = min(x1_old, x_new)
+                        y1_new = min(y1_old, y_new)
+                        x2_new = max(x2_old, x_new + w_rel)
+                        y2_new = max(y2_old, y_new + h_rel)
+
+                        # Sanity check: new bbox shouldn't be more than 2x larger
+                        old_area = (x2_old - x1_old) * (y2_old - y1_old)
+                        new_area = (x2_new - x1_new) * (y2_new - y1_new)
+                        if new_area < old_area * 2.5:  # Reasonable expansion
+                            bbox = (x1_new, y1_new, x2_new, y2_new)
+                        else:
+                            logger.debug(f"Bbox expansion too large ({new_area/old_area:.1f}x), keeping original")
+
+                except Exception as e:
+                    logger.debug(f"Bbox recalculation failed: {e}, using original bbox")
 
             return result, bbox, obj_mask_full
 
@@ -1401,12 +1905,31 @@ class ImageComposer:
                 light_sources = []
                 for ls in result.light_sources[:max_light_sources]:
                     if ls.intensity >= intensity_threshold:
+                        # Calcular shadow_softness basado en tipo de luz
+                        # LightSource no tiene shadow_softness, lo calculamos
+                        if ls.light_type == 'directional':
+                            shadow_softness = 0.3  # Sombras duras (sol)
+                        elif ls.light_type == 'point':
+                            shadow_softness = 0.5  # Sombras medias
+                        elif ls.light_type == 'area':
+                            # Sombras más suaves para luces grandes
+                            shadow_softness = min(0.8, 0.5 + ls.angular_size * 0.3)
+                        else:
+                            shadow_softness = 0.5  # Default
+
+                        # Convertir de LightSource (2D position, float colors) a LightSourceInfo (3D position, int colors)
+                        # LightSource.position es (azimuth, elevation), LightSourceInfo espera (azimuth, elevation, distance)
+                        position_3d = (ls.position[0], ls.position[1], 2.0)  # Asumimos distancia de 2 metros
+
+                        # LightSource.color es List[float], LightSourceInfo espera Tuple[int, int, int]
+                        color_int = (int(ls.color[0]), int(ls.color[1]), int(ls.color[2]))
+
                         light_sources.append(LightSourceInfo(
                             light_type=LightType(ls.light_type),
-                            position=ls.position,
+                            position=position_3d,
                             intensity=ls.intensity,
-                            color=ls.color,
-                            shadow_softness=ls.shadow_softness,
+                            color=color_int,
+                            shadow_softness=shadow_softness,
                         ))
                 return LightingInfo(
                     light_sources=light_sources,
@@ -1799,15 +2322,36 @@ class ImageComposer:
         annotations_data: List[dict],
         classes: List[str],
         output_path: str,
+        existing_coco: Optional[dict] = None,
     ):
-        """Generate COCO format JSON from annotations."""
+        """
+        Generate COCO format JSON from annotations.
+
+        Args:
+            annotations_data: New annotations to add
+            classes: List of class names
+            output_path: Path to save COCO JSON
+            existing_coco: Existing COCO data to merge with (for resume)
+        """
         category_map = {cls: idx for idx, cls in enumerate(sorted(classes))}
 
-        images = []
-        annotations = []
-        ann_id = 1
+        # Start with existing data if provided
+        if existing_coco:
+            images = existing_coco.get("images", [])
+            annotations = existing_coco.get("annotations", [])
+            # Get next IDs
+            img_id_start = max((img["id"] for img in images), default=-1) + 1
+            ann_id = max((ann["id"] for ann in annotations), default=0) + 1
+            logger.info(f"Merging with existing COCO: {len(images)} images, {len(annotations)} annotations")
+        else:
+            images = []
+            annotations = []
+            img_id_start = 0
+            ann_id = 1
 
-        for img_id, img_data in enumerate(annotations_data):
+        # Add new annotations
+        for idx, img_data in enumerate(annotations_data):
+            img_id = img_id_start + idx
             images.append({
                 "id": img_id,
                 "file_name": img_data['image_name'],
@@ -1843,7 +2387,7 @@ class ImageComposer:
         with open(output_path, 'w') as f:
             json.dump(coco_data, f, indent=2)
 
-        logger.info(f"COCO JSON saved to {output_path}")
+        logger.info(f"COCO JSON saved to {output_path} ({len(images)} total images)")
 
     # =========================================================================
     # Effect Methods
