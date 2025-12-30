@@ -183,6 +183,10 @@ class DepthEstimator:
             depth_max = depth_map.max()
             depth_map = (depth_map - depth_min) / (depth_max - depth_min)
 
+        # Clean up CUDA cache after inference to prevent fragmentation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return depth_map.astype(np.float32)
 
     def estimate_from_path(
