@@ -485,6 +485,136 @@ def render_configure_page():
 
     spacer(16)
 
+    # Object sizes configuration
+    section_header("Tamaños de Objetos", icon="📏")
+
+    st.markdown(f"""
+    <div style="font-size: 0.85rem; color: {c['text_secondary']}; margin-bottom: 1rem;">
+        Configura los tamaños reales (en metros) de los objetos para un escalado depth-aware más realista.
+    </div>
+    """, unsafe_allow_html=True)
+
+    from app.components.api_client import get_api_client
+
+    try:
+        client = get_api_client()
+        config_data = client.get_object_sizes()
+        sizes = config_data.get("sizes", {})
+        reference_distance = config_data.get("reference_capture_distance", 2.0)
+
+        # Get object classes from targets
+        object_classes = [cls for cls, count in targets.items() if count > 0]
+
+        if object_classes:
+            # Show sizes for classes in this generation
+            size_col1, size_col2, size_col3 = st.columns([2, 1, 1])
+
+            with size_col1:
+                st.markdown("**Clase de Objeto**")
+            with size_col2:
+                st.markdown("**Tamaño Actual (m)**")
+            with size_col3:
+                st.markdown("**Editar**")
+
+            st.markdown(f"<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid {c['border']};'>", unsafe_allow_html=True)
+
+            # Track if any sizes were modified
+            sizes_modified = False
+
+            # Show up to 5 most common classes, rest in expander
+            display_classes = object_classes[:5]
+
+            for obj_class in display_classes:
+                col1, col2, col3 = st.columns([2, 1, 1])
+
+                # Get current size for this class
+                current_size = sizes.get(obj_class.lower(), sizes.get("default", 0.25))
+
+                with col1:
+                    st.markdown(f"**{obj_class}**")
+
+                with col2:
+                    st.markdown(f"<div style='padding-top: 0.3rem;'>{current_size:.2f} m</div>", unsafe_allow_html=True)
+
+                with col3:
+                    new_size = st.number_input(
+                        f"size_{obj_class}",
+                        min_value=0.01,
+                        max_value=100.0,
+                        value=float(current_size),
+                        step=0.01,
+                        key=f"obj_size_{obj_class}",
+                        label_visibility="collapsed"
+                    )
+
+                    # Check if modified
+                    if abs(new_size - current_size) > 0.001:
+                        sizes_modified = True
+
+            # Show remaining classes in expander if there are more
+            if len(object_classes) > 5:
+                with st.expander(f"Ver {len(object_classes) - 5} clases adicionales"):
+                    for obj_class in object_classes[5:]:
+                        col1, col2, col3 = st.columns([2, 1, 1])
+
+                        current_size = sizes.get(obj_class.lower(), sizes.get("default", 0.25))
+
+                        with col1:
+                            st.markdown(f"**{obj_class}**")
+
+                        with col2:
+                            st.markdown(f"{current_size:.2f} m")
+
+                        with col3:
+                            new_size = st.number_input(
+                                f"size_{obj_class}",
+                                min_value=0.01,
+                                max_value=100.0,
+                                value=float(current_size),
+                                step=0.01,
+                                key=f"obj_size_{obj_class}",
+                                label_visibility="collapsed"
+                            )
+
+                            if abs(new_size - current_size) > 0.001:
+                                sizes_modified = True
+
+            # Save button if sizes were modified
+            if sizes_modified:
+                if st.button("💾 Guardar Cambios en Tamaños", type="primary", use_container_width=True):
+                    try:
+                        # Collect all modified sizes
+                        updated_sizes = {}
+                        for obj_class in object_classes:
+                            new_size = st.session_state.get(f"obj_size_{obj_class}")
+                            if new_size is not None:
+                                updated_sizes[obj_class] = new_size
+
+                        # Update via API
+                        client.update_multiple_object_sizes(updated_sizes)
+                        st.success(f"✅ Se actualizaron {len(updated_sizes)} tamaños correctamente")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar: {str(e)}")
+
+            # Link to full configuration page
+            st.markdown(f"""
+            <div style="margin-top: 1rem; padding: 0.75rem; background: {c['bg_secondary']};
+                        border-radius: 0.5rem; font-size: 0.85rem;">
+                <span style="color: {c['text_muted']};">
+                    💡 Para configuración avanzada de todos los objetos, visita
+                    <strong>Herramientas → 📏 Tamaños</strong>
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("No hay clases de objetos seleccionadas para esta generación")
+
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo cargar la configuración de tamaños: {str(e)}")
+
+    spacer(16)
+
     # Intensity sliders (collapsed by default)
     with st.expander("🎚️ Ajustar Intensidades de Efectos"):
         int_col1, int_col2 = st.columns(2)

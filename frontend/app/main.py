@@ -52,6 +52,7 @@ TOOLS_NAV = {
     "🔗 Combinar": "combine_tool",
     "✂️ Splits": "splits_tool",
     "📊 Monitor": "monitor_tool",
+    "📏 Tamaños": "object_sizes",
     "🔧 Servicios": "services",
     "📚 Docs": "docs",
 }
@@ -271,6 +272,8 @@ def main():
         render_splits_tool_page()
     elif current_page == "📊 Monitor":
         render_monitor_tool_page()
+    elif current_page == "📏 Tamaños":
+        render_object_sizes_page()
     elif current_page == "🔧 Servicios":
         render_services_page()
     elif current_page == "📚 Docs":
@@ -622,6 +625,7 @@ def render_monitor_tool_page():
     # Categorize jobs by status
     active_jobs = [j for j in jobs if j.get("status") in ["processing", "queued", "pending"]]
     completed_jobs = [j for j in jobs if j.get("status") == "completed"]
+    interrupted_jobs = [j for j in jobs if j.get("status") == "interrupted"]
     failed_jobs = [j for j in jobs if j.get("status") in ["failed", "cancelled", "error"]]
 
     # Count by type
@@ -678,14 +682,25 @@ def render_monitor_tool_page():
         """, unsafe_allow_html=True)
 
     with col4:
-        st.markdown(f"""
-        <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
-                    border-radius: 0.5rem; padding: 1rem; text-align: center;
-                    border-top: 3px solid {c['error']};">
-            <div style="font-size: 2rem; font-weight: 700; color: {c['error']};">{len(failed_jobs)}</div>
-            <div style="font-size: 0.8rem; color: {c['text_muted']};">Fallidos</div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Show interrupted count if any, otherwise failed
+        if interrupted_jobs:
+            st.markdown(f"""
+            <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
+                        border-radius: 0.5rem; padding: 1rem; text-align: center;
+                        border-top: 3px solid {c['info']};">
+                <div style="font-size: 2rem; font-weight: 700; color: {c['info']};">{len(interrupted_jobs)}</div>
+                <div style="font-size: 0.8rem; color: {c['text_muted']};">Interrumpidos</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
+                        border-radius: 0.5rem; padding: 1rem; text-align: center;
+                        border-top: 3px solid {c['error']};">
+                <div style="font-size: 2rem; font-weight: 700; color: {c['error']};">{len(failed_jobs)}</div>
+                <div style="font-size: 0.8rem; color: {c['text_muted']};">Fallidos</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     # Summary cards - row 2: by type
     spacer(8)
@@ -741,11 +756,21 @@ def render_monitor_tool_page():
 
         spacer(16)
 
+    # Interrupted jobs section (can be resumed)
+    if interrupted_jobs:
+        section_header("Jobs Interrumpidos (Reanudables)", icon="⏸️")
+        st.info("Estos jobs fueron interrumpidos y pueden reanudarse desde donde se quedaron.")
+
+        for job in interrupted_jobs:
+            _render_job_card_with_actions(job, c, client)
+
+        spacer(16)
+
     # Failed jobs section
     if failed_jobs:
         with st.expander(f"❌ Jobs Fallidos ({len(failed_jobs)})", expanded=False):
             for job in failed_jobs[:5]:
-                _render_job_card(job, c, client, is_active=False)
+                _render_job_card_with_actions(job, c, client)
 
     # Auto-refresh for active jobs (at the end to avoid blocking UI)
     if active_jobs and not st.session_state.get("monitor_paused"):
@@ -769,7 +794,7 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
         done = job.get("images_generated", 0)
         failed = job.get("images_rejected", 0)
         pending = job.get("images_pending", 0)
-        total = done + failed + pending if pending > 0 else done + failed
+        total = job.get("total_items", 0)  # Use total_items from backend
         current_info = job.get("current_category", "")
     elif job_type == "extraction":
         type_icon, type_label = "🎯", "Extraccion de Objetos"
@@ -890,7 +915,7 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         done = job.get("images_generated", 0)
         failed = job.get("images_rejected", 0)
         pending = job.get("images_pending", 0)
-        total = done + failed + pending if pending > 0 else done + failed
+        total = job.get("total_items", 0)  # Use total_items from backend
         label1, val1 = "Generadas", done
         label2, val2 = "Rechazadas", failed
         label3, val3 = "Pendientes", pending
@@ -933,6 +958,8 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         status_color, status_icon = c['error'], "❌"
     elif status == "cancelled":
         status_color, status_icon = c['text_muted'], "⏹️"
+    elif status == "interrupted":
+        status_color, status_icon = c['info'], "⏸️"
     else:
         status_color, status_icon = c['text_muted'], "❔"
 
@@ -998,6 +1025,305 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
+
+
+def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
+    """Render a job card with resume/retry actions for interrupted/failed jobs"""
+    from app.config.theme import get_colors_dict
+
+    job_id = job.get("job_id", "unknown")
+    status = job.get("status", "unknown")
+    job_type = job.get("job_type", "generation")
+
+    # First render the base card
+    _render_job_card(job, c, client, is_active=False)
+
+    # Only show actions for generation jobs (others don't support resume yet)
+    if job_type != "generation":
+        return
+
+    # Action buttons based on status
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+
+    with col1:
+        # Resume button - only for interrupted jobs or failed jobs with checkpoint
+        if status == "interrupted":
+            if st.button("▶️ Reanudar", key=f"resume_{job_id}", use_container_width=True):
+                result = client.resume_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... reanudado desde checkpoint")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error', 'No se pudo reanudar')}")
+
+    with col2:
+        # Retry button - for failed/cancelled jobs
+        if status in ["failed", "cancelled"]:
+            if st.button("🔄 Reintentar", key=f"retry_{job_id}", use_container_width=True):
+                result = client.retry_job(job_id)
+                if result.get("success"):
+                    new_job_id = result.get("job_id", "")
+                    st.toast(f"Nuevo job creado: {new_job_id[:8]}...")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error', 'No se pudo reintentar')}")
+        elif status == "interrupted":
+            # For interrupted, also offer retry (start fresh)
+            if st.button("🔄 Reiniciar", key=f"retry_{job_id}", use_container_width=True,
+                        help="Iniciar desde cero (ignora progreso)"):
+                result = client.retry_job(job_id)
+                if result.get("success"):
+                    new_job_id = result.get("job_id", "")
+                    st.toast(f"Nuevo job creado: {new_job_id[:8]}...")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+
+    with col3:
+        # View logs button
+        if st.button("📋 Ver Logs", key=f"logs_{job_id}", use_container_width=True):
+            st.session_state[f"show_logs_{job_id}"] = True
+            st.rerun()
+
+    # Show logs if requested
+    if st.session_state.get(f"show_logs_{job_id}"):
+        with st.expander(f"📋 Logs del Job {job_id[:12]}...", expanded=True):
+            logs_response = client.get_job_logs(job_id, limit=50)
+            logs = logs_response.get("logs", [])
+
+            if logs:
+                for log in logs:
+                    level = log.get("level", "INFO")
+                    timestamp = log.get("timestamp", "")[:19]  # Trim to seconds
+                    message = log.get("message", "")
+
+                    if level == "ERROR":
+                        st.error(f"`{timestamp}` {message}")
+                    elif level == "WARNING":
+                        st.warning(f"`{timestamp}` {message}")
+                    else:
+                        st.info(f"`{timestamp}` {message}")
+            else:
+                st.caption("No hay logs disponibles")
+
+            if st.button("Cerrar", key=f"close_logs_{job_id}"):
+                st.session_state.pop(f"show_logs_{job_id}", None)
+                st.rerun()
+
+    # Add visual separator
+    st.markdown("<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid #333;'>", unsafe_allow_html=True)
+
+
+# =============================================================================
+# PAGE: Object Sizes Configuration
+# =============================================================================
+
+def render_object_sizes_page():
+    """Render object sizes configuration page"""
+    from app.config.theme import get_colors_dict
+    from app.components.api_client import get_api_client
+    import json
+    c = get_colors_dict()
+
+    page_header(
+        title="Configuración de Tamaños de Objetos",
+        subtitle="Configura los tamaños reales de los objetos para mejorar el realismo del escalado",
+        icon="📏"
+    )
+
+    client = get_api_client()
+
+    # Fetch current configuration
+    try:
+        config_data = client.get_object_sizes()
+        sizes = config_data.get("sizes", {})
+        reference_distance = config_data.get("reference_capture_distance", 2.0)
+        keyword_mappings = config_data.get("keyword_mappings", {})
+    except Exception as e:
+        alert_box(
+            f"Error al cargar la configuración: {str(e)}",
+            type="error",
+            icon="❌"
+        )
+        return
+
+    # Layout with two columns
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        section_header("Tamaños Configurados", icon="📊")
+
+        st.markdown(f"""
+        <div style='background: {c['bg_secondary']}; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
+            <div style='font-size: 0.9rem; color: {c['text_muted']}; margin-bottom: 0.5rem;'>
+                Los tamaños están en <strong>metros</strong> y representan el tamaño real aproximado de los objetos.
+                Estos valores se utilizan para escalar correctamente los objetos según la profundidad estimada del fondo.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Filter and search
+        search_term = st.text_input("🔍 Buscar clase de objeto", placeholder="Ej: fish, bottle, tire...")
+
+        # Filter sizes based on search
+        filtered_sizes = {k: v for k, v in sizes.items() if search_term.lower() in k.lower()} if search_term else sizes
+
+        # Display sizes in a table-like format
+        if filtered_sizes:
+            st.markdown(f"""
+            <div style='background: {c['bg_secondary']}; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem;'>
+                <div style='display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; font-weight: 600; padding: 0.5rem;'>
+                    <div>Clase de Objeto</div>
+                    <div style='text-align: center;'>Tamaño (m)</div>
+                    <div style='text-align: center;'>Acciones</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Show sorted sizes
+            for class_name, size in sorted(filtered_sizes.items()):
+                col_name, col_size, col_actions = st.columns([2, 1, 1])
+
+                with col_name:
+                    # Show keywords if available
+                    keywords = []
+                    for key, kw_list in keyword_mappings.items():
+                        if key == class_name:
+                            keywords = kw_list
+                            break
+
+                    if keywords:
+                        keywords_str = ", ".join(keywords[:3])
+                        st.markdown(f"**{class_name}**")
+                        st.caption(f"Keywords: {keywords_str}")
+                    else:
+                        st.markdown(f"**{class_name}**")
+
+                with col_size:
+                    st.markdown(f"<div style='text-align: center; padding-top: 0.5rem;'>{size:.2f} m</div>", unsafe_allow_html=True)
+
+                with col_actions:
+                    if st.button("🗑️", key=f"delete_{class_name}", help="Eliminar", use_container_width=True):
+                        try:
+                            client.delete_object_size(class_name)
+                            alert_box("Tamaño eliminado correctamente", type="success", icon="✅")
+                            st.rerun()
+                        except Exception as e:
+                            alert_box(f"Error al eliminar: {str(e)}", type="error", icon="❌")
+
+                st.markdown(f"<hr style='margin: 0.25rem 0; border: none; border-top: 1px solid {c['border']};'>", unsafe_allow_html=True)
+        else:
+            empty_state(
+                title="No se encontraron resultados",
+                message="No hay objetos que coincidan con tu búsqueda",
+                icon="🔍"
+            )
+
+    with col2:
+        section_header("Configuración", icon="⚙️")
+
+        # Reference distance configuration
+        st.markdown("**Distancia de Captura de Referencia**")
+        new_ref_distance = st.number_input(
+            "Distancia (m)",
+            min_value=0.1,
+            max_value=100.0,
+            value=reference_distance,
+            step=0.1,
+            help="Distancia a la que se capturaron las imágenes de referencia"
+        )
+
+        if new_ref_distance != reference_distance:
+            if st.button("Actualizar Distancia", type="primary", use_container_width=True):
+                try:
+                    client.set_reference_distance(new_ref_distance)
+                    alert_box("Distancia actualizada correctamente", type="success", icon="✅")
+                    st.rerun()
+                except Exception as e:
+                    alert_box(f"Error: {str(e)}", type="error", icon="❌")
+
+        spacer(2)
+
+        # Add/Update single object
+        with st.expander("➕ Agregar/Actualizar Objeto", expanded=True):
+            new_class = st.text_input("Clase de objeto", placeholder="Ej: fish, bottle")
+            new_size = st.number_input("Tamaño (metros)", min_value=0.01, max_value=100.0, value=0.25, step=0.01)
+
+            if st.button("Guardar", type="primary", use_container_width=True, disabled=not new_class):
+                try:
+                    client.update_object_size(new_class.strip(), new_size)
+                    alert_box(f"Tamaño de '{new_class}' guardado correctamente", type="success", icon="✅")
+                    st.rerun()
+                except Exception as e:
+                    alert_box(f"Error: {str(e)}", type="error", icon="❌")
+
+        spacer(1)
+
+        # Batch update
+        with st.expander("📦 Actualización por Lotes"):
+            st.markdown("""
+            <div style='font-size: 0.85rem; margin-bottom: 1rem;'>
+                Formato JSON:
+                <pre style='background: #1a1a1a; padding: 0.5rem; border-radius: 4px; overflow-x: auto;'>
+{
+  "fish": 0.25,
+  "shark": 2.5,
+  "bottle": 0.25
+}</pre>
+            </div>
+            """, unsafe_allow_html=True)
+
+            batch_json = st.text_area("JSON de tamaños", height=150, placeholder='{"fish": 0.25, "shark": 2.5}')
+
+            if st.button("Actualizar por Lotes", type="primary", use_container_width=True, disabled=not batch_json):
+                try:
+                    batch_sizes = json.loads(batch_json)
+                    client.update_multiple_object_sizes(batch_sizes)
+                    alert_box(f"Se actualizaron {len(batch_sizes)} objetos correctamente", type="success", icon="✅")
+                    st.rerun()
+                except json.JSONDecodeError:
+                    alert_box("JSON inválido. Verifica el formato.", type="error", icon="❌")
+                except Exception as e:
+                    alert_box(f"Error: {str(e)}", type="error", icon="❌")
+
+        spacer(1)
+
+        # Export configuration
+        with st.expander("💾 Exportar Configuración"):
+            st.markdown("Descarga la configuración actual en formato JSON")
+
+            config_json = json.dumps(config_data, indent=2, ensure_ascii=False)
+
+            st.download_button(
+                label="⬇️ Descargar JSON",
+                data=config_json,
+                file_name="object_sizes_config.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+    # Statistics section
+    spacer(2)
+    section_header("Estadísticas", icon="📈")
+
+    stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+
+    with stat_col1:
+        st.metric("Total de Objetos", len(sizes))
+
+    with stat_col2:
+        avg_size = sum(sizes.values()) / len(sizes) if sizes else 0
+        st.metric("Tamaño Promedio", f"{avg_size:.2f} m")
+
+    with stat_col3:
+        max_size = max(sizes.values()) if sizes else 0
+        max_class = max(sizes, key=sizes.get) if sizes else "N/A"
+        st.metric("Objeto Más Grande", f"{max_size:.2f} m", delta=max_class)
+
+    with stat_col4:
+        min_size = min(sizes.values()) if sizes else 0
+        min_class = min(sizes, key=sizes.get) if sizes else "N/A"
+        st.metric("Objeto Más Pequeño", f"{min_size:.2f} m", delta=min_class)
 
 
 # =============================================================================
