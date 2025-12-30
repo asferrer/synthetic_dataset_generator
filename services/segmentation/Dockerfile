@@ -30,7 +30,7 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 # Copy requirements first for caching
-COPY requirements.txt .
+COPY segmentation/requirements.txt .
 
 # Install Python dependencies
 RUN pip3 install --no-cache-dir --upgrade pip && \
@@ -48,12 +48,15 @@ ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 FROM base AS test
 
 # Install test dependencies
-COPY requirements-test.txt .
+COPY segmentation/requirements-test.txt .
 RUN pip3 install --no-cache-dir -r requirements-test.txt
 
+# Copy shared module first (needed for imports)
+COPY shared/ ./shared/
+
 # Copy application and tests
-COPY app/ ./app/
-COPY tests/ ./tests/
+COPY segmentation/app/ ./app/
+COPY segmentation/tests/ ./tests/
 
 # Run tests - build fails if tests fail
 RUN python -m pytest tests/ -v --tb=short -x
@@ -69,14 +72,15 @@ FROM base AS production
 # Copy marker from test stage - this creates a dependency, ensuring tests run
 COPY --from=test /app/.tests_passed /app/.tests_passed
 
-# Copy application code
-COPY app/ ./app/
+# Copy shared module and application code
+COPY shared/ ./shared/
+COPY segmentation/app/ ./app/
 
 # Create necessary directories
 RUN mkdir -p /shared/segmentation
 
 # Copy startup script and fix line endings (Windows -> Unix)
-COPY start.sh /app/start.sh
+COPY segmentation/start.sh /app/start.sh
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 # Expose port

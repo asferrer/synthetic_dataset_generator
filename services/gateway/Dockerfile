@@ -11,6 +11,7 @@ LABEL version="1.0"
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
@@ -21,11 +22,12 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy requirements and install dependencies
-COPY requirements.txt .
+COPY gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY app/ ./app/
+# Copy shared module and application code
+COPY shared/ ./shared/
+COPY gateway/app/ ./app/
 
 # Create directories for shared volumes
 RUN mkdir -p /shared/images /shared/depth /shared/output

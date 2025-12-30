@@ -3,7 +3,9 @@ services:
   # API Gateway - Orquestador central
   # ============================================
   gateway:
-    build: ./services/gateway
+    build:
+      context: ./services
+      dockerfile: gateway/Dockerfile
     container_name: synth-gateway
     ports:
       - "8000:8000"
@@ -16,11 +18,18 @@ services:
       # Rutas por defecto para datasets
       - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
       - OBJECTS_PATH=/app/datasets/Objects
+      # Job database path
+      - JOBS_DB_PATH=/shared/db/jobs.db
     volumes:
       - shared_data:/shared
+      - jobs_db:/shared/db
       # Dataset con Backgrounds_filtered/ y Objects/
       # Configura DATASET_PATH en .env.microservices
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+    # Límites de recursos - hardware potente (96GB RAM, Core Ultra 9 - 24 cores)
+    mem_limit: 4G
+    memswap_limit: 4G
+    cpus: 2
     depends_on:
       depth:
         condition: service_healthy
@@ -42,19 +51,25 @@ services:
   # Depth Service - Depth-Anything-3
   # ============================================
   depth:
-    build: ./services/depth
+    build:
+      context: ./services
+      dockerfile: depth/Dockerfile
     container_name: synth-depth
     ports:
       - "8001:8001"
     environment:
       - CUDA_VISIBLE_DEVICES=0
       - DEPTH_MODEL=${DEPTH_MODEL:-DA3-BASE}
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:False,garbage_collection_threshold:0.7
       - PYTHONUNBUFFERED=1
       - HF_HOME=/app/checkpoints/huggingface
     volumes:
       - shared_data:/shared
       - checkpoints:/app/checkpoints
+    # Límites de recursos - RTX 5090 32GB VRAM (CPU reducido: 4 de 24 cores)
+    mem_limit: 12G
+    memswap_limit: 12G
+    cpus: 4
     deploy:
       resources:
         reservations:
@@ -76,7 +91,9 @@ services:
   # Segmentation Service - SAM3
   # ============================================
   segmentation:
-    build: ./services/segmentation
+    build:
+      context: ./services
+      dockerfile: segmentation/Dockerfile
     container_name: synth-segmentation
     ports:
       - "8002:8002"
@@ -85,15 +102,22 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=0
       - HF_HOME=/app/checkpoints/huggingface
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:False,garbage_collection_threshold:0.7
       - PYTHONUNBUFFERED=1
+      # Job database path
+      - JOBS_DB_PATH=/shared/db/jobs.db
     volumes:
       - shared_data:/shared
+      - jobs_db:/shared/db
       - checkpoints:/app/checkpoints
       # Dataset para lectura de imagenes (extraccion de objetos)
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
       # Output para objetos extraidos (escritura)
       - ./output:/app/output
+    # Límites de recursos - RTX 5090 32GB VRAM (CPU reducido: 4 de 24 cores)
+    mem_limit: 12G
+    memswap_limit: 12G
+    cpus: 4
     deploy:
       resources:
         reservations:
@@ -115,7 +139,9 @@ services:
   # Effects Service - Realism Pipeline
   # ============================================
   effects:
-    build: ./services/effects
+    build:
+      context: ./services
+      dockerfile: effects/Dockerfile
     container_name: synth-effects
     ports:
       - "8003:8003"
@@ -124,6 +150,10 @@ services:
     volumes:
       - shared_data:/shared
       - caustics_cache:/app/cache
+    # Límites de recursos - sin GPU
+    mem_limit: 4G
+    memswap_limit: 4G
+    cpus: 2
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
       interval: 30s
@@ -138,7 +168,9 @@ services:
   # Augmentor Service - Composition + Validation
   # ============================================
   augmentor:
-    build: ./services/augmentor
+    build:
+      context: .
+      dockerfile: services/augmentor/Dockerfile
     container_name: synth-augmentor
     ports:
       - "8004:8004"
@@ -147,15 +179,23 @@ services:
       - DEPTH_SERVICE_URL=http://depth:8001
       - EFFECTS_SERVICE_URL=http://effects:8003
       - SEGMENTATION_SERVICE_URL=http://segmentation:8002
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:False,garbage_collection_threshold:0.7
       - PYTHONUNBUFFERED=1
+      # Job database path
+      - JOBS_DB_PATH=/shared/db/jobs.db
     volumes:
       - shared_data:/shared
+      - jobs_db:/shared/db
       - checkpoints:/app/checkpoints
       # Dataset con Backgrounds_filtered/ y Objects/
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
       # Output para imágenes generadas
       - ./output:/app/output
+    # Límites de recursos - SERVICIO CRÍTICO (RTX 5090, 96GB RAM, 24 cores)
+    mem_limit: 24G
+    memswap_limit: 24G
+    cpus: 10
+    shm_size: 4G
     deploy:
       resources:
         reservations:
@@ -184,7 +224,9 @@ services:
   # Frontend - Streamlit UI
   # ============================================
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     container_name: synth-frontend
     ports:
       - "8501:8501"
@@ -202,6 +244,10 @@ services:
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
       # Output para imágenes generadas (lectura/escritura)
       - ./output:/app/output
+    # Límites de recursos - interfaz web
+    mem_limit: 2G
+    memswap_limit: 2G
+    cpus: 2
     depends_on:
       gateway:
         condition: service_healthy
@@ -238,3 +284,10 @@ volumes:
       type: none
       o: bind
       device: ${CACHE_PATH:-./volumes/cache}
+  # Job database for persistence across restarts
+  jobs_db:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${JOBS_DB_VOLUME_PATH:-./volumes/db}

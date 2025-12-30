@@ -62,11 +62,11 @@ RUN cd Depth-Anything-3 && \
     python -m pip install -e . --no-build-isolation
 
 # Copy requirements and install dependencies
-COPY requirements.txt .
+COPY depth/requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app/ ./app/
+COPY depth/app/ ./app/
 
 # Create directories for shared volumes
 RUN mkdir -p /shared/images /shared/depth /app/checkpoints
