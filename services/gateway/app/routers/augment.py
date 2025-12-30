@@ -462,3 +462,78 @@ async def augmentor_info():
             "error": str(e),
             "health": {"healthy": False}
         }
+
+
+# =============================================================================
+# Job Management Endpoints (Resume, Retry, Logs)
+# =============================================================================
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(job_id: str):
+    """
+    Resume an interrupted job from its checkpoint.
+
+    Only works for jobs with status 'interrupted' that have a saved checkpoint.
+    The job will continue generating from where it left off.
+    """
+    logger.info(f"Resume request for job: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        result = await registry.augmentor.post(f"/jobs/{job_id}/resume", {})
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Resume job failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(job_id: str):
+    """
+    Retry a failed job from scratch.
+
+    Creates a new job with the same parameters as the original.
+    The original job is preserved in history.
+    """
+    logger.info(f"Retry request for job: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        result = await registry.augmentor.post(f"/jobs/{job_id}/retry", {})
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Retry job failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/jobs/{job_id}/logs")
+async def get_job_logs(job_id: str, level: Optional[str] = None, limit: int = 100):
+    """
+    Get logs for a specific job.
+
+    Args:
+        job_id: The job ID
+        level: Filter by log level (INFO, WARNING, ERROR)
+        limit: Maximum number of logs to return
+    """
+    logger.info(f"Get logs request for job: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        params = {}
+        if level:
+            params["level"] = level
+        if limit:
+            params["limit"] = limit
+
+        result = await registry.augmentor.get(f"/jobs/{job_id}/logs", params=params)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Get job logs failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

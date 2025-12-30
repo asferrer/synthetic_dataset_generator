@@ -185,6 +185,55 @@ class APIClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def resume_job(self, job_id: str) -> Dict[str, Any]:
+        """Resume an interrupted job from checkpoint"""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/augment/jobs/{job_id}/resume",
+                json={},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def retry_job(self, job_id: str) -> Dict[str, Any]:
+        """Retry a failed job from scratch (creates new job)"""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/augment/jobs/{job_id}/retry",
+                json={},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_job_logs(self, job_id: str, level: str = None, limit: int = 100) -> Dict[str, Any]:
+        """Get logs for a specific job"""
+        try:
+            params = {"limit": limit}
+            if level:
+                params["level"] = level
+
+            response = httpx.get(
+                f"{self.base_url}/augment/jobs/{job_id}/logs",
+                params=params,
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"logs": [], "error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"logs": [], "error": str(e)}
+
     def validate_image(
         self,
         image_path: str,
@@ -503,6 +552,77 @@ class APIClient:
             return {"jobs": [], "total": 0, "error": response.text}
         except Exception as e:
             return {"jobs": [], "total": 0, "error": str(e)}
+
+    # =========================================================================
+    # Object Size Configuration Methods
+    # =========================================================================
+
+    def get_object_sizes(self) -> Dict[str, Any]:
+        """Get all configured object sizes"""
+        try:
+            response = httpx.get(
+                f"{GATEWAY_URL}/config/object-sizes",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"sizes": {}, "error": response.text}
+        except Exception as e:
+            return {"sizes": {}, "error": str(e)}
+
+    def get_object_size(self, class_name: str) -> Dict[str, Any]:
+        """Get size for a specific object class"""
+        try:
+            response = httpx.get(
+                f"{GATEWAY_URL}/config/object-sizes/{class_name}",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def update_object_size(self, class_name: str, size: float) -> Dict[str, Any]:
+        """Update size for a specific object class"""
+        try:
+            response = httpx.put(
+                f"{GATEWAY_URL}/config/object-sizes/{class_name}",
+                params={"size": size},
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def update_multiple_object_sizes(self, sizes: Dict[str, float]) -> Dict[str, Any]:
+        """Update multiple object sizes at once"""
+        try:
+            response = httpx.post(
+                f"{GATEWAY_URL}/config/object-sizes/batch",
+                json=sizes,
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_object_size(self, class_name: str) -> Dict[str, Any]:
+        """Delete size configuration for an object class"""
+        try:
+            response = httpx.delete(
+                f"{GATEWAY_URL}/config/object-sizes/{class_name}",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 # Global client instance

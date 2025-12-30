@@ -22,11 +22,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy requirements and install dependencies
-COPY requirements.txt .
+COPY frontend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app/ ./app/
+COPY frontend/app/ ./app/
 
 # Expose Streamlit port
 EXPOSE 8501

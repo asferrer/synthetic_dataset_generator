@@ -4,13 +4,19 @@ Gateway Service - FastAPI Application
 API Gateway that orchestrates synthetic data generation services.
 """
 import logging
+import os
 from contextlib import asynccontextmanager
+from typing import Dict
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.client import get_service_registry
 from app.services.orchestrator import get_orchestrator
+
+# Service URLs
+AUGMENTOR_SERVICE_URL = os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004")
 from app.models.schemas import (
     GenerateImageRequest,
     GenerateImageResponse,
@@ -307,6 +313,65 @@ async def augmentor_service_info():
         }
 
 
+# =============================================================================
+# Object Size Configuration Proxies
+# =============================================================================
+
+@app.get("/config/object-sizes", tags=["Configuration"])
+async def get_object_sizes():
+    """Get all configured object sizes."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{AUGMENTOR_SERVICE_URL}/config/object-sizes")
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def get_object_size(class_name: str):
+    """Get size for a specific object class."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{AUGMENTOR_SERVICE_URL}/config/object-sizes/{class_name}")
+        response.raise_for_status()
+        return response.json()
+
+
+@app.put("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def update_object_size(class_name: str, size: float):
+    """Update size for a specific object class."""
+    async with httpx.AsyncClient() as client:
+        response = await client.put(
+            f"{AUGMENTOR_SERVICE_URL}/config/object-sizes/{class_name}",
+            params={"size": size}
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@app.post("/config/object-sizes/batch", tags=["Configuration"])
+async def update_multiple_object_sizes(sizes: Dict[str, float]):
+    """Update multiple object sizes at once."""
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{AUGMENTOR_SERVICE_URL}/config/object-sizes/batch",
+            json=sizes
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@app.delete("/config/object-sizes/{class_name}", tags=["Configuration"])
+async def delete_object_size(class_name: str):
+    """Delete size configuration for an object class."""
+    async with httpx.AsyncClient() as client:
+        response = await client.delete(f"{AUGMENTOR_SERVICE_URL}/config/object-sizes/{class_name}")
+        response.raise_for_status()
+        return response.json()
+
+
+# =============================================================================
+# Root & Info Endpoints
+# =============================================================================
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -323,6 +388,7 @@ async def root():
             "augment_batch": "/augment/compose-batch",
             "augment_validate": "/augment/validate",
             "augment_lighting": "/augment/lighting",
+            "config_object_sizes": "/config/object-sizes",
             "depth_service": "/services/depth",
             "effects_service": "/services/effects",
             "augmentor_service": "/services/augmentor"
