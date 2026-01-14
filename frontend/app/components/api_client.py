@@ -234,6 +234,54 @@ class APIClient:
         except Exception as e:
             return {"logs": [], "error": str(e)}
 
+    def list_datasets(
+        self,
+        dataset_type: Optional[str] = None,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """List all available datasets with metadata"""
+        try:
+            params = {"limit": limit}
+            if dataset_type:
+                params["dataset_type"] = dataset_type
+
+            response = httpx.get(
+                f"{self.base_url}/augment/datasets",
+                params=params,
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"datasets": [], "total": 0, "error": response.text}
+        except Exception as e:
+            return {"datasets": [], "total": 0, "error": str(e)}
+
+    def get_dataset_metadata(self, job_id: str) -> Dict[str, Any]:
+        """Get metadata for a specific dataset"""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/augment/datasets/{job_id}",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def load_dataset_coco(self, job_id: str) -> Dict[str, Any]:
+        """Load full COCO JSON for a dataset"""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/augment/datasets/{job_id}/coco",
+                timeout=30.0  # Larger timeout for big files
+            )
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def validate_image(
         self,
         image_path: str,
@@ -348,25 +396,38 @@ class APIClient:
         coco_json_path: Optional[str] = None,
         categories_to_extract: Optional[List[str]] = None,
         use_sam3_for_bbox: bool = True,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False,
         padding: int = 5,
         min_object_area: int = 100,
         save_individual_coco: bool = True,
+        deduplication: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Extract objects from a COCO dataset as transparent PNGs"""
+        """Extract objects from a COCO dataset as transparent PNGs with deduplication support"""
         try:
+            payload = {
+                "coco_data": coco_data,
+                "coco_json_path": coco_json_path,
+                "images_dir": images_dir,
+                "output_dir": output_dir,
+                "categories_to_extract": categories_to_extract or [],
+                "use_sam3_for_bbox": use_sam3_for_bbox,
+                "force_bbox_only": force_bbox_only,
+                "force_sam3_resegmentation": force_sam3_resegmentation,
+                "force_sam3_text_prompt": force_sam3_text_prompt,
+                "padding": padding,
+                "min_object_area": min_object_area,
+                "save_individual_coco": save_individual_coco,
+            }
+
+            # Add deduplication config if provided
+            if deduplication is not None:
+                payload["deduplication"] = deduplication
+
             response = httpx.post(
                 f"{SEGMENTATION_URL}/extract/objects",
-                json={
-                    "coco_data": coco_data,
-                    "coco_json_path": coco_json_path,
-                    "images_dir": images_dir,
-                    "output_dir": output_dir,
-                    "categories_to_extract": categories_to_extract or [],
-                    "use_sam3_for_bbox": use_sam3_for_bbox,
-                    "padding": padding,
-                    "min_object_area": min_object_area,
-                    "save_individual_coco": save_individual_coco,
-                },
+                json=payload,
                 timeout=60.0,  # Should return quickly since it's async
             )
             if response.status_code == 200:
@@ -374,6 +435,60 @@ class APIClient:
             return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
         except httpx.TimeoutException:
             return {"success": False, "error": f"Timeout iniciando extraccion en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def extract_custom_objects(
+        self,
+        images_dir: str,
+        output_dir: str,
+        object_names: List[str],
+        padding: int = 5,
+        min_object_area: int = 100,
+        save_individual_coco: bool = True,
+        deduplication: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract custom objects using text prompts (no COCO JSON required).
+
+        Args:
+            images_dir: Directory containing images
+            output_dir: Output directory for extracted objects
+            object_names: List of object names to segment
+            padding: Pixels of padding around objects
+            min_object_area: Minimum object area in pixels
+            save_individual_coco: Save individual COCO JSON per object
+            deduplication: Deduplication configuration dict
+
+        Returns:
+            Response with job_id and status
+        """
+        try:
+            payload = {
+                "images_dir": images_dir,
+                "output_dir": output_dir,
+                "object_names": object_names,
+                "padding": padding,
+                "min_object_area": min_object_area,
+                "save_individual_coco": save_individual_coco,
+            }
+
+            # Add deduplication config if provided
+            if deduplication is not None:
+                payload["deduplication"] = deduplication
+
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/extract/custom-objects",
+                json=payload,
+                timeout=60.0,  # Should return quickly since it's async
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando extraccion custom en {SEGMENTATION_URL}"}
         except httpx.ConnectError:
             return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
         except Exception as e:
@@ -400,6 +515,9 @@ class APIClient:
         image_base64: Optional[str] = None,
         use_sam3: bool = False,
         padding: int = 5,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False,
     ) -> Dict[str, Any]:
         """Extract a single object for preview"""
         try:
@@ -412,12 +530,58 @@ class APIClient:
                     "category_name": category_name,
                     "use_sam3": use_sam3,
                     "padding": padding,
+                    "force_bbox_only": force_bbox_only,
+                    "force_sam3_resegmentation": force_sam3_resegmentation,
+                    "force_sam3_text_prompt": force_sam3_text_prompt,
                 },
                 timeout=60.0,
             )
             if response.status_code == 200:
                 return response.json()
             return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def extract_from_imagenet(
+        self,
+        root_dir: str,
+        output_dir: str,
+        padding: int = 5,
+        min_object_area: int = 100,
+        max_objects_per_class: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract objects from ImageNet-style directory structure.
+
+        Args:
+            root_dir: Root directory with class subdirectories
+            output_dir: Output directory for extracted objects
+            padding: Padding around extracted objects
+            min_object_area: Minimum object area filter
+            max_objects_per_class: Limit objects per class (None=all)
+
+        Returns:
+            Dictionary with success status, job_id, and message
+        """
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/extract/imagenet",
+                json={
+                    "root_dir": root_dir,
+                    "output_dir": output_dir,
+                    "padding": padding,
+                    "min_object_area": min_object_area,
+                    "max_objects_per_class": max_objects_per_class,
+                },
+                timeout=60.0,  # Should return quickly since it's async
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando extracción ImageNet en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

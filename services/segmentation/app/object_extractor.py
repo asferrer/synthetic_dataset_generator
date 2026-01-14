@@ -387,6 +387,255 @@ class ObjectExtractor:
             bbox
         )
 
+    def _segment_with_sam3_text_prompt_sync(
+        self,
+        image: np.ndarray,
+        class_name: str,
+        min_area: int = 100,
+        return_all_instances: bool = False
+    ) -> Optional[np.ndarray]:
+        """
+        Segment object using SAM3 with text prompt (class name).
+        Synchronous implementation for thread pool execution.
+
+        Uses SAM3's native Promptable Concept Segmentation (PCS) to detect
+        and segment ALL instances of an object class using only a text description.
+
+        Args:
+            image: Input image (HxWx3, BGR format from OpenCV)
+            class_name: Name of object class (e.g., "fish", "bottle", "person")
+            min_area: Minimum mask area to accept
+            return_all_instances: If True, return List[SAM3Instance] instead of single mask
+                                 (NEW - for deduplication and multi-instance matching)
+
+        Returns:
+            If return_all_instances=False (default):
+                Binary mask (HxW, uint8, 0-255) of the largest detected instance,
+                or None if segmentation fails
+            If return_all_instances=True:
+                List[SAM3Instance] with all detected instances,
+                or None if segmentation fails
+        """
+        if not self.sam3_available:
+            logger.warning("SAM3 not available for text prompt segmentation")
+            return None
+
+        try:
+            import torch
+            from PIL import Image as PILImage
+
+            # Convert BGR to RGB
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            # Convert to PIL Image
+            pil_image = PILImage.fromarray(image_rgb)
+
+            # Preprocess class name for better SAM3 recognition
+            # Convert technical names like "Plastic_Debris" to natural language "plastic debris"
+            processed_class_name = class_name.replace("_", " ").lower().strip()
+
+            # Try with original name first, then with first word only as fallback
+            text_prompts_to_try = [processed_class_name]
+
+            # Add simpler fallback (first word only) if name has multiple words
+            words = processed_class_name.split()
+            if len(words) > 1:
+                text_prompts_to_try.append(words[0])  # e.g., "plastic debris" → "plastic"
+
+            logger.debug(f"SAM3 text prompt: '{class_name}' → trying prompts: {text_prompts_to_try}")
+
+            # Try each text prompt until one succeeds
+            results = None
+            successful_prompt = None
+
+            for prompt in text_prompts_to_try:
+                # Prepare inputs with text prompt
+                inputs = self.sam3_processor(
+                    images=pil_image,
+                    text=prompt,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                # Run inference
+                with torch.no_grad():
+                    outputs = self.sam3_model(**inputs)
+
+                # Post-process results to get instance masks
+                temp_results = self.sam3_processor.post_process_instance_segmentation(
+                    outputs,
+                    threshold=0.4,  # Lower confidence threshold for more detections
+                    mask_threshold=0.4,  # Lower mask threshold for more permissive segmentation
+                    target_sizes=inputs.get("original_sizes").tolist()
+                )[0]  # Get first (and only) image results
+
+                # Check if any instances were found
+                if "masks" in temp_results and len(temp_results["masks"]) > 0:
+                    results = temp_results
+                    successful_prompt = prompt
+                    logger.debug(f"SAM3 text prompt: '{prompt}' found {len(results['masks'])} instance(s)")
+                    break
+                else:
+                    logger.debug(f"SAM3 text prompt: '{prompt}' found no instances, trying next...")
+
+            # If no prompt succeeded
+            if results is None or "masks" not in results or len(results["masks"]) == 0:
+                logger.warning(
+                    f"SAM3 text prompt: No instances found with any prompt {text_prompts_to_try}. "
+                    f"Original class: '{class_name}'. "
+                    f"Suggestions: (1) Use bbox-guided SAM3 instead, (2) Check if object is visible in image, "
+                    f"(3) Try more generic class names in your dataset."
+                )
+                return None
+
+            # Get masks, boxes, and scores
+            masks = results["masks"]  # List of binary masks (H, W)
+            boxes = results.get("boxes", [])  # List of boxes (xyxy format)
+            scores = results.get("scores", [])  # List of confidence scores
+
+            logger.info(
+                f"SAM3 text prompt: Found {len(masks)} instance(s) using prompt '{successful_prompt}' "
+                f"(original class: '{class_name}') with scores {scores}"
+            )
+
+            # NEW: Return all instances mode (for deduplication)
+            if return_all_instances:
+                from app.utils import SAM3Instance
+
+                instances = []
+                for idx, mask in enumerate(masks):
+                    # Convert mask to numpy if it's a tensor
+                    if hasattr(mask, 'cpu'):
+                        mask_np = mask.cpu().numpy()
+                    else:
+                        mask_np = np.array(mask)
+
+                    # Ensure binary (0 or 255)
+                    mask_np = (mask_np > 0.5).astype(np.uint8) * 255
+
+                    # Calculate area
+                    area = np.sum(mask_np > 0)
+
+                    # Skip if too small
+                    if area < min_area:
+                        logger.debug(f"Mask {idx} too small: {area} < {min_area}")
+                        continue
+
+                    # Get bbox from mask
+                    bbox = self.get_mask_bbox(mask_np)
+                    if bbox is None:
+                        logger.debug(f"Mask {idx} has no valid bbox")
+                        continue
+
+                    # Get score
+                    score = scores[idx] if idx < len(scores) else 0.5
+
+                    # Create SAM3Instance
+                    instances.append(SAM3Instance(
+                        mask=mask_np,
+                        bbox=bbox,
+                        score=score,
+                        assigned=False
+                    ))
+
+                if not instances:
+                    logger.warning(
+                        f"SAM3 text prompt: All {len(masks)} mask(s) found with prompt '{successful_prompt}' "
+                        f"(original class: '{class_name}') are below minimum area {min_area} pixels."
+                    )
+                    return None
+
+                logger.info(
+                    f"✓ SAM3 text prompt: Returning {len(instances)} instances for '{class_name}' "
+                    f"(prompt: '{successful_prompt}')"
+                )
+                return instances
+
+            # EXISTING: Return best single mask (backward compatible)
+            best_mask = None
+            best_area = 0
+            best_score = 0
+
+            for idx, mask in enumerate(masks):
+                # Convert mask to numpy if it's a tensor
+                if hasattr(mask, 'cpu'):
+                    mask_np = mask.cpu().numpy()
+                else:
+                    mask_np = np.array(mask)
+
+                # Ensure binary (0 or 255)
+                mask_np = (mask_np > 0.5).astype(np.uint8) * 255
+
+                # Calculate area
+                area = np.sum(mask_np > 0)
+
+                # Skip if too small
+                if area < min_area:
+                    logger.debug(f"Mask {idx} too small: {area} < {min_area}")
+                    continue
+
+                # Select mask with best combination of area and score
+                score = scores[idx] if idx < len(scores) else 0.5
+
+                # Prioritize by score, then area
+                if score > best_score or (score == best_score and area > best_area):
+                    best_mask = mask_np
+                    best_area = area
+                    best_score = score
+
+            if best_mask is None:
+                logger.warning(
+                    f"SAM3 text prompt: All {len(masks)} mask(s) found with prompt '{successful_prompt}' "
+                    f"(original class: '{class_name}') are below minimum area {min_area} pixels. "
+                    f"Largest mask area: {max([np.sum(m > 0) if hasattr(m, '__iter__') else 0 for m in masks], default=0)}px. "
+                    f"Consider: (1) Reducing min_area (currently {min_area}), (2) Using bbox-guided SAM3, "
+                    f"(3) Checking if object is too small/distant in image."
+                )
+                return None
+
+            logger.info(
+                f"✓ SAM3 text prompt: Successfully segmented using prompt '{successful_prompt}' "
+                f"(original class: '{class_name}', area={best_area}px, score={best_score:.3f})"
+            )
+            return best_mask
+
+        except Exception as e:
+            logger.error(f"SAM3 text prompt segmentation failed for '{class_name}': {e}", exc_info=True)
+            return None
+
+    async def segment_with_sam3_text_prompt(
+        self,
+        image: np.ndarray,
+        class_name: str,
+        min_area: int = 100
+    ) -> Optional[np.ndarray]:
+        """
+        Segment object using SAM3 with text prompt (class name).
+        Async wrapper that runs in thread pool to avoid blocking.
+
+        Args:
+            image: Input image (HxWx3, BGR or RGB)
+            class_name: Name of object class (e.g., "fish", "bottle")
+            min_area: Minimum mask area in pixels to accept
+
+        Returns:
+            Binary mask as numpy array (HxW, uint8, 0-255), or None if failed
+
+        Example:
+            >>> mask = await extractor.segment_with_sam3_text_prompt(
+            ...     image=img,
+            ...     class_name="fish",
+            ...     min_area=100
+            ... )
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._segment_with_sam3_text_prompt_sync,
+            image,
+            class_name,
+            min_area
+        )
+
     # =========================================================================
     # IMAGE CROPPING
     # =========================================================================
@@ -754,7 +1003,10 @@ class ObjectExtractor:
         annotation: Dict[str, Any],
         category_name: str,
         use_sam3: bool = False,
-        padding: int = 5
+        padding: int = 5,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False
     ) -> Dict[str, Any]:
         """
         Synchronous version of extract_single_object (runs in thread pool).
@@ -765,6 +1017,9 @@ class ObjectExtractor:
             category_name: Name of the category
             use_sam3: Whether to use SAM3 for bbox-only annotations
             padding: Padding around extracted object
+            force_bbox_only: Force extraction using only bbox, ignore existing masks
+            force_sam3_resegmentation: Force SAM3 to regenerate masks even if polygon/RLE exist
+            force_sam3_text_prompt: Use only class label with SAM3, ignore bbox and masks
 
         Returns:
             Dictionary with extraction results
@@ -780,6 +1035,66 @@ class ObjectExtractor:
         h, w = image.shape[:2]
         bbox = annotation.get("bbox", [0, 0, w, h])
 
+        # Force SAM3 text prompt mode - ignore everything, use only class label
+        if force_sam3_text_prompt and use_sam3 and self.sam3_available:
+            logger.debug(f"Force text prompt mode: using only class label '{category_name}' with SAM3")
+
+            # Use SAM3 with class name as text prompt on full image
+            # Lower min_area (50px) to be more permissive with small objects
+            mask = self._segment_with_sam3_text_prompt_sync(
+                image=image,
+                class_name=category_name,
+                min_area=50
+            )
+
+            if mask is not None:
+                # Calculate bbox from generated mask
+                y_indices, x_indices = np.where(mask > 0)
+                if len(x_indices) > 0 and len(y_indices) > 0:
+                    x = int(x_indices.min())
+                    y = int(y_indices.min())
+                    bw = int(x_indices.max() - x + 1)
+                    bh = int(y_indices.max() - y + 1)
+                    bbox = [x, y, bw, bh]
+
+                    # Crop with mask
+                    cropped, new_bbox = self.crop_with_mask(image, mask, bbox, padding)
+
+                    if cropped is None:
+                        return {"success": False, "error": f"Failed to crop with text-prompted mask"}
+
+                    # Calculate mask coverage
+                    bbox_area = bw * bh
+                    mask_area = np.sum(mask[y:y+bh, x:x+bw] > 0) if bbox_area > 0 else 0
+                    mask_coverage = mask_area / bbox_area if bbox_area > 0 else 0.0
+
+                    # Encode image
+                    success, encoded = cv2.imencode('.png', cropped)
+                    if not success:
+                        return {"success": False, "error": "Failed to encode image"}
+                    cropped_base64 = base64.b64encode(encoded.tobytes()).decode('utf-8')
+
+                    # Encode mask
+                    x1, y1, mw, mh = new_bbox
+                    cropped_mask = mask[y1:y1+mh, x1:x1+mw]
+                    success_mask, encoded_mask = cv2.imencode('.png', cropped_mask)
+                    mask_base64 = base64.b64encode(encoded_mask.tobytes()).decode('utf-8') if success_mask else None
+
+                    return {
+                        "success": True,
+                        "cropped_image_base64": cropped_base64,
+                        "mask_base64": mask_base64,
+                        "annotation_type": AnnotationType.BBOX_ONLY.value,
+                        "method_used": ExtractionMethod.SAM3_TEXT_PROMPT.value,
+                        "original_bbox": bbox,
+                        "extracted_size": [cropped.shape[1], cropped.shape[0]],
+                        "mask_coverage": mask_coverage
+                    }
+
+            # If SAM3 text prompt failed
+            logger.warning(f"SAM3 text prompt failed for '{category_name}' - cannot extract")
+            return {"success": False, "error": "Text-prompted segmentation failed"}
+
         # Validate bbox
         if not bbox or len(bbox) < 4:
             return {"success": False, "error": f"Invalid bbox: {bbox}"}
@@ -788,6 +1103,152 @@ class ObjectExtractor:
         bx, by, bw, bh = bbox[:4]
         if bw <= 0 or bh <= 0:
             return {"success": False, "error": f"Invalid bbox dimensions: {bbox}"}
+
+        # Check if annotation lacks both bbox and segmentation (classification-only)
+        # In this case, try SAM3 with text prompt to segment the object
+        has_real_bbox = annotation.get("bbox") is not None and annotation.get("bbox") != [0, 0, w, h]
+        has_segmentation = annotation.get("segmentation") is not None and len(annotation.get("segmentation", [])) > 0
+
+        if not has_real_bbox and not has_segmentation:
+            # Annotation only has category_id - try text-prompted segmentation
+            if use_sam3 and self.sam3_available:
+                logger.debug(f"No bbox/segmentation found - trying SAM3 text prompt for '{category_name}'")
+
+                # Attempt segmentation using class name as text prompt
+                # Lower min_area (50px) to be more permissive with small objects
+                mask = self._segment_with_sam3_text_prompt_sync(
+                    image=image,
+                    class_name=category_name,
+                    min_area=50
+                )
+
+                if mask is not None:
+                    # Calculate bbox from generated mask
+                    y_indices, x_indices = np.where(mask > 0)
+                    if len(x_indices) > 0 and len(y_indices) > 0:
+                        x = int(x_indices.min())
+                        y = int(y_indices.min())
+                        bw = int(x_indices.max() - x + 1)
+                        bh = int(y_indices.max() - y + 1)
+                        bbox = [x, y, bw, bh]
+
+                        # Crop with mask
+                        cropped, new_bbox = self.crop_with_mask(image, mask, bbox, padding)
+
+                        if cropped is None:
+                            return {"success": False, "error": f"Failed to crop with text-prompted mask"}
+
+                        # Calculate mask coverage
+                        bbox_area = bw * bh
+                        mask_area = np.sum(mask[y:y+bh, x:x+bw] > 0) if bbox_area > 0 else 0
+                        mask_coverage = mask_area / bbox_area if bbox_area > 0 else 0.0
+
+                        # Encode image
+                        success, encoded = cv2.imencode('.png', cropped)
+                        if not success:
+                            return {"success": False, "error": "Failed to encode image"}
+                        cropped_base64 = base64.b64encode(encoded.tobytes()).decode('utf-8')
+
+                        # Encode mask
+                        x1, y1, mw, mh = new_bbox
+                        cropped_mask = mask[y1:y1+mh, x1:x1+mw]
+                        success_mask, encoded_mask = cv2.imencode('.png', cropped_mask)
+                        mask_base64 = base64.b64encode(encoded_mask.tobytes()).decode('utf-8') if success_mask else None
+
+                        return {
+                            "success": True,
+                            "cropped_image_base64": cropped_base64,
+                            "mask_base64": mask_base64,
+                            "annotation_type": AnnotationType.BBOX_ONLY.value,
+                            "method_used": ExtractionMethod.SAM3_TEXT_PROMPT.value,
+                            "original_bbox": bbox,
+                            "extracted_size": [cropped.shape[1], cropped.shape[0]],
+                            "mask_coverage": mask_coverage
+                        }
+
+                # If SAM3 text prompt failed or returned no mask
+                logger.warning(f"SAM3 text prompt segmentation failed for '{category_name}' - skipping object")
+                return {"success": False, "error": "Text-prompted segmentation not available or failed"}
+            else:
+                # SAM3 not available and no bbox/segmentation
+                logger.warning(f"Cannot extract '{category_name}' without bbox/mask and SAM3 unavailable")
+                return {"success": False, "error": "No bbox/segmentation and SAM3 not available"}
+
+        # Force bbox-only extraction if requested (ignore masks)
+        if force_bbox_only:
+            logger.debug(f"Force bbox-only mode: skipping mask extraction for {category_name}")
+            cropped, new_bbox = self.crop_bbox_only(image, bbox, padding)
+
+            if cropped is None:
+                return {"success": False, "error": f"Failed to crop image for bbox={bbox}"}
+
+            # Encode to base64
+            success, encoded = cv2.imencode('.png', cropped)
+            if not success:
+                return {"success": False, "error": "Failed to encode image"}
+
+            cropped_base64 = base64.b64encode(encoded.tobytes()).decode('utf-8')
+
+            return {
+                "success": True,
+                "cropped_image_base64": cropped_base64,
+                "mask_base64": None,
+                "annotation_type": AnnotationType.BBOX_ONLY.value,
+                "method_used": ExtractionMethod.BBOX_CROP.value,
+                "original_bbox": bbox,
+                "extracted_size": [cropped.shape[1], cropped.shape[0]],
+                "mask_coverage": 1.0
+            }
+
+        # Force SAM3 resegmentation if requested (regenerate masks even if they exist)
+        if force_sam3_resegmentation and use_sam3 and self.sam3_available:
+            # Check if annotation has existing segmentation (polygon or RLE)
+            has_segmentation = annotation.get("segmentation") is not None and len(annotation.get("segmentation", [])) > 0
+
+            if has_segmentation:
+                logger.debug(f"Force SAM3 resegmentation: ignoring existing mask for {category_name}")
+
+                # Use SAM3 with bbox to regenerate mask
+                mask = self._segment_with_sam3_sync(image, bbox)
+
+                if mask is not None:
+                    # Crop with new SAM3-generated mask
+                    cropped, new_bbox = self.crop_with_mask(image, mask, bbox, padding)
+
+                    if cropped is None:
+                        return {"success": False, "error": f"Failed to crop with SAM3-regenerated mask"}
+
+                    # Calculate mask coverage
+                    x, y, bw, bh = [int(v) for v in bbox]
+                    bbox_area = bw * bh
+                    mask_area = np.sum(mask[y:y+bh, x:x+bw] > 0) if bbox_area > 0 else 0
+                    mask_coverage = mask_area / bbox_area if bbox_area > 0 else 0.0
+
+                    # Encode image
+                    success, encoded = cv2.imencode('.png', cropped)
+                    if not success:
+                        return {"success": False, "error": "Failed to encode image"}
+                    cropped_base64 = base64.b64encode(encoded.tobytes()).decode('utf-8')
+
+                    # Encode mask
+                    x1, y1, mw, mh = new_bbox
+                    cropped_mask = mask[y1:y1+mh, x1:x1+mw]
+                    success_mask, encoded_mask = cv2.imencode('.png', cropped_mask)
+                    mask_base64 = base64.b64encode(encoded_mask.tobytes()).decode('utf-8') if success_mask else None
+
+                    return {
+                        "success": True,
+                        "cropped_image_base64": cropped_base64,
+                        "mask_base64": mask_base64,
+                        "annotation_type": AnnotationType.BBOX_ONLY.value,
+                        "method_used": ExtractionMethod.SAM3_FROM_BBOX.value,
+                        "original_bbox": bbox,
+                        "extracted_size": [cropped.shape[1], cropped.shape[0]],
+                        "mask_coverage": mask_coverage
+                    }
+                else:
+                    logger.warning(f"SAM3 resegmentation failed for {category_name} - falling back to original mask")
+                    # Continue with normal flow to use original mask
 
         ann_type = self.detect_annotation_type(annotation)
 
@@ -872,7 +1333,10 @@ class ObjectExtractor:
         annotation: Dict[str, Any],
         category_name: str,
         use_sam3: bool = False,
-        padding: int = 5
+        padding: int = 5,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False
     ) -> Dict[str, Any]:
         """
         Extract a single object from an image.
@@ -884,6 +1348,9 @@ class ObjectExtractor:
             category_name: Name of the category
             use_sam3: Whether to use SAM3 for bbox-only annotations
             padding: Padding around extracted object
+            force_bbox_only: Force extraction using only bbox, ignore existing masks
+            force_sam3_resegmentation: Force SAM3 to regenerate masks even if polygon/RLE exist
+            force_sam3_text_prompt: Use only class label with SAM3, ignore bbox and masks
 
         Returns:
             Dictionary with extraction results
@@ -897,7 +1364,10 @@ class ObjectExtractor:
                 annotation=annotation,
                 category_name=category_name,
                 use_sam3=use_sam3,
-                padding=padding
+                padding=padding,
+                force_bbox_only=force_bbox_only,
+                force_sam3_resegmentation=force_sam3_resegmentation,
+                force_sam3_text_prompt=force_sam3_text_prompt
             )
         )
 
@@ -912,13 +1382,17 @@ class ObjectExtractor:
         output_dir: str,
         categories_to_extract: List[str] = None,
         use_sam3_for_bbox: bool = True,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False,
         padding: int = 5,
         min_object_area: int = 100,
         save_individual_coco: bool = True,
-        progress_callback: Callable[[Dict[str, Any]], None] = None
+        progress_callback: Callable[[Dict[str, Any]], None] = None,
+        deduplication_config: Optional['DeduplicationConfig'] = None
     ) -> Dict[str, Any]:
         """
-        Extract all objects from a COCO dataset.
+        Extract all objects from a COCO dataset with deduplication support.
 
         Args:
             coco_data: COCO format dataset
@@ -926,13 +1400,17 @@ class ObjectExtractor:
             output_dir: Output directory for extracted objects
             categories_to_extract: List of category names to extract (None = all)
             use_sam3_for_bbox: Use SAM3 for bbox-only annotations
+            force_bbox_only: Force extraction using only bbox, ignore existing masks
+            force_sam3_resegmentation: Force SAM3 to regenerate masks even if polygon/RLE exist
+            force_sam3_text_prompt: Use only class label with SAM3, ignore bbox and masks
             padding: Padding around objects
             min_object_area: Minimum area to extract
             save_individual_coco: Save JSON for each object
             progress_callback: Callback function for progress updates
+            deduplication_config: Configuration for deduplication (None = default enabled)
 
         Returns:
-            Extraction results dictionary
+            Extraction results dictionary with deduplication stats
         """
         start_time = datetime.now()
 
@@ -965,148 +1443,209 @@ class ObjectExtractor:
             "by_category": {categories[cid]["name"]: 0 for cid in category_ids},
             "by_method": {},
             "errors": [],
-            "extracted_files": []
+            "extracted_files": [],
+            "deduplication_stats": {
+                "duplicates_prevented": 0,
+                "enabled": deduplication_config.enabled if deduplication_config else True
+            }
         }
 
-        # Group annotations by image for efficiency
-        annotations_by_image = {}
-        for ann in annotations:
-            if ann.get("category_id") not in category_ids:
-                continue
+        # Group annotations differently based on mode
+        if force_sam3_text_prompt:
+            # Text prompt mode: group by (image_id, category_name) for batch processing
+            annotations_grouped = {}
+            for ann in annotations:
+                if ann.get("category_id") not in category_ids:
+                    continue
 
-            # Check minimum area
-            bbox = ann.get("bbox", [0, 0, 0, 0])
-            if len(bbox) >= 4 and bbox[2] * bbox[3] < min_object_area:
-                continue
+                # Check minimum area
+                bbox = ann.get("bbox", [0, 0, 0, 0])
+                if len(bbox) >= 4 and bbox[2] * bbox[3] < min_object_area:
+                    continue
 
-            img_id = ann.get("image_id")
-            if img_id not in annotations_by_image:
-                annotations_by_image[img_id] = []
-            annotations_by_image[img_id].append(ann)
+                img_id = ann.get("image_id")
+                cat_name = categories[ann["category_id"]]["name"]
+                key = (img_id, cat_name)
 
-        total_objects = sum(len(anns) for anns in annotations_by_image.values())
-        processed = 0
+                if key not in annotations_grouped:
+                    annotations_grouped[key] = []
+                annotations_grouped[key].append(ann)
+        else:
+            # Bbox/mask mode: group by image_id only
+            annotations_grouped = {}
+            for ann in annotations:
+                if ann.get("category_id") not in category_ids:
+                    continue
 
-        # Cache for loaded images
+                # Check minimum area
+                bbox = ann.get("bbox", [0, 0, 0, 0])
+                if len(bbox) >= 4 and bbox[2] * bbox[3] < min_object_area:
+                    continue
+
+                img_id = ann.get("image_id")
+                if img_id not in annotations_grouped:
+                    annotations_grouped[img_id] = []
+                annotations_grouped[img_id].append(ann)
+
+        # Calculate total objects
+        total_objects = sum(
+            len(anns) if isinstance(anns, list) else 0
+            for anns in annotations_grouped.values()
+        )
+
+        # Process each image (FINALLY USE current_image_id and current_image!)
         current_image = None
         current_image_id = None
+        registry = None
 
-        for img_id, img_annotations in annotations_by_image.items():
-            if img_id not in images:
-                for ann in img_annotations:
-                    results["failed"] += 1
-                    results["errors"].append(f"Image ID {img_id} not found")
-                continue
+        # Get unique image IDs
+        if force_sam3_text_prompt:
+            unique_img_ids = sorted(set(key[0] for key in annotations_grouped.keys()))
+        else:
+            unique_img_ids = sorted(annotations_grouped.keys())
 
-            img_info = images[img_id]
-            img_path = self.resolve_image_path(images_dir, img_info)
+        for img_id in unique_img_ids:
+            # Load image once per image_id (reuse current_image)
+            if current_image_id != img_id:
+                current_image_id = img_id
 
-            # Load image
-            if not img_path.exists():
-                error_msg = f"Image not found: {img_path} (file_name in JSON: {img_info.get('file_name', '?')}, images_dir: {images_dir})"
-                logger.error(error_msg)
-                for ann in img_annotations:
-                    results["failed"] += 1
-                    results["errors"].append(error_msg)
-                continue
+                if img_id not in images:
+                    # Fail all annotations for this image
+                    if force_sam3_text_prompt:
+                        failed_anns = [
+                            ann for key, anns in annotations_grouped.items()
+                            if key[0] == img_id
+                            for ann in anns
+                        ]
+                    else:
+                        failed_anns = annotations_grouped.get(img_id, [])
 
-            try:
-                image = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
-            except Exception as e:
-                error_msg = f"Exception loading image {img_path}: {e}"
-                logger.error(error_msg)
-                for ann in img_annotations:
-                    results["failed"] += 1
-                    results["errors"].append(error_msg)
-                continue
-
-            if image is None:
-                error_msg = f"cv2.imread returned None for: {img_path} (file exists: {img_path.exists()}, size: {img_path.stat().st_size if img_path.exists() else 0} bytes)"
-                logger.error(error_msg)
-                for ann in img_annotations:
-                    results["failed"] += 1
-                    results["errors"].append(error_msg)
-                continue
-
-            # Log image info for debugging
-            logger.debug(f"Loaded image {img_path}: shape={image.shape}, dtype={image.dtype}")
-
-            # Process each annotation
-            for ann in img_annotations:
-                try:
-                    cat = categories.get(ann["category_id"])
-                    if not cat:
-                        continue
-
-                    cat_name = cat["name"]
-                    ann_id = ann["id"]
-
-                    # Extract object (call sync version directly since we're in a thread)
-                    result = self._extract_single_object_sync(
-                        image=image,
-                        annotation=ann,
-                        category_name=cat_name,
-                        use_sam3=use_sam3_for_bbox,
-                        padding=padding
-                    )
-
-                    if not result["success"]:
+                    for ann in failed_anns:
                         results["failed"] += 1
-                        results["errors"].append(f"Annotation {ann_id}: {result.get('error', 'Unknown error')}")
-                        continue
+                        results["errors"].append(f"Image ID {img_id} not found in dataset")
+                    continue
 
-                    # Save PNG
-                    png_path = output_path / cat_name / f"{ann_id}.png"
-                    img_data = base64.b64decode(result["cropped_image_base64"])
-                    with open(png_path, 'wb') as f:
-                        f.write(img_data)
+                img_info = images[img_id]
+                img_path = self.resolve_image_path(images_dir, img_info)
 
-                    # Save individual COCO JSON
-                    json_path = None
-                    if save_individual_coco:
-                        json_path = output_path / cat_name / f"{ann_id}.json"
-                        coco_json = self.create_individual_coco(
-                            annotation=ann,
-                            category=cat,
-                            image_shape=result["extracted_size"][::-1],  # [w,h] -> [h,w]
-                            original_image_filename=img_info.get("file_name", "")
-                        )
-                        with open(json_path, 'w') as f:
-                            json.dump(coco_json, f, indent=2)
+                # Load image
+                if not img_path.exists():
+                    error_msg = f"Image not found: {img_path} (file_name in JSON: {img_info.get('file_name', '?')}, images_dir: {images_dir})"
+                    logger.error(error_msg)
 
-                    # Update results
-                    results["extracted"] += 1
-                    results["by_category"][cat_name] += 1
+                    if force_sam3_text_prompt:
+                        failed_anns = [
+                            ann for key, anns in annotations_grouped.items()
+                            if key[0] == img_id
+                            for ann in anns
+                        ]
+                    else:
+                        failed_anns = annotations_grouped.get(img_id, [])
 
-                    method = result["method_used"]
-                    results["by_method"][method] = results["by_method"].get(method, 0) + 1
+                    for ann in failed_anns:
+                        results["failed"] += 1
+                        results["errors"].append(error_msg)
+                    continue
 
-                    results["extracted_files"].append({
-                        "annotation_id": ann_id,
-                        "category_name": cat_name,
-                        "image_path": str(png_path),
-                        "json_path": str(json_path) if json_path else None,
-                        "method": method,
-                        "original_bbox": result["original_bbox"],
-                        "extracted_size": result["extracted_size"]
-                    })
-
+                try:
+                    current_image = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
                 except Exception as e:
-                    results["failed"] += 1
-                    results["errors"].append(f"Annotation {ann.get('id', '?')}: {str(e)}")
-                    logger.error(f"Error extracting annotation {ann.get('id')}: {e}")
+                    error_msg = f"Exception loading image {img_path}: {e}"
+                    logger.error(error_msg)
 
-                processed += 1
+                    if force_sam3_text_prompt:
+                        failed_anns = [
+                            ann for key, anns in annotations_grouped.items()
+                            if key[0] == img_id
+                            for ann in anns
+                        ]
+                    else:
+                        failed_anns = annotations_grouped.get(img_id, [])
 
-                # Progress callback
-                if progress_callback:
-                    progress_callback({
-                        "extracted": results["extracted"],
-                        "failed": results["failed"],
-                        "total": total_objects,
-                        "current_category": cat_name if 'cat_name' in dir() else "",
-                        "by_category": results["by_category"]
-                    })
+                    for ann in failed_anns:
+                        results["failed"] += 1
+                        results["errors"].append(error_msg)
+                    continue
+
+                if current_image is None:
+                    error_msg = f"cv2.imread returned None for: {img_path}"
+                    logger.error(error_msg)
+
+                    if force_sam3_text_prompt:
+                        failed_anns = [
+                            ann for key, anns in annotations_grouped.items()
+                            if key[0] == img_id
+                            for ann in anns
+                        ]
+                    else:
+                        failed_anns = annotations_grouped.get(img_id, [])
+
+                    for ann in failed_anns:
+                        results["failed"] += 1
+                        results["errors"].append(error_msg)
+                    continue
+
+                logger.debug(f"Loaded image {img_path}: shape={current_image.shape}, dtype={current_image.dtype}")
+
+                # Create registry for this image
+                if deduplication_config is None:
+                    # Default: enabled with IoU=0.7
+                    from app.models.extraction_schemas import DeduplicationConfig
+                    deduplication_config = DeduplicationConfig(enabled=True, iou_threshold=0.7)
+
+                if deduplication_config.enabled:
+                    from app.utils import ExtractionRegistry
+                    registry = ExtractionRegistry(
+                        iou_threshold=deduplication_config.iou_threshold,
+                        cross_category_dedup=deduplication_config.cross_category_dedup,
+                        matching_strategy=deduplication_config.matching_strategy
+                    )
+                    logger.info(
+                        f"Created ExtractionRegistry for image {img_id} "
+                        f"(iou_threshold={deduplication_config.iou_threshold}, "
+                        f"cross_category={deduplication_config.cross_category_dedup})"
+                    )
+                else:
+                    registry = None
+
+            # Process based on mode
+            if force_sam3_text_prompt:
+                self._process_text_prompt_mode(
+                    image=current_image,
+                    img_id=img_id,
+                    img_info=images[img_id],
+                    annotations_grouped=annotations_grouped,
+                    registry=registry,
+                    results=results,
+                    categories=categories,
+                    output_path=output_path,
+                    padding=padding,
+                    min_object_area=min_object_area,
+                    save_individual_coco=save_individual_coco,
+                    progress_callback=progress_callback
+                )
+            else:
+                self._process_bbox_mask_mode(
+                    image=current_image,
+                    img_id=img_id,
+                    img_info=images[img_id],
+                    annotations_grouped=annotations_grouped,
+                    registry=registry,
+                    results=results,
+                    categories=categories,
+                    output_path=output_path,
+                    use_sam3_for_bbox=use_sam3_for_bbox,
+                    force_bbox_only=force_bbox_only,
+                    force_sam3_resegmentation=force_sam3_resegmentation,
+                    padding=padding,
+                    save_individual_coco=save_individual_coco,
+                    progress_callback=progress_callback
+                )
+
+            # Collect dedup stats from registry
+            if registry:
+                stats = registry.get_stats()
+                results["deduplication_stats"]["duplicates_prevented"] += stats["duplicates_prevented"]
 
         # Calculate processing time
         end_time = datetime.now()
@@ -1139,7 +1678,382 @@ class ObjectExtractor:
         results["summary_path"] = str(summary_path)
         results["processing_time_seconds"] = processing_time
 
+        logger.info(
+            f"Extraction complete: {results['extracted']} extracted, "
+            f"{results['failed']} failed, "
+            f"{results['deduplication_stats']['duplicates_prevented']} duplicates prevented"
+        )
+
         return results
+
+    def _process_text_prompt_mode(
+        self,
+        image: np.ndarray,
+        img_id: int,
+        img_info: Dict,
+        annotations_grouped: Dict,
+        registry: Optional['ExtractionRegistry'],
+        results: Dict,
+        categories: Dict,
+        output_path: 'Path',
+        padding: int,
+        min_object_area: int,
+        save_individual_coco: bool,
+        progress_callback: Callable
+    ) -> None:
+        """
+        Process annotations in text prompt mode with instance matching.
+
+        Algorithm:
+        1. Group annotations by category for this image
+        2. For each category:
+           - Check registry cache for SAM3 results
+           - If not cached: Run SAM3 once → get N instances → cache
+           - Match N instances to M annotations (one-to-one)
+           - For each matched pair: check dedup, extract, register
+           - For unmatched: FAIL with clear message
+
+        Args:
+            image: Loaded image
+            img_id: Image ID
+            img_info: Image metadata from COCO JSON
+            annotations_grouped: Dict with (img_id, cat_name) keys
+            registry: ExtractionRegistry or None
+            results: Results dict to update
+            categories: Category lookup dict
+            output_path: Output directory Path
+            padding: Padding pixels
+            min_object_area: Minimum area threshold
+            save_individual_coco: Whether to save individual JSON
+            progress_callback: Progress callback function
+        """
+        from app.utils import match_instances_to_annotations, MatchingStrategy
+
+        # Get all annotations for this image, grouped by category
+        anns_by_category = {}
+        for key, anns in annotations_grouped.items():
+            if isinstance(key, tuple) and key[0] == img_id:
+                cat_name = key[1]
+                anns_by_category[cat_name] = anns
+
+        # Process each category
+        for cat_name, annotations in anns_by_category.items():
+            logger.info(f"Processing category '{cat_name}': {len(annotations)} annotations (text prompt mode)")
+
+            # Check cache
+            instances = registry.get_sam3_instances(cat_name) if registry else None
+
+            if instances is None:
+                # Run SAM3 ONCE for this category
+                instances = self._segment_with_sam3_text_prompt_sync(
+                    image=image,
+                    class_name=cat_name,
+                    min_area=min_object_area,
+                    return_all_instances=True  # Get ALL instances
+                )
+
+                if instances is None or len(instances) == 0:
+                    # SAM3 failed - fail all annotations
+                    logger.warning(f"SAM3 text prompt failed for '{cat_name}' - marking {len(annotations)} annotations as failed")
+                    for ann in annotations:
+                        results["failed"] += 1
+                        results["errors"].append(
+                            f"SAM3 text prompt returned no instances for '{cat_name}' (ann_id={ann['id']})"
+                        )
+                    continue
+
+                # Cache results
+                if registry:
+                    registry.cache_sam3_results(cat_name, instances)
+
+                logger.info(f"SAM3 found {len(instances)} instances for '{cat_name}' ({len(annotations)} annotations)")
+            else:
+                logger.debug(f"Using cached SAM3 results for '{cat_name}': {len(instances)} instances")
+
+            # Match instances to annotations
+            matching_strategy = (registry.matching_strategy
+                               if registry
+                               else MatchingStrategy.BBOX_IOU)
+
+            assignment_map = match_instances_to_annotations(
+                instances=instances,
+                annotations=annotations,
+                strategy=matching_strategy
+            )
+
+            matched_count = sum(1 for v in assignment_map.values() if v is not None)
+            logger.info(f"Matched {matched_count}/{len(annotations)} annotations to instances")
+
+            # Extract each matched annotation
+            for ann in annotations:
+                ann_id = ann["id"]
+                cat_id = ann["category_id"]
+                instance_idx = assignment_map.get(ann_id)
+
+                if instance_idx is None:
+                    # No matching instance - FAIL
+                    results["failed"] += 1
+                    results["errors"].append(
+                        f"No SAM3 instance matched annotation {ann_id} "
+                        f"(class='{cat_name}', {len(instances)} instances available)"
+                    )
+                    logger.debug(f"Annotation {ann_id} unmatched (bbox={ann.get('bbox')})")
+                    continue
+
+                instance = instances[instance_idx]
+
+                # Check for duplicates
+                if registry:
+                    is_dup, dup_id, max_iou = registry.is_duplicate(
+                        mask=instance.mask,
+                        bbox=instance.bbox,
+                        category_id=cat_id,
+                        category_name=cat_name
+                    )
+
+                    if is_dup:
+                        logger.info(
+                            f"Skipping duplicate: ann_id={ann_id} (IoU={max_iou:.3f} "
+                            f"with ann_id={dup_id}, class='{cat_name}')"
+                        )
+                        results["failed"] += 1
+                        results["errors"].append(
+                            f"Duplicate of annotation {dup_id} (IoU={max_iou:.3f})"
+                        )
+                        continue
+
+                # Extract object with this mask
+                try:
+                    cropped, new_bbox = self.crop_with_mask(
+                        image, instance.mask, instance.bbox, padding
+                    )
+
+                    if cropped is None:
+                        results["failed"] += 1
+                        results["errors"].append(f"Failed to crop annotation {ann_id}")
+                        continue
+
+                    # Encode to base64
+                    success, encoded = cv2.imencode('.png', cropped)
+                    if not success:
+                        results["failed"] += 1
+                        results["errors"].append(f"Failed to encode annotation {ann_id}")
+                        continue
+
+                    # Save PNG
+                    png_path = output_path / cat_name / f"{ann_id}.png"
+                    with open(png_path, 'wb') as f:
+                        f.write(encoded.tobytes())
+
+                    # Save JSON if requested
+                    json_path = None
+                    if save_individual_coco:
+                        json_path = output_path / cat_name / f"{ann_id}.json"
+                        cat = categories[cat_id]
+                        coco_json = self.create_individual_coco(
+                            annotation=ann,
+                            category=cat,
+                            image_shape=cropped.shape[:2],
+                            original_image_filename=f"image_{img_id}"
+                        )
+                        with open(json_path, 'w') as f:
+                            json.dump(coco_json, f, indent=2)
+
+                    # Register extraction
+                    if registry:
+                        registry.register_extraction(
+                            mask=instance.mask,
+                            bbox=instance.bbox,
+                            annotation_id=ann_id,
+                            category_id=cat_id,
+                            category_name=cat_name,
+                            method=ExtractionMethod.SAM3_TEXT_PROMPT.value
+                        )
+
+                    # Update results
+                    results["extracted"] += 1
+                    results["by_category"][cat_name] = results["by_category"].get(cat_name, 0) + 1
+                    results["by_method"][ExtractionMethod.SAM3_TEXT_PROMPT.value] = \
+                        results["by_method"].get(ExtractionMethod.SAM3_TEXT_PROMPT.value, 0) + 1
+
+                    results["extracted_files"].append({
+                        "annotation_id": ann_id,
+                        "category_name": cat_name,
+                        "image_path": str(png_path),
+                        "json_path": str(json_path) if json_path else None,
+                        "method": ExtractionMethod.SAM3_TEXT_PROMPT.value,
+                        "original_bbox": instance.bbox,
+                        "extracted_size": [cropped.shape[1], cropped.shape[0]]
+                    })
+
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback({
+                            "extracted": results["extracted"],
+                            "failed": results["failed"],
+                            "current_category": cat_name,
+                            "by_category": results["by_category"]
+                        })
+
+                except Exception as e:
+                    results["failed"] += 1
+                    results["errors"].append(f"Annotation {ann_id}: {str(e)}")
+                    logger.error(f"Error extracting annotation {ann_id}: {e}")
+
+    def _process_bbox_mask_mode(
+        self,
+        image: np.ndarray,
+        img_id: int,
+        img_info: Dict,
+        annotations_grouped: Dict,
+        registry: Optional['ExtractionRegistry'],
+        results: Dict,
+        categories: Dict,
+        output_path: 'Path',
+        use_sam3_for_bbox: bool,
+        force_bbox_only: bool,
+        force_sam3_resegmentation: bool,
+        padding: int,
+        save_individual_coco: bool,
+        progress_callback: Callable
+    ) -> None:
+        """
+        Process annotations in bbox/mask mode with optional deduplication.
+
+        Algorithm:
+        1. For each annotation:
+           - Call _extract_single_object_sync (existing logic)
+           - If dedup enabled: check IoU with registry
+           - Save if unique, register
+
+        Args:
+            image: Loaded image
+            img_info: Image metadata from COCO JSON
+            img_id: Image ID
+            annotations_grouped: Dict with img_id keys
+            registry: ExtractionRegistry or None
+            results: Results dict to update
+            categories: Category lookup dict
+            output_path: Output directory Path
+            use_sam3_for_bbox: Use SAM3 for bbox-only
+            force_bbox_only: Force bbox-only mode
+            force_sam3_resegmentation: Force SAM3 reseg
+            padding: Padding pixels
+            save_individual_coco: Whether to save individual JSON
+            progress_callback: Progress callback function
+        """
+        # Get annotations for this image
+        annotations = annotations_grouped.get(img_id, [])
+
+        for ann in annotations:
+            cat_id = ann["category_id"]
+            cat_name = categories[cat_id]["name"]
+            ann_id = ann["id"]
+
+            try:
+                # Extract using existing logic
+                extraction_result = self._extract_single_object_sync(
+                    image=image,
+                    annotation=ann,
+                    category_name=cat_name,
+                    use_sam3=use_sam3_for_bbox,
+                    padding=padding,
+                    force_bbox_only=force_bbox_only,
+                    force_sam3_resegmentation=force_sam3_resegmentation,
+                    force_sam3_text_prompt=False
+                )
+
+                if not extraction_result["success"]:
+                    results["failed"] += 1
+                    results["errors"].append(extraction_result.get("error", "Unknown error"))
+                    continue
+
+                # Deduplication check
+                if registry and extraction_result.get("mask_base64"):
+                    # Decode mask from base64
+                    mask_data = base64.b64decode(extraction_result["mask_base64"])
+                    mask_img = cv2.imdecode(np.frombuffer(mask_data, np.uint8), cv2.IMREAD_GRAYSCALE)
+
+                    bbox = extraction_result["original_bbox"]
+
+                    is_dup, dup_id, max_iou = registry.is_duplicate(
+                        mask=mask_img,
+                        bbox=bbox,
+                        category_id=cat_id,
+                        category_name=cat_name
+                    )
+
+                    if is_dup:
+                        logger.info(
+                            f"Skipping duplicate: ann_id={ann_id} (IoU={max_iou:.3f} "
+                            f"with ann_id={dup_id}, class='{cat_name}')"
+                        )
+                        results["failed"] += 1
+                        results["errors"].append(
+                            f"Duplicate of annotation {dup_id} (IoU={max_iou:.3f})"
+                        )
+                        continue
+
+                # Save PNG
+                png_path = output_path / cat_name / f"{ann_id}.png"
+                img_data = base64.b64decode(extraction_result["cropped_image_base64"])
+                with open(png_path, 'wb') as f:
+                    f.write(img_data)
+
+                # Save JSON
+                json_path = None
+                if save_individual_coco:
+                    json_path = output_path / cat_name / f"{ann_id}.json"
+                    cat = categories[cat_id]
+                    coco_json = self.create_individual_coco(
+                        annotation=ann,
+                        category=cat,
+                        image_shape=extraction_result["extracted_size"][::-1],
+                        original_image_filename=f"image_{img_id}"
+                    )
+                    with open(json_path, 'w') as f:
+                        json.dump(coco_json, f, indent=2)
+
+                # Register
+                if registry and extraction_result.get("mask_base64"):
+                    registry.register_extraction(
+                        mask=mask_img,
+                        bbox=bbox,
+                        annotation_id=ann_id,
+                        category_id=cat_id,
+                        category_name=cat_name,
+                        method=extraction_result["method_used"]
+                    )
+
+                # Update results
+                results["extracted"] += 1
+                results["by_category"][cat_name] = results["by_category"].get(cat_name, 0) + 1
+                method = extraction_result["method_used"]
+                results["by_method"][method] = results["by_method"].get(method, 0) + 1
+
+                results["extracted_files"].append({
+                    "annotation_id": ann_id,
+                    "category_name": cat_name,
+                    "image_path": str(png_path),
+                    "json_path": str(json_path) if json_path else None,
+                    "method": method,
+                    "original_bbox": extraction_result["original_bbox"],
+                    "extracted_size": extraction_result["extracted_size"]
+                })
+
+                # Progress
+                if progress_callback:
+                    progress_callback({
+                        "extracted": results["extracted"],
+                        "failed": results["failed"],
+                        "current_category": cat_name,
+                        "by_category": results["by_category"]
+                    })
+
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"Annotation {ann_id}: {str(e)}")
+                logger.error(f"Error extracting annotation {ann_id}: {e}")
 
     async def extract_from_dataset(
         self,
@@ -1148,13 +2062,17 @@ class ObjectExtractor:
         output_dir: str,
         categories_to_extract: List[str] = None,
         use_sam3_for_bbox: bool = True,
+        force_bbox_only: bool = False,
+        force_sam3_resegmentation: bool = False,
+        force_sam3_text_prompt: bool = False,
         padding: int = 5,
         min_object_area: int = 100,
         save_individual_coco: bool = True,
-        progress_callback: Callable[[Dict[str, Any]], None] = None
+        progress_callback: Callable[[Dict[str, Any]], None] = None,
+        deduplication_config: Optional['DeduplicationConfig'] = None
     ) -> Dict[str, Any]:
         """
-        Extract all objects from a COCO dataset.
+        Extract all objects from a COCO dataset with deduplication support.
         Runs in thread pool to avoid blocking the event loop.
 
         Args:
@@ -1163,13 +2081,17 @@ class ObjectExtractor:
             output_dir: Output directory for extracted objects
             categories_to_extract: List of category names to extract (None = all)
             use_sam3_for_bbox: Use SAM3 for bbox-only annotations
+            force_bbox_only: Force extraction using only bbox, ignore existing masks
+            force_sam3_resegmentation: Force SAM3 to regenerate masks even if polygon/RLE exist
+            force_sam3_text_prompt: Use only class label with SAM3, ignore bbox and masks
             padding: Padding around objects
             min_object_area: Minimum area to extract
             save_individual_coco: Save JSON for each object
             progress_callback: Callback function for progress updates
+            deduplication_config: Configuration for deduplication (None = default enabled)
 
         Returns:
-            Extraction results dictionary
+            Extraction results dictionary with deduplication stats
         """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -1181,9 +2103,231 @@ class ObjectExtractor:
                 output_dir=output_dir,
                 categories_to_extract=categories_to_extract,
                 use_sam3_for_bbox=use_sam3_for_bbox,
+                force_bbox_only=force_bbox_only,
+                force_sam3_resegmentation=force_sam3_resegmentation,
+                force_sam3_text_prompt=force_sam3_text_prompt,
                 padding=padding,
                 min_object_area=min_object_area,
                 save_individual_coco=save_individual_coco,
+                progress_callback=progress_callback,
+                deduplication_config=deduplication_config
+            )
+        )
+
+    # =========================================================================
+    # IMAGENET-STYLE EXTRACTION
+    # =========================================================================
+
+    def _extract_from_imagenet_structure_sync(
+        self,
+        root_dir: str,
+        output_dir: str,
+        padding: int = 5,
+        min_object_area: int = 100,
+        max_objects_per_class: Optional[int] = None,
+        progress_callback: Callable[[Dict[str, Any]], None] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract objects from ImageNet-style directory structure (synchronous).
+
+        Expected structure:
+            root_dir/
+            ├── class1/
+            │   ├── img001.jpg
+            │   ├── img002.jpg
+            │   └── ...
+            ├── class2/
+            │   └── ...
+
+        For each image:
+        1. Use SAM3 with class name as text prompt
+        2. Extract segmented object
+        3. Save to output_dir/class_name/
+
+        Args:
+            root_dir: Root directory with class subdirectories
+            output_dir: Output directory for extracted objects
+            padding: Padding around extracted objects
+            min_object_area: Minimum area filter
+            max_objects_per_class: Limit objects per class (None=all)
+            progress_callback: Callback for progress updates
+
+        Returns:
+            Extraction summary with stats per class
+        """
+        if not self.sam3_available:
+            logger.error("SAM3 is required for ImageNet structure extraction but not available")
+            return {
+                "success": False,
+                "error": "SAM3 not available",
+                "total_classes": 0,
+                "classes": {},
+                "total_extracted": 0,
+                "total_failed": 0
+            }
+
+        logger.info(f"Starting ImageNet extraction from {root_dir}")
+
+        # Discover classes (subdirectories)
+        try:
+            classes = [d for d in os.listdir(root_dir)
+                      if os.path.isdir(os.path.join(root_dir, d))]
+        except Exception as e:
+            logger.error(f"Failed to list root directory: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to access root directory: {e}",
+                "total_classes": 0,
+                "classes": {},
+                "total_extracted": 0,
+                "total_failed": 0
+            }
+
+        results = {
+            "success": True,
+            "total_classes": len(classes),
+            "classes": {},
+            "total_extracted": 0,
+            "total_failed": 0,
+            "errors": []
+        }
+
+        for class_idx, class_name in enumerate(classes):
+            class_dir = os.path.join(root_dir, class_name)
+            output_class_dir = os.path.join(output_dir, class_name)
+            os.makedirs(output_class_dir, exist_ok=True)
+
+            # List images in class directory
+            try:
+                image_files = [f for f in os.listdir(class_dir)
+                              if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+            except Exception as e:
+                logger.error(f"Failed to list class directory {class_name}: {e}")
+                results["errors"].append(f"Class '{class_name}': {str(e)}")
+                continue
+
+            if max_objects_per_class:
+                image_files = image_files[:max_objects_per_class]
+
+            class_stats = {
+                "total_images": len(image_files),
+                "extracted": 0,
+                "failed": 0
+            }
+
+            logger.info(f"Processing class '{class_name}': {len(image_files)} images")
+
+            for img_idx, img_file in enumerate(image_files):
+                try:
+                    img_path = os.path.join(class_dir, img_file)
+                    img = cv2.imread(img_path)
+
+                    if img is None:
+                        logger.warning(f"Failed to read image: {img_path}")
+                        class_stats["failed"] += 1
+                        continue
+
+                    # Segment with SAM3 text prompt
+                    mask = self._segment_with_sam3_text_prompt_sync(
+                        image=img,
+                        class_name=class_name,
+                        min_area=min_object_area
+                    )
+
+                    if mask is None:
+                        class_stats["failed"] += 1
+                        continue
+
+                    # Calculate bbox from mask
+                    y_indices, x_indices = np.where(mask > 0)
+                    if len(x_indices) == 0 or len(y_indices) == 0:
+                        class_stats["failed"] += 1
+                        continue
+
+                    x = int(x_indices.min())
+                    y = int(y_indices.min())
+                    w = int(x_indices.max() - x + 1)
+                    h = int(y_indices.max() - y + 1)
+                    bbox = [x, y, w, h]
+
+                    # Extract object
+                    cropped, new_bbox = self.crop_with_mask(img, mask, bbox, padding)
+
+                    if cropped is None:
+                        class_stats["failed"] += 1
+                        continue
+
+                    # Save extracted object
+                    output_filename = f"{Path(img_file).stem}.png"
+                    output_path = os.path.join(output_class_dir, output_filename)
+                    cv2.imwrite(output_path, cropped)
+
+                    class_stats["extracted"] += 1
+                    results["total_extracted"] += 1
+
+                    # Progress callback
+                    if progress_callback and (img_idx + 1) % 10 == 0:
+                        progress_callback({
+                            "current_class": class_name,
+                            "class_progress": f"{img_idx + 1}/{len(image_files)}",
+                            "total_progress": f"{class_idx + 1}/{len(classes)} classes",
+                            "extracted": results["total_extracted"],
+                            "failed": results["total_failed"]
+                        })
+
+                except Exception as e:
+                    logger.error(f"Failed to process {img_file}: {e}")
+                    class_stats["failed"] += 1
+                    results["total_failed"] += 1
+                    results["errors"].append(f"{class_name}/{img_file}: {str(e)}")
+
+            results["classes"][class_name] = class_stats
+            results["total_failed"] += class_stats["failed"]
+
+            logger.info(
+                f"Class '{class_name}': {class_stats['extracted']}/{class_stats['total_images']} extracted"
+            )
+
+        logger.info(
+            f"ImageNet extraction complete: {results['total_extracted']} extracted, "
+            f"{results['total_failed']} failed from {results['total_classes']} classes"
+        )
+
+        return results
+
+    async def extract_from_imagenet_structure(
+        self,
+        root_dir: str,
+        output_dir: str,
+        padding: int = 5,
+        min_object_area: int = 100,
+        max_objects_per_class: Optional[int] = None,
+        progress_callback: Callable[[Dict[str, Any]], None] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract objects from ImageNet-style directory structure (async).
+
+        Args:
+            root_dir: Root directory with class subdirectories
+            output_dir: Output directory for extracted objects
+            padding: Padding around extracted objects
+            min_object_area: Minimum object area filter
+            max_objects_per_class: Limit objects per class (None=all)
+            progress_callback: Callback for progress updates
+
+        Returns:
+            Dictionary with extraction results and statistics
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            partial(
+                self._extract_from_imagenet_structure_sync,
+                root_dir=root_dir,
+                output_dir=output_dir,
+                padding=padding,
+                min_object_area=min_object_area,
+                max_objects_per_class=max_objects_per_class,
                 progress_callback=progress_callback
             )
         )
@@ -1201,7 +2345,7 @@ class ObjectExtractor:
         overwrite_existing: bool = False,
         simplify_polygons: bool = True,
         simplify_tolerance: float = 2.0,
-        progress_callback: Callable[[Dict[str, Any]], None] = None
+        progress_callback: Callable[[Dict[str, Any]], None] = None,
     ) -> Dict[str, Any]:
         """
         Convert bbox-only annotations to segmentations using SAM3.
@@ -1390,7 +2534,7 @@ class ObjectExtractor:
         overwrite_existing: bool = False,
         simplify_polygons: bool = True,
         simplify_tolerance: float = 2.0,
-        progress_callback: Callable[[Dict[str, Any]], None] = None
+        progress_callback: Callable[[Dict[str, Any]], None] = None,
     ) -> Dict[str, Any]:
         """
         Convert bbox-only annotations to segmentations using SAM3.
@@ -1421,6 +2565,329 @@ class ObjectExtractor:
                 overwrite_existing=overwrite_existing,
                 simplify_polygons=simplify_polygons,
                 simplify_tolerance=simplify_tolerance,
+                progress_callback=progress_callback,
+            )
+        )
+
+    # =========================================================================
+    # CUSTOM OBJECT EXTRACTION (TEXT PROMPT MODE)
+    # =========================================================================
+
+    def _extract_custom_objects_sync(
+        self,
+        images_dir: str,
+        output_dir: str,
+        object_names: List[str],
+        padding: int = 5,
+        min_object_area: int = 100,
+        save_individual_coco: bool = True,
+        deduplication_config: Optional[Dict] = None,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract custom objects using text prompts only (no COCO JSON).
+        Synchronous implementation for thread pool execution.
+
+        Args:
+            images_dir: Directory containing images
+            output_dir: Output directory for extracted objects
+            object_names: List of object names to segment
+            padding: Pixels of padding around objects
+            min_object_area: Minimum object area in pixels
+            save_individual_coco: Save individual COCO JSON per object
+            deduplication_config: Deduplication configuration dict
+            progress_callback: Progress callback function
+
+        Returns:
+            Extraction results dictionary
+        """
+        from app.utils import ExtractionRegistry, SAM3Instance
+        from app.models.extraction_schemas import DeduplicationConfig
+
+        start_time = datetime.now()
+
+        # Parse deduplication config
+        if deduplication_config:
+            dedup_cfg = DeduplicationConfig(**deduplication_config)
+        else:
+            dedup_cfg = DeduplicationConfig(enabled=True, iou_threshold=0.7)
+
+        # Initialize results
+        results = {
+            "success": False,
+            "total_images": 0,
+            "total_objects_extracted": 0,
+            "failed_extractions": 0,
+            "duplicates_prevented": 0,
+            "by_category": {},
+            "by_method": {},
+            "errors": [],
+            "output_dir": output_dir
+        }
+
+        # Scan images directory
+        images_dir_path = Path(images_dir)
+        if not images_dir_path.exists():
+            results["errors"].append(f"Images directory not found: {images_dir}")
+            return results
+
+        # Find all images
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
+        image_files = [
+            f for f in images_dir_path.iterdir()
+            if f.suffix.lower() in image_extensions
+        ]
+
+        if not image_files:
+            results["errors"].append(f"No images found in {images_dir}")
+            return results
+
+        results["total_images"] = len(image_files)
+        logger.info(f"Found {len(image_files)} images in {images_dir}")
+
+        # Create output directories for each object type
+        output_dir_path = Path(output_dir)
+        category_dirs = {}
+        for obj_name in object_names:
+            # Sanitize object name for directory
+            safe_name = obj_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            cat_dir = output_dir_path / safe_name
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            category_dirs[obj_name] = cat_dir
+            results["by_category"][obj_name] = 0
+
+        # Counter for synthetic annotation IDs
+        annotation_id_counter = 0
+
+        # Process each image
+        for img_idx, img_path in enumerate(image_files):
+            logger.info(f"Processing image {img_idx + 1}/{len(image_files)}: {img_path.name}")
+
+            # Load image
+            image = cv2.imread(str(img_path))
+            if image is None:
+                error_msg = f"Failed to load image: {img_path}"
+                logger.error(error_msg)
+                results["errors"].append(error_msg)
+                continue
+
+            img_h, img_w = image.shape[:2]
+
+            # Initialize extraction registry for this image (deduplication per-image)
+            registry = ExtractionRegistry(
+                iou_threshold=dedup_cfg.iou_threshold,
+                cross_category_dedup=dedup_cfg.cross_category_dedup,
+                matching_strategy=dedup_cfg.matching_strategy
+            )
+
+            # Process each object name
+            for obj_name in object_names:
+                logger.debug(f"  Segmenting '{obj_name}' in {img_path.name}")
+
+                # Run SAM3 text prompt segmentation
+                instances = self._segment_with_sam3_text_prompt_sync(
+                    image=image,
+                    class_name=obj_name,
+                    min_area=min_object_area,
+                    return_all_instances=True
+                )
+
+                if instances is None or len(instances) == 0:
+                    logger.debug(f"    No instances of '{obj_name}' found")
+                    continue
+
+                logger.info(f"    Found {len(instances)} instance(s) of '{obj_name}'")
+
+                # Extract each instance
+                for inst_idx, instance in enumerate(instances):
+                    annotation_id_counter += 1
+
+                    # Check for duplicates
+                    if dedup_cfg.enabled:
+                        is_dup, dup_id, iou = registry.is_duplicate(
+                            mask=instance.mask,
+                            bbox=instance.bbox,
+                            category_id=0,  # synthetic
+                            category_name=obj_name
+                        )
+
+                        if is_dup:
+                            logger.debug(
+                                f"      Instance {inst_idx} is duplicate (IoU={iou:.3f} with previous), skipping"
+                            )
+                            results["duplicates_prevented"] += 1
+                            continue
+
+                    # Extract object with mask
+                    try:
+                        extracted_img, mask_img, bbox_extracted = self._extract_object_with_mask(
+                            image=image,
+                            mask=instance.mask,
+                            padding=padding
+                        )
+
+                        if extracted_img is None:
+                            logger.warning(f"      Failed to extract instance {inst_idx}")
+                            results["failed_extractions"] += 1
+                            continue
+
+                        # Save extracted image
+                        safe_obj_name = obj_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+                        output_filename = f"{img_path.stem}_{safe_obj_name}_instance{inst_idx:03d}.png"
+                        output_path = category_dirs[obj_name] / output_filename
+
+                        cv2.imwrite(str(output_path), extracted_img)
+
+                        # Save individual COCO JSON if requested
+                        if save_individual_coco:
+                            json_filename = output_path.stem + ".json"
+                            json_path = category_dirs[obj_name] / json_filename
+
+                            # Get polygon from mask
+                            polygons = self.mask_to_polygon(instance.mask, simplify=True, tolerance=2.0)
+
+                            coco_json = {
+                                "info": {
+                                    "description": f"Extracted {obj_name} from {img_path.name}",
+                                    "date_created": datetime.now().isoformat()
+                                },
+                                "images": [{
+                                    "id": 1,
+                                    "file_name": output_filename,
+                                    "width": extracted_img.shape[1],
+                                    "height": extracted_img.shape[0]
+                                }],
+                                "annotations": [{
+                                    "id": annotation_id_counter,
+                                    "image_id": 1,
+                                    "category_id": 1,
+                                    "bbox": bbox_extracted,
+                                    "area": int(np.sum(instance.mask > 0)),
+                                    "segmentation": polygons if polygons else [],
+                                    "iscrowd": 0
+                                }],
+                                "categories": [{
+                                    "id": 1,
+                                    "name": obj_name,
+                                    "supercategory": "object"
+                                }]
+                            }
+
+                            with open(json_path, 'w') as f:
+                                json.dump(coco_json, f, indent=2)
+
+                        # Register extraction
+                        registry.register_extraction(
+                            mask=instance.mask,
+                            bbox=instance.bbox,
+                            annotation_id=annotation_id_counter,
+                            category_id=0,
+                            category_name=obj_name,
+                            method="sam3_text_prompt"
+                        )
+
+                        # Update stats
+                        results["total_objects_extracted"] += 1
+                        results["by_category"][obj_name] += 1
+                        results["by_method"]["sam3_text_prompt"] = results["by_method"].get("sam3_text_prompt", 0) + 1
+
+                        logger.debug(f"      Extracted instance {inst_idx} → {output_path.name}")
+
+                    except Exception as e:
+                        error_msg = f"Error extracting instance {inst_idx} of '{obj_name}' from {img_path.name}: {str(e)}"
+                        logger.error(error_msg)
+                        results["errors"].append(error_msg)
+                        results["failed_extractions"] += 1
+
+            # Progress callback
+            if progress_callback:
+                progress_callback({
+                    "extracted": results["total_objects_extracted"],
+                    "failed": results["failed_extractions"],
+                    "duplicates_prevented": results["duplicates_prevented"],
+                    "total_images": results["total_images"],
+                    "current_image": img_path.name,
+                    "image_progress": f"{img_idx + 1}/{len(image_files)}"
+                })
+
+        # Save extraction summary
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+
+        summary = {
+            "extraction_date": start_time.isoformat(),
+            "images_dir": images_dir,
+            "output_dir": output_dir,
+            "object_names": object_names,
+            "total_images_processed": results["total_images"],
+            "total_objects_extracted": results["total_objects_extracted"],
+            "failed_extractions": results["failed_extractions"],
+            "duplicates_prevented": results["duplicates_prevented"],
+            "by_category": results["by_category"],
+            "by_method": results["by_method"],
+            "errors": results["errors"],
+            "processing_time_seconds": processing_time,
+            "settings": {
+                "padding": padding,
+                "min_object_area": min_object_area,
+                "deduplication_enabled": dedup_cfg.enabled,
+                "deduplication_iou_threshold": dedup_cfg.iou_threshold
+            }
+        }
+
+        summary_path = output_dir_path / "extraction_summary.json"
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+
+        logger.info(f"Extraction complete: {results['total_objects_extracted']} objects extracted")
+        logger.info(f"Summary saved to: {summary_path}")
+
+        results["success"] = True
+        results["processing_time_seconds"] = processing_time
+        results["summary_path"] = str(summary_path)
+
+        return results
+
+    async def extract_custom_objects(
+        self,
+        images_dir: str,
+        output_dir: str,
+        object_names: List[str],
+        padding: int = 5,
+        min_object_area: int = 100,
+        save_individual_coco: bool = True,
+        deduplication_config: Optional[Dict] = None,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract custom objects using text prompts only (no COCO JSON).
+        Async wrapper that runs in thread pool.
+
+        Args:
+            images_dir: Directory containing images
+            output_dir: Output directory for extracted objects
+            object_names: List of object names to segment
+            padding: Pixels of padding around objects
+            min_object_area: Minimum object area in pixels
+            save_individual_coco: Save individual COCO JSON per object
+            deduplication_config: Deduplication configuration dict
+            progress_callback: Progress callback function
+
+        Returns:
+            Extraction results dictionary
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            partial(
+                self._extract_custom_objects_sync,
+                images_dir=images_dir,
+                output_dir=output_dir,
+                object_names=object_names,
+                padding=padding,
+                min_object_area=min_object_area,
+                save_individual_coco=save_individual_coco,
+                deduplication_config=deduplication_config,
                 progress_callback=progress_callback
             )
         )
