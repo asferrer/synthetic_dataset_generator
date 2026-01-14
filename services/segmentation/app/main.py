@@ -72,6 +72,8 @@ from app.models.extraction_schemas import (
     CategoryInfo,
     ExtractObjectsRequest,
     ExtractObjectsResponse,
+    ExtractCustomObjectsRequest,
+    ExtractCustomObjectsResponse,
     ExtractionJobStatus,
     ExtractSingleObjectRequest,
     ExtractSingleObjectResponse,
@@ -897,7 +899,9 @@ async def extract_objects(request: ExtractObjectsRequest):
             "extracted_files": [],
             "processing_time_ms": 0.0,
             "started_at": None,
-            "completed_at": None
+            "completed_at": None,
+            "duplicates_prevented": 0,
+            "deduplication_enabled": request.deduplication.enabled if request.deduplication else True
         }
 
         # Define extraction task
@@ -919,19 +923,22 @@ async def extract_objects(request: ExtractObjectsRequest):
                     output_dir=request.output_dir,
                     categories_to_extract=request.categories_to_extract or None,
                     use_sam3_for_bbox=request.use_sam3_for_bbox,
+                    force_bbox_only=request.force_bbox_only,
+                    force_sam3_resegmentation=request.force_sam3_resegmentation,
+                    force_sam3_text_prompt=request.force_sam3_text_prompt,
                     padding=request.padding,
                     min_object_area=request.min_object_area,
                     save_individual_coco=request.save_individual_coco,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    deduplication_config=request.deduplication
                 )
-
-                extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
                 extraction_jobs[job_id]["extracted_objects"] = result["extracted"]
                 extraction_jobs[job_id]["failed_objects"] = result["failed"]
                 extraction_jobs[job_id]["categories_progress"] = result["by_category"]
                 extraction_jobs[job_id]["errors"] = result.get("errors", [])[:100]
                 extraction_jobs[job_id]["extracted_files"] = result.get("extracted_files", [])[:1000]
                 extraction_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
+                extraction_jobs[job_id]["duplicates_prevented"] = result.get("deduplication_stats", {}).get("duplicates_prevented", 0)
 
             except Exception as e:
                 # Use logger.exception to get full traceback for debugging
@@ -945,18 +952,151 @@ async def extract_objects(request: ExtractObjectsRequest):
 
         # Run in background using asyncio.create_task for proper async execution
         asyncio.create_task(run_extraction())
-        logger.info(f"Started extraction job {job_id} with {total_objects} objects")
+
+        dedup_status = "enabled (IoU=0.7)" if (request.deduplication and request.deduplication.enabled) or request.deduplication is None else "disabled"
+        logger.info(f"Started extraction job {job_id} with {total_objects} objects (deduplication: {dedup_status})")
 
         return ExtractObjectsResponse(
             success=True,
             job_id=job_id,
             status=JobStatus.QUEUED,
-            message=f"Extraction job queued. {total_objects} objects to extract."
+            message=f"Extraction job queued. {total_objects} objects to extract. Deduplication: {dedup_status}"
         )
 
     except Exception as e:
         logger.error(f"Failed to start extraction: {e}")
         return ExtractObjectsResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/extract/custom-objects", response_model=ExtractCustomObjectsResponse, tags=["Object Extraction"])
+async def extract_custom_objects(request: ExtractCustomObjectsRequest):
+    """
+    Extract custom objects using text prompts (no COCO JSON required).
+
+    This endpoint allows you to specify object names directly and segment them
+    from images using SAM3 text prompt mode.
+
+    Process:
+    1. Scans all images in images_dir
+    2. For each object name in the list, runs SAM3 text prompt segmentation
+    3. Extracts all detected instances as transparent PNGs
+    4. Organizes results by object type: output_dir/{object_name}/
+
+    Runs asynchronously. Use GET /extract/jobs/{job_id} to track progress.
+    """
+    try:
+        # Validate images directory
+        images_dir = Path(request.images_dir)
+        if not images_dir.exists():
+            raise FileNotFoundError(f"Images directory not found: {request.images_dir}")
+
+        # Validate object names
+        if not request.object_names or len(request.object_names) == 0:
+            raise ValueError("At least one object name must be provided")
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        # Count images for progress tracking
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
+        total_images = sum(
+            1 for f in images_dir.iterdir()
+            if f.suffix.lower() in image_extensions
+        )
+
+        if total_images == 0:
+            raise ValueError(f"No images found in {request.images_dir}")
+
+        extraction_jobs[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.QUEUED,
+            "total_objects": 0,  # Unknown until extraction
+            "extracted_objects": 0,
+            "failed_objects": 0,
+            "current_category": "",
+            "categories_progress": {name: 0 for name in request.object_names},
+            "output_dir": request.output_dir,
+            "errors": [],
+            "extracted_files": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None,
+            "duplicates_prevented": 0,
+            "deduplication_enabled": request.deduplication.enabled if request.deduplication else True,
+            "total_images": total_images,
+            "current_image": ""
+        }
+
+        # Define extraction task
+        async def run_extraction():
+            extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
+            extraction_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            def progress_callback(progress):
+                # Update job status with progress info
+                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
+                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+                extraction_jobs[job_id]["duplicates_prevented"] = progress.get("duplicates_prevented", 0)
+                extraction_jobs[job_id]["current_image"] = progress.get("current_image", "")
+
+            try:
+                result = await state.object_extractor.extract_custom_objects(
+                    images_dir=str(images_dir),
+                    output_dir=request.output_dir,
+                    object_names=request.object_names,
+                    padding=request.padding,
+                    min_object_area=request.min_object_area,
+                    save_individual_coco=request.save_individual_coco,
+                    deduplication_config=request.deduplication.dict() if request.deduplication else None,
+                    progress_callback=progress_callback
+                )
+
+                # Update final job status
+                extraction_jobs[job_id]["total_objects"] = result.get("total_objects_extracted", 0)
+                extraction_jobs[job_id]["extracted_objects"] = result.get("total_objects_extracted", 0)
+                extraction_jobs[job_id]["failed_objects"] = result.get("failed_extractions", 0)
+                extraction_jobs[job_id]["categories_progress"] = result.get("by_category", {})
+                extraction_jobs[job_id]["errors"] = result.get("errors", [])[:100]
+                extraction_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
+                extraction_jobs[job_id]["duplicates_prevented"] = result.get("duplicates_prevented", 0)
+
+                if result.get("success"):
+                    extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    logger.info(f"Custom extraction job {job_id} completed: {result['total_objects_extracted']} objects")
+                else:
+                    extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                    logger.error(f"Custom extraction job {job_id} failed")
+
+            except Exception as e:
+                logger.exception(f"Custom extraction job {job_id} failed: {e}")
+                extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                extraction_jobs[job_id]["errors"].append(str(e))
+
+            finally:
+                extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        # Run in background
+        asyncio.create_task(run_extraction())
+
+        dedup_status = "enabled (IoU=0.7)" if (request.deduplication and request.deduplication.enabled) or request.deduplication is None else "disabled"
+        logger.info(
+            f"Started custom extraction job {job_id} for {len(request.object_names)} object types "
+            f"across {total_images} images (deduplication: {dedup_status})"
+        )
+
+        return ExtractCustomObjectsResponse(
+            success=True,
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            message=f"Custom extraction job queued. Will search for {len(request.object_names)} object types in {total_images} images. Deduplication: {dedup_status}"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start custom extraction: {e}")
+        return ExtractCustomObjectsResponse(
             success=False,
             error=str(e)
         )
@@ -1027,7 +1167,10 @@ async def extract_single_object(request: ExtractSingleObjectRequest):
             annotation=request.annotation,
             category_name=request.category_name,
             use_sam3=request.use_sam3,
-            padding=request.padding
+            padding=request.padding,
+            force_bbox_only=request.force_bbox_only,
+            force_sam3_resegmentation=request.force_sam3_resegmentation,
+            force_sam3_text_prompt=request.force_sam3_text_prompt
         )
 
         processing_time = (time.time() - start_time) * 1000
@@ -1058,6 +1201,132 @@ async def extract_single_object(request: ExtractSingleObjectRequest):
             processing_time_ms=(time.time() - start_time) * 1000,
             error=str(e)
         )
+
+
+@app.post("/extract/imagenet", tags=["Object Extraction"])
+async def extract_from_imagenet(
+    root_dir: str,
+    output_dir: str,
+    padding: int = 5,
+    min_object_area: int = 100,
+    max_objects_per_class: Optional[int] = None
+):
+    """
+    Extract objects from ImageNet-style directory structure.
+
+    Expected structure:
+        root_dir/
+        ├── class1/
+        │   ├── img001.jpg
+        │   └── img002.jpg
+        ├── class2/
+        │   └── ...
+
+    Uses SAM3 with class name as text prompt for segmentation.
+    Runs asynchronously. Use GET /extract/jobs/{job_id} to track progress.
+    """
+    if not state.sam3_available:
+        return {
+            "success": False,
+            "error": "SAM3 is required for ImageNet extraction but not available"
+        }
+
+    try:
+        # Validate root directory
+        root_path = Path(root_dir)
+        if not root_path.exists():
+            raise FileNotFoundError(f"Root directory not found: {root_dir}")
+
+        if not root_path.is_dir():
+            raise ValueError(f"Path is not a directory: {root_dir}")
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        # Count classes
+        try:
+            classes = [d for d in os.listdir(root_dir)
+                      if os.path.isdir(os.path.join(root_dir, d))]
+            num_classes = len(classes)
+        except Exception as e:
+            raise ValueError(f"Failed to read root directory: {e}")
+
+        extraction_jobs[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.QUEUED,
+            "total_objects": 0,  # Will be updated as we discover images
+            "extracted_objects": 0,
+            "failed_objects": 0,
+            "current_category": "",
+            "categories_progress": {},
+            "output_dir": output_dir,
+            "errors": [],
+            "extracted_files": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None,
+            "extraction_type": "imagenet"
+        }
+
+        # Define extraction task
+        async def run_imagenet_extraction():
+            extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
+            extraction_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            def progress_callback(progress):
+                # Update job progress
+                extraction_jobs[job_id]["current_category"] = progress.get("current_class", "")
+                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
+                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+
+            try:
+                start_time = time.time()
+                result = await state.object_extractor.extract_from_imagenet_structure(
+                    root_dir=root_dir,
+                    output_dir=output_dir,
+                    padding=padding,
+                    min_object_area=min_object_area,
+                    max_objects_per_class=max_objects_per_class,
+                    progress_callback=progress_callback
+                )
+
+                if result.get("success"):
+                    extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+                else:
+                    extraction_jobs[job_id]["status"] = JobStatus.FAILED
+
+                extraction_jobs[job_id]["total_objects"] = result.get("total_extracted", 0) + result.get("total_failed", 0)
+                extraction_jobs[job_id]["extracted_objects"] = result.get("total_extracted", 0)
+                extraction_jobs[job_id]["failed_objects"] = result.get("total_failed", 0)
+                extraction_jobs[job_id]["categories_progress"] = result.get("classes", {})
+                extraction_jobs[job_id]["errors"] = result.get("errors", [])[:100]
+                extraction_jobs[job_id]["processing_time_ms"] = (time.time() - start_time) * 1000
+
+            except Exception as e:
+                logger.exception(f"ImageNet extraction job {job_id} failed: {e}")
+                extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                extraction_jobs[job_id]["errors"].append(str(e))
+
+            finally:
+                extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        # Run in background
+        asyncio.create_task(run_imagenet_extraction())
+        logger.info(f"Started ImageNet extraction job {job_id} from {root_dir} ({num_classes} classes)")
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "queued",
+            "message": f"ImageNet extraction job queued. Processing {num_classes} classes."
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to start ImageNet extraction: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 # =========================================================================
@@ -1307,7 +1576,7 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
                     overwrite_existing=request.overwrite_existing,
                     simplify_polygons=request.simplify_polygons,
                     simplify_tolerance=request.simplify_tolerance,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
 
                 if result.get("success"):

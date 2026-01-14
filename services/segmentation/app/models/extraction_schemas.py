@@ -22,7 +22,15 @@ class ExtractionMethod(str, Enum):
     POLYGON_MASK = "polygon_mask"
     RLE_MASK = "rle_mask"
     SAM3_FROM_BBOX = "sam3_from_bbox"
+    SAM3_TEXT_PROMPT = "sam3_text_prompt"  # NEW: Segmentation using text prompt
     BBOX_CROP = "bbox_crop"
+
+
+class MatchingStrategy(str, Enum):
+    """Strategy for matching SAM3 instances to annotations in text prompt mode"""
+    BBOX_IOU = "bbox_iou"              # Greedy matching by bbox IoU (fast, default)
+    MASK_IOU = "mask_iou"              # Greedy matching by mask IoU (accurate, slower)
+    CENTER_DISTANCE = "center_distance" # Match by bbox center distance
 
 
 class JobStatus(str, Enum):
@@ -83,6 +91,28 @@ class AnalyzeDatasetResponse(BaseModel):
 # OBJECT EXTRACTION
 # =============================================================================
 
+class DeduplicationConfig(BaseModel):
+    """Configuration for deduplication during extraction"""
+    enabled: bool = Field(
+        default=True,  # USER PREFERENCE: enabled by default
+        description="Enable deduplication (prevents duplicate mask extraction)"
+    )
+    iou_threshold: float = Field(
+        default=0.7,  # USER PREFERENCE: 70% overlap (stricter)
+        ge=0.0,
+        le=1.0,
+        description="IoU threshold for duplicate detection. Higher = stricter (only marks obvious duplicates)."
+    )
+    matching_strategy: MatchingStrategy = Field(
+        default=MatchingStrategy.BBOX_IOU,
+        description="Strategy for matching SAM3 instances to annotations in text prompt mode"
+    )
+    cross_category_dedup: bool = Field(
+        default=False,
+        description="Check for duplicates across different categories (not recommended)"
+    )
+
+
 class ExtractObjectsRequest(BaseModel):
     """Request to extract objects from dataset"""
     coco_data: Optional[Dict[str, Any]] = Field(
@@ -103,6 +133,18 @@ class ExtractObjectsRequest(BaseModel):
         default=True,
         description="Use SAM3 to segment objects that only have bounding boxes"
     )
+    force_bbox_only: bool = Field(
+        default=False,
+        description="Ignore existing masks and extract using bbox only"
+    )
+    force_sam3_resegmentation: bool = Field(
+        default=False,
+        description="Force SAM3 to regenerate masks even if polygon/RLE masks already exist"
+    )
+    force_sam3_text_prompt: bool = Field(
+        default=False,
+        description="Use only class label with SAM3 text prompt, ignore both bbox and masks (regenerate everything)"
+    )
     padding: int = Field(
         default=5,
         ge=0,
@@ -116,6 +158,11 @@ class ExtractObjectsRequest(BaseModel):
     save_individual_coco: bool = Field(
         default=True,
         description="Save individual COCO JSON for each extracted object"
+    )
+    # NEW: Deduplication configuration
+    deduplication: Optional[DeduplicationConfig] = Field(
+        default_factory=lambda: DeduplicationConfig(enabled=True, iou_threshold=0.7),
+        description="Deduplication configuration (enabled by default with IoU=0.7)"
     )
 
 
@@ -154,6 +201,9 @@ class ExtractionJobStatus(BaseModel):
     processing_time_ms: float = 0.0
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # NEW: Deduplication statistics
+    duplicates_prevented: int = 0
+    deduplication_enabled: bool = False
 
 
 class ExtractSingleObjectRequest(BaseModel):
@@ -173,6 +223,18 @@ class ExtractSingleObjectRequest(BaseModel):
         description="Use SAM3 to segment (if annotation has no mask)"
     )
     padding: int = Field(default=5, ge=0, le=50)
+    force_bbox_only: bool = Field(
+        default=False,
+        description="Force extraction using only bbox, ignore existing masks"
+    )
+    force_sam3_resegmentation: bool = Field(
+        default=False,
+        description="Force SAM3 to regenerate masks even if polygon/RLE masks exist"
+    )
+    force_sam3_text_prompt: bool = Field(
+        default=False,
+        description="Use only class label with SAM3 text prompt, ignore both bbox and masks"
+    )
 
 
 class ExtractSingleObjectResponse(BaseModel):
@@ -318,6 +380,43 @@ class SAM3ConversionJobStatus(BaseModel):
 # =============================================================================
 # EXTRACTION SUMMARY
 # =============================================================================
+
+class ExtractCustomObjectsRequest(BaseModel):
+    """Request to extract custom objects using text prompts only (no COCO JSON)"""
+    images_dir: str = Field(..., description="Directory containing images")
+    output_dir: str = Field(..., description="Output directory for extracted objects")
+    object_names: List[str] = Field(
+        ...,
+        description="List of object names to segment (e.g., ['fish', 'coral', 'plastic debris'])"
+    )
+    padding: int = Field(
+        default=5,
+        ge=0,
+        le=50,
+        description="Pixels of padding around extracted objects"
+    )
+    min_object_area: int = Field(
+        default=100,
+        description="Minimum object area in pixels to extract"
+    )
+    save_individual_coco: bool = Field(
+        default=True,
+        description="Save individual COCO JSON for each extracted object"
+    )
+    deduplication: Optional[DeduplicationConfig] = Field(
+        default_factory=lambda: DeduplicationConfig(enabled=True, iou_threshold=0.7),
+        description="Deduplication configuration (enabled by default with IoU=0.7)"
+    )
+
+
+class ExtractCustomObjectsResponse(BaseModel):
+    """Response from custom object extraction request"""
+    success: bool
+    job_id: str = ""
+    status: JobStatus = JobStatus.QUEUED
+    message: str = ""
+    error: Optional[str] = None
+
 
 class ExtractionSummary(BaseModel):
     """Summary of extraction job for saving to file"""
