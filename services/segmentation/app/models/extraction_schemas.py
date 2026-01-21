@@ -517,6 +517,12 @@ class StartLabelingRequest(BaseModel):
         default=False,
         description="Whether to save images with annotations overlaid"
     )
+    padding: int = Field(
+        default=0,
+        ge=0,
+        le=50,
+        description="Pixels of padding to add around detected bounding boxes"
+    )
 
 
 class StartRelabelingRequest(BaseModel):

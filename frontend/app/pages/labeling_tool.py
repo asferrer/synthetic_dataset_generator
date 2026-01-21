@@ -622,6 +622,18 @@ def _render_new_labeling_tab(c: Dict, client) -> None:
                 key="labeling_save_viz"
             )
 
+        # Padding row
+        col_pad1, col_pad2 = st.columns(2)
+        with col_pad1:
+            padding = st.slider(
+                "Padding (pixeles)",
+                min_value=0,
+                max_value=50,
+                value=0,
+                key="labeling_padding",
+                help="Pixeles adicionales alrededor del bounding box detectado"
+            )
+
     spacer(24)
 
     # Validation and start
@@ -713,7 +725,8 @@ def _render_new_labeling_tab(c: Dict, client) -> None:
             "min_area": min_area,
             "max_instances_per_image": max_instances,
             "simplify_polygons": simplify_polygons,
-            "save_visualizations": save_visualizations
+            "save_visualizations": save_visualizations,
+            "padding": padding
         }
 
         with st.spinner("Iniciando job de etiquetado..."):

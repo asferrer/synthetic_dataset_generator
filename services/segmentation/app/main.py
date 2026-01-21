@@ -45,6 +45,7 @@ from typing import Optional, List, Tuple, Dict, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import gc
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,6 +96,16 @@ from app.models.extraction_schemas import (
 
 import base64
 
+# Shared utilities
+try:
+    import sys
+    sys.path.insert(0, '/app')
+    from services.shared.vram_monitor import VRAMMonitor
+    VRAM_MONITOR_AVAILABLE = True
+except ImportError:
+    VRAM_MONITOR_AVAILABLE = False
+    VRAMMonitor = None
+
 
 def encode_region_map_base64(region_map: np.ndarray) -> str:
     """Encode region map as base64 PNG string.
@@ -139,6 +150,11 @@ labeling_jobs: Dict[str, Dict[str, Any]] = {}
 
 # Thread pool for CPU-bound operations
 thread_pool = ThreadPoolExecutor(max_workers=2)
+
+# Concurrency control for labeling jobs
+MAX_CONCURRENT_LABELING_JOBS = 2
+MAX_CONCURRENT_IMAGES_PER_JOB = 4
+labeling_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LABELING_JOBS)
 
 
 def init_scene_analyzer():
@@ -1752,22 +1768,26 @@ async def start_labeling_job(request: StartLabelingRequest):
             "_simplify_tolerance": request.simplify_tolerance,
             "_save_visualizations": request.save_visualizations,
             "_class_mapping": request.class_mapping,  # Maps prompts to final class names
+            "_padding": request.padding,  # Pixels of padding around bboxes
         }
 
-        # Start background task
+        # Start background task with concurrency control
         async def run_labeling():
-            labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
-            labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
+            async with labeling_job_semaphore:
+                logger.info(f"Labeling job {job_id} acquired semaphore (max {MAX_CONCURRENT_LABELING_JOBS} concurrent)")
+                labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
+                labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
-            try:
-                await _process_labeling_job(job_id)
-                labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
-            except Exception as e:
-                logger.exception(f"Labeling job {job_id} failed: {e}")
-                labeling_jobs[job_id]["status"] = JobStatus.FAILED
-                labeling_jobs[job_id]["errors"].append(str(e))
-            finally:
-                labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                try:
+                    await _process_labeling_job(job_id)
+                    labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+                except Exception as e:
+                    logger.exception(f"Labeling job {job_id} failed: {e}")
+                    labeling_jobs[job_id]["status"] = JobStatus.FAILED
+                    labeling_jobs[job_id]["errors"].append(str(e))
+                finally:
+                    labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                    logger.info(f"Labeling job {job_id} released semaphore")
 
         asyncio.create_task(run_labeling())
 
@@ -1880,23 +1900,25 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "_simplify_polygons": request.simplify_polygons,
         }
 
-        # Start background task
+        # Start background task with concurrency control
         async def run_relabeling():
-            logger.info(f"[RELABEL] Background task started for job {job_id}")
-            labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
-            labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
+            async with labeling_job_semaphore:
+                logger.info(f"[RELABEL] Job {job_id} acquired semaphore (max {MAX_CONCURRENT_LABELING_JOBS} concurrent)")
+                labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
+                labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
-            try:
-                logger.info(f"[RELABEL] Calling _process_relabeling_job for {job_id}")
-                await _process_relabeling_job(job_id)
-                labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
-                logger.info(f"[RELABEL] Job {job_id} completed successfully")
-            except Exception as e:
-                logger.exception(f"Relabeling job {job_id} failed: {e}")
-                labeling_jobs[job_id]["status"] = JobStatus.FAILED
-                labeling_jobs[job_id]["errors"].append(str(e))
-            finally:
-                labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                try:
+                    logger.info(f"[RELABEL] Calling _process_relabeling_job for {job_id}")
+                    await _process_relabeling_job(job_id)
+                    labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    logger.info(f"[RELABEL] Job {job_id} completed successfully")
+                except Exception as e:
+                    logger.exception(f"Relabeling job {job_id} failed: {e}")
+                    labeling_jobs[job_id]["status"] = JobStatus.FAILED
+                    labeling_jobs[job_id]["errors"].append(str(e))
+                finally:
+                    labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                    logger.info(f"[RELABEL] Job {job_id} released semaphore")
 
         asyncio.create_task(run_relabeling())
 
@@ -2116,6 +2138,31 @@ async def resume_labeling_job(job_id: str):
     )
 
 
+def _apply_padding_to_bbox(bbox: List[float], padding: int, img_width: int, img_height: int) -> List[float]:
+    """Apply padding to a bounding box while keeping it within image bounds.
+
+    Args:
+        bbox: [x, y, width, height] format bounding box
+        padding: Pixels of padding to add on each side
+        img_width: Image width for bounds checking
+        img_height: Image height for bounds checking
+
+    Returns:
+        Padded bbox [x, y, width, height] clamped to image bounds
+    """
+    if padding <= 0:
+        return bbox
+
+    x, y, w, h = bbox
+    # Expand the bbox by padding on each side
+    x1 = max(0, x - padding)
+    y1 = max(0, y - padding)
+    x2 = min(img_width, x + w + padding)
+    y2 = min(img_height, y + h + padding)
+
+    return [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+
+
 async def _process_labeling_job(job_id: str, resume_from: int = 0):
     """Process a labeling job - detect and segment objects in images.
 
@@ -2139,11 +2186,18 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     simplify_polygons = job["_simplify_polygons"]
     simplify_tolerance = job["_simplify_tolerance"]
     task_type = job["_task_type"]
+    padding = job.get("_padding", 0)  # Pixels of padding around bboxes
     output_dir = Path(job["output_dir"])
     checkpoint_path = output_dir / "checkpoint.json"
     checkpoint_interval = 10  # Save checkpoint every N images
     gc_interval = 5  # Run garbage collection every N images
     yield_interval = 1  # Yield to event loop every N images
+
+    # Initialize VRAM monitor if available
+    vram_monitor = None
+    if VRAM_MONITOR_AVAILABLE and VRAMMonitor is not None:
+        vram_monitor = VRAMMonitor(threshold=0.7, check_interval=2)
+        logger.info(f"VRAMMonitor initialized for job {job_id}")
 
     # Determine final category names
     # If class_mapping exists, use unique mapped values as categories
@@ -2292,6 +2346,10 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
                     bbox = [float(x), float(y), float(bw), float(bh)]
 
+                    # Apply padding if configured
+                    if padding > 0:
+                        bbox = _apply_padding_to_bbox(bbox, padding, w, h)
+
                     # Build annotation (use final_class for category lookup)
                     annotation = {
                         "id": annotation_id,
@@ -2328,14 +2386,24 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                 )
                 logger.debug(f"Saved checkpoint at image {img_idx + 1}")
 
-            # Garbage collection periodically to prevent memory buildup
-            if (img_idx + 1) % gc_interval == 0:
+            # Garbage collection - use VRAMMonitor if available, otherwise periodic
+            should_cleanup = False
+            if vram_monitor is not None:
+                should_cleanup = vram_monitor.should_cleanup()
+            else:
+                should_cleanup = (img_idx + 1) % gc_interval == 0
+
+            if should_cleanup:
                 # Clear image references
                 del image, image_rgb, pil_image
                 # Clear CUDA cache if available
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
                 gc.collect()
+                if vram_monitor is not None:
+                    stats = vram_monitor.get_vram_stats()
+                    logger.debug(f"VRAM cleanup at image {img_idx + 1}: {stats.get('allocated_gb', 0):.2f}GB")
 
             # Yield to event loop to allow health checks and other operations
             if (img_idx + 1) % yield_interval == 0:
