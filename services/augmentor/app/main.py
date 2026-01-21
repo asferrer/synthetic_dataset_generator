@@ -19,7 +19,7 @@ import uuid
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, List
 from contextlib import asynccontextmanager
 
 import torch
@@ -468,9 +468,14 @@ async def list_jobs():
     for job in jobs:
         progress = job.get("progress_details") or {}
         result = job.get("result_summary") or {}
+        request_params = job.get("request_params") or {}
 
         total_items = job.get("total_items", 0)
         processed = job.get("processed_items", 0)
+
+        # Get per-class data for monitoring
+        synthetic_counts = progress.get("synthetic_counts", {})
+        targets_per_class = request_params.get("targets_per_class", {})
 
         jobs_list.append({
             "job_id": job["id"],
@@ -479,7 +484,10 @@ async def list_jobs():
             "images_rejected": job.get("failed_items", 0),
             "images_pending": max(0, total_items - processed),
             "total_items": total_items,
-            "synthetic_counts": progress.get("synthetic_counts", {}),
+            "synthetic_counts": synthetic_counts,
+            "targets_per_class": targets_per_class,
+            "generated_per_class": synthetic_counts,  # Alias for frontend
+            "current_category": progress.get("current_category", ""),
             "created_at": job.get("created_at"),
             "started_at": job.get("started_at"),
             "completed_at": job.get("completed_at"),
@@ -540,6 +548,88 @@ async def cancel_job(job_id: str):
         "message": "Cancellation requested, job will stop after current image",
         "status": "cancelling",
     }
+
+
+@app.post("/jobs/{job_id}/delete", tags=["Composition"])
+async def delete_job(job_id: str):
+    """
+    Permanently delete a job from the database.
+
+    If the job is active (queued/processing), it will be stopped first,
+    then deleted from the database. Generated images are preserved on disk.
+
+    **Important**: This action cannot be undone.
+
+    Args:
+        job_id: The job ID to delete
+
+    Returns:
+        Success status and message
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    # Get job info
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    job_status = job["status"]
+
+    # Step 1: Stop active jobs first
+    if job_status in ["queued", "processing"]:
+        # Set cancellation flag if in cache
+        if job_id in state._active_jobs_cache:
+            state._active_jobs_cache[job_id]["cancelled"] = True
+            logger.info(f"Set cancellation flag for job {job_id} before deletion")
+
+        # If queued, mark as cancelled in DB
+        if job_status == "queued":
+            state.db.complete_job(job_id, "cancelled")
+            logger.info(f"Cancelled queued job {job_id}")
+
+        # If processing, wait briefly for graceful stop
+        elif job_status == "processing":
+            # Give it a moment to check the cancellation flag
+            await asyncio.sleep(1.0)
+
+            # Update status to cancelled
+            state.db.complete_job(job_id, "cancelled")
+            logger.info(f"Stopped processing job {job_id}")
+
+    # Step 2: Delete from database
+    try:
+        deleted = state.db.delete_job(job_id)
+
+        if deleted:
+            # Clean up cache if present
+            if job_id in state._active_jobs_cache:
+                del state._active_jobs_cache[job_id]
+
+            logger.info(f"Job {job_id} permanently deleted from database")
+
+            return {
+                "success": True,
+                "job_id": job_id,
+                "message": f"Job deleted (was {job_status})",
+                "status": "deleted",
+                "note": "Generated images preserved on disk"
+            }
+        else:
+            # This shouldn't happen if job exists, but handle it
+            return {
+                "success": False,
+                "job_id": job_id,
+                "message": "Job could not be deleted",
+                "error": "Database delete returned false"
+            }
+
+    except Exception as e:
+        logger.exception(f"Failed to delete job {job_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete job: {str(e)}"
+        )
 
 
 @app.post("/jobs/{job_id}/resume", tags=["Composition"])
@@ -715,6 +805,90 @@ async def get_job_logs(job_id: str, level: Optional[str] = None, limit: int = 10
     }
 
 
+# =============================================================================
+# Dataset Management Endpoints
+# =============================================================================
+
+@app.get("/datasets", tags=["Datasets"])
+async def list_datasets(
+    dataset_type: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    List all datasets with metadata.
+
+    Returns list of datasets with statistics, timestamps, and preview info.
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    try:
+        datasets = state.db.list_datasets(
+            dataset_type=dataset_type,
+            limit=limit,
+            offset=offset
+        )
+
+        return {"datasets": datasets, "total": len(datasets)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list datasets: {e}")
+
+
+@app.get("/datasets/{job_id}", tags=["Datasets"])
+async def get_dataset_metadata(job_id: str):
+    """
+    Get detailed metadata for a specific dataset.
+
+    Returns full metadata including class distribution, preview images, and config.
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    metadata = state.db.get_dataset_metadata(job_id)
+    if not metadata:
+        raise HTTPException(status_code=404, detail=f"Dataset {job_id} not found")
+
+    return metadata
+
+
+@app.get("/datasets/{job_id}/coco", tags=["Datasets"])
+async def load_dataset_coco(job_id: str):
+    """
+    Load the full COCO JSON for a dataset.
+
+    Returns the complete COCO dataset from disk.
+    Useful for resuming workflow with existing datasets.
+    """
+    import json
+    from pathlib import Path
+
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    metadata = state.db.get_dataset_metadata(job_id)
+    if not metadata:
+        raise HTTPException(status_code=404, detail=f"Dataset {job_id} not found")
+
+    coco_path = metadata.get("coco_json_path")
+    if not coco_path or not Path(coco_path).exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"COCO file not found at {coco_path}"
+        )
+
+    try:
+        with open(coco_path) as f:
+            coco_data = json.load(f)
+        return coco_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load COCO: {e}")
+
+
+# =============================================================================
+# Background Task Functions
+# =============================================================================
+
 async def run_batch_composition_resume(
     job_id: str,
     request: ComposeBatchRequest,
@@ -841,6 +1015,21 @@ async def run_batch_composition_resume(
                 },
                 processing_time_ms=processing_time
             )
+
+            # Extract and save dataset metadata
+            try:
+                metadata = _extract_dataset_metadata(
+                    job_id=job_id,
+                    output_dir=job_output_dir,
+                    coco_path=result.output_coco_path,
+                    request=request
+                )
+                state.db.create_dataset_metadata(**metadata)
+                job_logger.info(f"Dataset metadata saved: {metadata['num_images']} images, {metadata['num_annotations']} annotations")
+            except Exception as e:
+                job_logger.warning(f"Failed to save dataset metadata: {e}")
+                # Don't fail the job if metadata save fails
+
             job_logger.complete("Batch composition completed (resumed)", {
                 "images_generated": total_generated,
                 "new_images": result.images_generated,
@@ -904,6 +1093,11 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
 
     try:
         # Choose parallel or sequential processing based on request
+        # Prepare dataset_info dict if provided
+        dataset_info_dict = None
+        if request.dataset_info:
+            dataset_info_dict = request.dataset_info.model_dump()
+
         if request.parallel:
             job_logger.info(f"Starting PARALLEL batch (concurrent_limit={request.concurrent_limit})")
             result = await state.composer.compose_batch_parallel(
@@ -915,12 +1109,13 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
                 max_objects_per_image=request.max_objects_per_image,
                 concurrent_limit=request.concurrent_limit,
                 vram_threshold=request.vram_threshold,
+                effects=request.effects,
                 effects_config=request.effects_config,
                 depth_aware=request.depth_aware,
-                validate_quality=request.validate_quality,
-                quality_threshold=0.7,
+                save_pipeline_debug=request.save_pipeline_debug,
                 progress_callback=lambda p: update_job_progress(job_id, p, job_output_dir, request),
                 cancel_check=check_cancelled,
+                dataset_info=dataset_info_dict,
             )
         else:
             job_logger.info("Starting SEQUENTIAL batch (legacy mode)")
@@ -941,6 +1136,7 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
                 save_pipeline_debug=request.save_pipeline_debug,
                 progress_callback=lambda p: update_job_progress(job_id, p, job_output_dir, request),
                 cancel_check=check_cancelled,
+                dataset_info=dataset_info_dict,
             )
 
         processing_time = (time.time() - start_time) * 1000
@@ -971,6 +1167,21 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
                 },
                 processing_time_ms=processing_time
             )
+
+            # Extract and save dataset metadata
+            try:
+                metadata = _extract_dataset_metadata(
+                    job_id=job_id,
+                    output_dir=job_output_dir,
+                    coco_path=result.output_coco_path,
+                    request=request
+                )
+                state.db.create_dataset_metadata(**metadata)
+                job_logger.info(f"Dataset metadata saved: {metadata['num_images']} images, {metadata['num_annotations']} annotations")
+            except Exception as e:
+                job_logger.warning(f"Failed to save dataset metadata: {e}")
+                # Don't fail the job if metadata save fails
+
             job_logger.complete("Batch composition completed", {
                 "images_generated": result.images_generated,
                 "images_rejected": result.images_rejected,
@@ -1057,6 +1268,72 @@ def load_checkpoint(output_dir: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"Failed to load checkpoint from {output_dir}: {e}")
     return None
+
+
+def _extract_dataset_metadata(
+    job_id: str,
+    output_dir: str,
+    coco_path: str,
+    request: ComposeBatchRequest
+) -> Dict[str, Any]:
+    """Extract metadata from completed generation job."""
+    import json
+    from pathlib import Path
+
+    # Load COCO file to extract stats
+    with open(coco_path) as f:
+        coco_data = json.load(f)
+
+    images = coco_data.get("images", [])
+    annotations = coco_data.get("annotations", [])
+    categories = coco_data.get("categories", [])
+
+    # Calculate class distribution
+    class_dist = {}
+    for ann in annotations:
+        cat_id = ann.get("category_id")
+        cat_name = next((c["name"] for c in categories if c["id"] == cat_id), "Unknown")
+        class_dist[cat_name] = class_dist.get(cat_name, 0) + 1
+
+    # Get preview images (first 5)
+    images_dir = Path(output_dir) / "images"
+    preview_paths = []
+    for img in images[:5]:
+        img_path = images_dir / img["file_name"]
+        if img_path.exists():
+            preview_paths.append(str(img_path))
+
+    # Load generation config if available
+    effects_config_path = Path(output_dir) / "effects_preset.json"
+    generation_config = None
+    if effects_config_path.exists():
+        with open(effects_config_path) as f:
+            generation_config = json.load(f)
+
+    # Calculate file size
+    file_size_mb = Path(coco_path).stat().st_size / (1024 * 1024)
+
+    # Generate dataset name from timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    dataset_name = f"Synthetic_{timestamp}_{job_id[-8:]}"
+
+    return {
+        "job_id": job_id,
+        "dataset_name": dataset_name,
+        "dataset_type": "generation",
+        "coco_json_path": coco_path,
+        "images_dir": str(images_dir),
+        "effects_config_path": str(effects_config_path) if effects_config_path.exists() else None,
+        "num_images": len(images),
+        "num_annotations": len(annotations),
+        "num_categories": len(categories),
+        "class_distribution": class_dist,
+        "categories": categories,
+        "preview_images": preview_paths,
+        "generation_config": generation_config,
+        "file_size_mb": file_size_mb
+    }
 
 
 # =============================================================================

@@ -121,16 +121,21 @@ class TestEffectsConfig:
     """Test EffectsConfig schema."""
 
     def test_defaults(self):
-        """Verify default values are correct."""
+        """Verify default values are correct (BUG #11 revised defaults)."""
         config = EffectsConfig()
-        assert config.color_intensity == 0.15
+        assert config.color_intensity == 0.12  # Revised from 0.15 (BUG #11)
         assert config.blur_strength == 0.5
         assert config.underwater_intensity == 0.15
-        assert config.caustics_intensity == 0.15
-        assert config.shadow_opacity == 0.12
-        assert config.shadow_blur == 31
+        assert config.caustics_intensity == 0.10  # Revised from 0.15 (BUG #11)
+        assert config.shadow_opacity == 0.10  # Revised from 0.12 (BUG #11)
+        assert config.shadow_blur == 25  # Revised from 31 (BUG #11)
         assert config.edge_feather == 4
         assert config.water_clarity == WaterClarity.CLEAR
+        # New fields from bug fixes
+        assert config.validate_identity is False  # Disabled by default (too strict for underwater)
+        assert config.use_binary_alpha is True
+        assert config.caustics_deterministic is True
+        assert config.recalculate_bbox_after_global is True
 
     def test_custom_values(self):
         """Create with custom values."""

@@ -14,6 +14,7 @@ import json
 import logging
 import asyncio
 import base64
+import gc
 import cv2
 import numpy as np
 from pathlib import Path
@@ -22,6 +23,12 @@ from datetime import datetime
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 from PIL import Image
 
@@ -1504,7 +1511,7 @@ class ObjectExtractor:
         else:
             unique_img_ids = sorted(annotations_grouped.keys())
 
-        for img_id in unique_img_ids:
+        for img_index, img_id in enumerate(unique_img_ids):
             # Load image once per image_id (reuse current_image)
             if current_image_id != img_id:
                 current_image_id = img_id
@@ -1646,6 +1653,23 @@ class ObjectExtractor:
             if registry:
                 stats = registry.get_stats()
                 results["deduplication_stats"]["duplicates_prevented"] += stats["duplicates_prevented"]
+
+            # Memory cleanup after processing each image to prevent memory buildup
+            # Release the image reference and run garbage collection periodically
+            if current_image is not None:
+                del current_image
+                current_image = None
+
+            # Run garbage collection every few images to prevent memory buildup
+            if (img_index + 1) % 5 == 0:  # Every 5 images
+                gc.collect()
+                if HAS_TORCH and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        # Final cleanup
+        gc.collect()
+        if HAS_TORCH and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Calculate processing time
         end_time = datetime.now()
@@ -2809,6 +2833,18 @@ class ObjectExtractor:
                     "current_image": img_path.name,
                     "image_progress": f"{img_idx + 1}/{len(image_files)}"
                 })
+
+            # Memory cleanup after processing each image
+            del image
+            if (img_idx + 1) % 5 == 0:  # Every 5 images
+                gc.collect()
+                if HAS_TORCH and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        # Final cleanup
+        gc.collect()
+        if HAS_TORCH and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Save extraction summary
         end_time = datetime.now()

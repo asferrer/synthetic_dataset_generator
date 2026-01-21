@@ -42,16 +42,16 @@ class WaterClarity(str, Enum):
 
 
 class EffectsConfig(BaseModel):
-    """Effects configuration"""
-    color_intensity: float = Field(0.4, ge=0, le=1, description="Color correction intensity (lower preserves object colors better)")
-    blur_strength: float = Field(1.0, ge=0, le=3)
-    underwater_intensity: float = Field(0.25, ge=0, le=1)
-    caustics_intensity: float = Field(0.15, ge=0, le=0.5)
-    shadow_opacity: float = Field(0.4, ge=0, le=1)
-    lighting_type: str = Field("ambient")
-    lighting_intensity: float = Field(0.5, ge=0, le=1)
-    motion_blur_probability: float = Field(0.2, ge=0, le=1)
-    water_clarity: WaterClarity = Field(WaterClarity.CLEAR)
+    """Effects configuration (BUG #11 FIX - harmonized with Augmentor defaults)"""
+    color_intensity: float = Field(0.12, ge=0, le=1, description="Color correction intensity (0.1-0.15 recommended)")
+    blur_strength: float = Field(0.5, ge=0, le=3, description="Blur matching strength")
+    underwater_intensity: float = Field(0.15, ge=0, le=1, description="Underwater tint intensity")
+    caustics_intensity: float = Field(0.10, ge=0, le=0.5, description="Caustics effect intensity")
+    shadow_opacity: float = Field(0.10, ge=0, le=1, description="Shadow darkness")
+    lighting_type: str = Field("ambient", description="spotlight|gradient|ambient")
+    lighting_intensity: float = Field(0.5, ge=0, le=1, description="Lighting effect intensity")
+    motion_blur_probability: float = Field(0.2, ge=0, le=1, description="Probability of motion blur")
+    water_clarity: WaterClarity = Field(WaterClarity.CLEAR, description="Water clarity level")
 
 
 class ObjectPlacement(BaseModel):
@@ -372,6 +372,29 @@ async def cancel_job(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/jobs/{job_id}/delete")
+async def delete_job(job_id: str):
+    """
+    Permanently delete a job from the database.
+
+    If the job is active (queued/processing), it will be automatically stopped
+    before deletion. Generated images are preserved on disk.
+
+    **Warning**: This action cannot be undone.
+    """
+    logger.info(f"Delete request for job: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        result = await registry.augmentor.post(f"/jobs/{job_id}/delete", {})
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Delete job failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/validate", response_model=ValidateResponse)
 async def validate_image(request: ValidateRequest):
     """
@@ -536,4 +559,65 @@ async def get_job_logs(job_id: str, level: Optional[str] = None, limit: int = 10
 
     except Exception as e:
         logger.error(f"Get job logs failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Dataset Management Endpoints
+# =============================================================================
+
+@router.get("/datasets")
+async def list_datasets(
+    dataset_type: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """List all generated datasets with metadata."""
+    logger.info(f"List datasets request - type: {dataset_type}, limit: {limit}")
+
+    try:
+        registry = get_service_registry()
+
+        params = f"?limit={limit}&offset={offset}"
+        if dataset_type:
+            params += f"&dataset_type={dataset_type}"
+
+        result = await registry.augmentor.get(f"/datasets{params}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"List datasets failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/datasets/{job_id}")
+async def get_dataset_metadata(job_id: str):
+    """Get detailed metadata for a specific dataset."""
+    logger.info(f"Get dataset metadata request for: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        result = await registry.augmentor.get(f"/datasets/{job_id}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Get dataset metadata failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/datasets/{job_id}/coco")
+async def load_dataset_coco(job_id: str):
+    """Load the full COCO JSON for a dataset."""
+    logger.info(f"Load dataset COCO request for: {job_id}")
+
+    try:
+        registry = get_service_registry()
+        result = await registry.augmentor.get(f"/datasets/{job_id}/coco")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Load dataset COCO failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

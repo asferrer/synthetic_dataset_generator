@@ -28,7 +28,7 @@ from app.models.schemas import (
     ServiceStatus,
     AnnotationBox
 )
-from app.routers import augment
+from app.routers import augment, segmentation
 
 # Configure logging
 logging.basicConfig(
@@ -82,6 +82,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(augment.router)
+app.include_router(segmentation.router)
 
 
 @app.get("/health", response_model=HealthResponse)
