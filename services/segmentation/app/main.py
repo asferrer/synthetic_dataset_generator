@@ -85,6 +85,12 @@ from app.models.extraction_schemas import (
     JobStatus,
     AnnotationType,
     ExtractionMethod,
+    # Labeling schemas
+    StartLabelingRequest,
+    StartRelabelingRequest,
+    LabelingJobResponse,
+    LabelingJobStatus,
+    LabelingResultResponse,
 )
 
 import base64
@@ -129,6 +135,7 @@ state = ServiceState()
 # Job tracking for async operations
 extraction_jobs: Dict[str, Dict[str, Any]] = {}
 sam3_conversion_jobs: Dict[str, Dict[str, Any]] = {}
+labeling_jobs: Dict[str, Dict[str, Any]] = {}
 
 # Thread pool for CPU-bound operations
 thread_pool = ThreadPoolExecutor(max_workers=2)
@@ -1653,6 +1660,1097 @@ async def get_sam3_conversion_job_status(job_id: str):
 
     job = sam3_conversion_jobs[job_id]
     return SAM3ConversionJobStatus(**job)
+
+
+# =========================================================================
+# LABELING TOOL ENDPOINTS
+# =========================================================================
+
+@app.post("/labeling/start", response_model=LabelingJobResponse, tags=["Labeling Tool"])
+async def start_labeling_job(request: StartLabelingRequest):
+    """
+    Start a new labeling job to label images from scratch.
+
+    Uses SAM3 text prompts to detect and segment specified classes.
+    Supports multiple image directories and output formats.
+    """
+    if not state.sam3_available:
+        return LabelingJobResponse(
+            success=False,
+            error="SAM3 not available. This feature requires SAM3 for text-based segmentation."
+        )
+
+    try:
+        import torch
+        from PIL import Image as PILImage
+
+        # Validate directories and count images
+        total_images = 0
+        all_image_paths = []
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+        for dir_path in request.image_directories:
+            dir_obj = Path(dir_path)
+            if not dir_obj.exists():
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"Directory not found: {dir_path}"
+                )
+
+            for ext in image_extensions:
+                for img_path in dir_obj.glob(f"*{ext}"):
+                    all_image_paths.append(str(img_path))
+                for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                    all_image_paths.append(str(img_path))
+
+        total_images = len(all_image_paths)
+
+        if total_images == 0:
+            return LabelingJobResponse(
+                success=False,
+                error="No images found in specified directories"
+            )
+
+        # Create output directory
+        output_dir = Path(request.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        # Determine final classes for tracking (use mapped names if mapping exists)
+        if request.class_mapping:
+            final_classes = list(dict.fromkeys(
+                request.class_mapping.get(cls, cls) for cls in request.classes
+            ))
+        else:
+            final_classes = request.classes
+
+        labeling_jobs[job_id] = {
+            "job_id": job_id,
+            "job_type": "labeling",
+            "status": JobStatus.QUEUED,
+            "total_images": total_images,
+            "processed_images": 0,
+            "total_objects_found": 0,
+            "objects_by_class": {cls: 0 for cls in final_classes},
+            "current_image": "",
+            "output_dir": request.output_dir,
+            "output_formats": request.output_formats,
+            "errors": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None,
+            # Store request params for processing
+            "_image_paths": all_image_paths,
+            "_classes": request.classes,
+            "_task_type": request.task_type,
+            "_min_confidence": request.min_confidence,
+            "_min_area": request.min_area,
+            "_max_instances": request.max_instances_per_image,
+            "_simplify_polygons": request.simplify_polygons,
+            "_simplify_tolerance": request.simplify_tolerance,
+            "_save_visualizations": request.save_visualizations,
+            "_class_mapping": request.class_mapping,  # Maps prompts to final class names
+        }
+
+        # Start background task
+        async def run_labeling():
+            labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
+            labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            try:
+                await _process_labeling_job(job_id)
+                labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+            except Exception as e:
+                logger.exception(f"Labeling job {job_id} failed: {e}")
+                labeling_jobs[job_id]["status"] = JobStatus.FAILED
+                labeling_jobs[job_id]["errors"].append(str(e))
+            finally:
+                labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        asyncio.create_task(run_labeling())
+
+        logger.info(f"Started labeling job {job_id} with {total_images} images, {len(request.classes)} classes")
+
+        return LabelingJobResponse(
+            success=True,
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            message=f"Labeling job started. {total_images} images, {len(request.classes)} classes.",
+            total_images=total_images
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start labeling job: {e}")
+        return LabelingJobResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/labeling/relabel", response_model=LabelingJobResponse, tags=["Labeling Tool"])
+async def start_relabeling_job(request: StartRelabelingRequest):
+    """
+    Start a relabeling job for an existing dataset.
+
+    Modes:
+    - add: Add new class annotations while keeping existing ones
+    - replace: Replace all annotations with new labeling
+    - improve_segmentation: Convert bbox-only annotations to segmentations
+    """
+    if not state.sam3_available:
+        return LabelingJobResponse(
+            success=False,
+            error="SAM3 not available. This feature requires SAM3."
+        )
+
+    try:
+        # Get image paths from directories and/or existing dataset
+        all_image_paths = []
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+        # Build image lookup from directories
+        image_lookup = {}  # filename -> full path
+        for dir_path in request.image_directories:
+            dir_obj = Path(dir_path)
+            if dir_obj.exists():
+                for ext in image_extensions:
+                    for img_path in dir_obj.glob(f"*{ext}"):
+                        image_lookup[img_path.name] = str(img_path)
+                    for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                        image_lookup[img_path.name] = str(img_path)
+
+        # If we have COCO data, get images from there
+        if request.coco_data:
+            for img in request.coco_data.get("images", []):
+                filename = img.get("file_name", "")
+                if filename in image_lookup:
+                    all_image_paths.append(image_lookup[filename])
+                elif Path(filename).exists():
+                    all_image_paths.append(filename)
+        else:
+            # Just use all images from directories
+            all_image_paths = list(image_lookup.values())
+
+        total_images = len(all_image_paths)
+
+        if total_images == 0:
+            return LabelingJobResponse(
+                success=False,
+                error="No images found in specified directories"
+            )
+
+        # Determine classes to label
+        classes_to_label = request.new_classes if request.new_classes else []
+
+        if request.relabel_mode == "improve_segmentation" and request.coco_data:
+            # Get classes from existing dataset
+            classes_to_label = [c["name"] for c in request.coco_data.get("categories", [])]
+
+        # Create output directory
+        output_dir = Path(request.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create job
+        job_id = str(uuid.uuid4())
+
+        labeling_jobs[job_id] = {
+            "job_id": job_id,
+            "job_type": "relabeling",
+            "status": JobStatus.QUEUED,
+            "total_images": total_images,
+            "processed_images": 0,
+            "total_objects_found": 0,
+            "objects_by_class": {cls: 0 for cls in classes_to_label},
+            "current_image": "",
+            "output_dir": request.output_dir,
+            "output_formats": request.output_formats,
+            "errors": [],
+            "processing_time_ms": 0.0,
+            "started_at": None,
+            "completed_at": None,
+            # Store request params
+            "_image_paths": all_image_paths,
+            "_image_lookup": image_lookup,
+            "_classes": classes_to_label,
+            "_relabel_mode": request.relabel_mode,
+            "_coco_data": request.coco_data,
+            "_min_confidence": request.min_confidence,
+            "_simplify_polygons": request.simplify_polygons,
+        }
+
+        # Start background task
+        async def run_relabeling():
+            logger.info(f"[RELABEL] Background task started for job {job_id}")
+            labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
+            labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
+
+            try:
+                logger.info(f"[RELABEL] Calling _process_relabeling_job for {job_id}")
+                await _process_relabeling_job(job_id)
+                labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+                logger.info(f"[RELABEL] Job {job_id} completed successfully")
+            except Exception as e:
+                logger.exception(f"Relabeling job {job_id} failed: {e}")
+                labeling_jobs[job_id]["status"] = JobStatus.FAILED
+                labeling_jobs[job_id]["errors"].append(str(e))
+            finally:
+                labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+        asyncio.create_task(run_relabeling())
+
+        logger.info(f"Started relabeling job {job_id} - mode: {request.relabel_mode}, {total_images} images")
+
+        return LabelingJobResponse(
+            success=True,
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            message=f"Relabeling job started. Mode: {request.relabel_mode}, {total_images} images.",
+            total_images=total_images
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start relabeling job: {e}")
+        return LabelingJobResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.get("/labeling/jobs", tags=["Labeling Tool"])
+async def list_labeling_jobs():
+    """List all labeling jobs."""
+    jobs = []
+    for job_id, job in labeling_jobs.items():
+        status = job.get("status", "unknown")
+        status_str = status.value if hasattr(status, 'value') else str(status)
+
+        # Check if job can be resumed (has checkpoint and is failed/cancelled)
+        can_resume = False
+        if status in [JobStatus.FAILED, JobStatus.CANCELLED]:
+            output_dir = Path(job.get("output_dir", ""))
+            checkpoint_path = output_dir / "checkpoint.json"
+            can_resume = checkpoint_path.exists()
+
+        jobs.append({
+            "job_id": job_id,
+            "job_type": job.get("job_type", "labeling"),
+            "status": status_str,
+            "total_images": job.get("total_images", 0),
+            "processed_images": job.get("processed_images", 0),
+            "total_objects_found": job.get("total_objects_found", 0),
+            "objects_by_class": job.get("objects_by_class", {}),
+            "output_dir": job.get("output_dir", ""),
+            "current_image": job.get("current_image", ""),  # For progress display
+            "errors": job.get("errors", [])[:5],  # Include first 5 errors
+            "started_at": job.get("started_at"),
+            "completed_at": job.get("completed_at"),
+            "processing_time_ms": job.get("processing_time_ms", 0),
+            "can_resume": can_resume,
+        })
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/labeling/jobs/{job_id}", response_model=LabelingJobStatus, tags=["Labeling Tool"])
+async def get_labeling_job_status(job_id: str):
+    """Get status of a labeling job."""
+    if job_id not in labeling_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = labeling_jobs[job_id]
+
+    # Check if job can be resumed (has checkpoint and is failed/cancelled)
+    can_resume = False
+    status = job.get("status")
+    if status in [JobStatus.FAILED, JobStatus.CANCELLED]:
+        output_dir = Path(job.get("output_dir", ""))
+        checkpoint_path = output_dir / "checkpoint.json"
+        can_resume = checkpoint_path.exists()
+
+    return LabelingJobStatus(
+        job_id=job_id,
+        job_type=job.get("job_type", "labeling"),
+        status=status or JobStatus.QUEUED,
+        total_images=job.get("total_images", 0),
+        processed_images=job.get("processed_images", 0),
+        total_objects_found=job.get("total_objects_found", 0),
+        objects_by_class=job.get("objects_by_class", {}),
+        current_image=job.get("current_image", ""),
+        output_dir=job.get("output_dir", ""),
+        output_formats=job.get("output_formats", []),
+        errors=job.get("errors", [])[:50],
+        processing_time_ms=job.get("processing_time_ms", 0),
+        started_at=job.get("started_at"),
+        completed_at=job.get("completed_at"),
+        can_resume=can_resume,
+    )
+
+
+@app.get("/labeling/jobs/{job_id}/result", response_model=LabelingResultResponse, tags=["Labeling Tool"])
+async def get_labeling_result(job_id: str):
+    """Get the result of a completed labeling job."""
+    if job_id not in labeling_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = labeling_jobs[job_id]
+
+    if job.get("status") != JobStatus.COMPLETED:
+        return LabelingResultResponse(
+            success=False,
+            error=f"Job is not completed. Current status: {job.get('status')}"
+        )
+
+    # Load the COCO result
+    output_dir = Path(job.get("output_dir", ""))
+    coco_path = output_dir / "annotations.json"
+
+    if not coco_path.exists():
+        return LabelingResultResponse(
+            success=False,
+            error="Result file not found"
+        )
+
+    try:
+        with open(coco_path, 'r') as f:
+            coco_data = json.load(f)
+
+        # Build output files map
+        output_files = {"coco": str(coco_path)}
+
+        yolo_dir = output_dir / "yolo"
+        if yolo_dir.exists():
+            output_files["yolo"] = str(yolo_dir)
+
+        voc_dir = output_dir / "voc"
+        if voc_dir.exists():
+            output_files["voc"] = str(voc_dir)
+
+        return LabelingResultResponse(
+            success=True,
+            data=coco_data,
+            output_files=output_files,
+            summary={
+                "total_images": len(coco_data.get("images", [])),
+                "total_annotations": len(coco_data.get("annotations", [])),
+                "categories": [c.get("name") for c in coco_data.get("categories", [])],
+            }
+        )
+
+    except Exception as e:
+        return LabelingResultResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/labeling/jobs/{job_id}/resume", response_model=LabelingJobResponse, tags=["Labeling Tool"])
+async def resume_labeling_job(job_id: str):
+    """
+    Resume a failed or interrupted labeling job.
+
+    Loads the checkpoint and continues from the last processed image.
+    """
+    if job_id not in labeling_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = labeling_jobs[job_id]
+
+    # Only allow resuming failed jobs
+    if job.get("status") not in [JobStatus.FAILED, JobStatus.CANCELLED]:
+        return LabelingJobResponse(
+            success=False,
+            error=f"Job cannot be resumed. Current status: {job.get('status')}. "
+                  f"Only failed or cancelled jobs can be resumed."
+        )
+
+    # Check if checkpoint exists
+    output_dir = Path(job.get("output_dir", ""))
+    checkpoint_path = output_dir / "checkpoint.json"
+
+    if not checkpoint_path.exists():
+        return LabelingJobResponse(
+            success=False,
+            error="No checkpoint found. Job must be restarted from the beginning."
+        )
+
+    # Load checkpoint to get resume point
+    try:
+        with open(checkpoint_path, 'r') as f:
+            checkpoint = json.load(f)
+        resume_from = checkpoint.get("last_processed_idx", 0)
+    except Exception as e:
+        return LabelingJobResponse(
+            success=False,
+            error=f"Failed to load checkpoint: {str(e)}"
+        )
+
+    # Reset job status and start processing
+    job["status"] = JobStatus.PROCESSING
+    job["errors"] = []  # Clear previous errors
+    job["started_at"] = datetime.now().isoformat()
+    job["completed_at"] = None
+
+    # Start background task to resume
+    async def run_resume():
+        try:
+            await _process_labeling_job(job_id, resume_from=resume_from)
+            labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+        except Exception as e:
+            logger.exception(f"Resumed labeling job {job_id} failed: {e}")
+            labeling_jobs[job_id]["status"] = JobStatus.FAILED
+            labeling_jobs[job_id]["errors"].append(str(e))
+        finally:
+            labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+    asyncio.create_task(run_resume())
+
+    logger.info(f"Resumed labeling job {job_id} from image {resume_from}")
+
+    return LabelingJobResponse(
+        success=True,
+        job_id=job_id,
+        status=JobStatus.PROCESSING,
+        message=f"Job resumed from image {resume_from + 1} of {job.get('total_images', 0)}",
+        total_images=job.get("total_images", 0)
+    )
+
+
+async def _process_labeling_job(job_id: str, resume_from: int = 0):
+    """Process a labeling job - detect and segment objects in images.
+
+    Args:
+        job_id: The job identifier
+        resume_from: Image index to resume from (0 = start fresh)
+    """
+    import gc
+    import torch
+    from PIL import Image as PILImage
+
+    job = labeling_jobs[job_id]
+    start_time = time.time()
+
+    image_paths = job["_image_paths"]
+    classes = job["_classes"]  # These are the search prompts
+    class_mapping = job.get("_class_mapping")  # Maps prompts to final class names
+    min_confidence = job["_min_confidence"]
+    min_area = job["_min_area"]
+    max_instances = job["_max_instances"]
+    simplify_polygons = job["_simplify_polygons"]
+    simplify_tolerance = job["_simplify_tolerance"]
+    task_type = job["_task_type"]
+    output_dir = Path(job["output_dir"])
+    checkpoint_path = output_dir / "checkpoint.json"
+    checkpoint_interval = 10  # Save checkpoint every N images
+    gc_interval = 5  # Run garbage collection every N images
+    yield_interval = 1  # Yield to event loop every N images
+
+    # Determine final category names
+    # If class_mapping exists, use unique mapped values as categories
+    # Otherwise, use the original class names
+    if class_mapping:
+        # Get unique final class names (values from the mapping)
+        # Preserve order by using the first appearance
+        final_classes = []
+        seen = set()
+        for cls in classes:
+            final_name = class_mapping.get(cls, cls)
+            if final_name not in seen:
+                final_classes.append(final_name)
+                seen.add(final_name)
+    else:
+        final_classes = classes
+
+    # Initialize or load COCO structure
+    coco_result = None
+    annotation_id = 1
+
+    # Try to load checkpoint if resuming
+    if resume_from > 0 and checkpoint_path.exists():
+        try:
+            with open(checkpoint_path, 'r') as f:
+                checkpoint = json.load(f)
+            coco_result = checkpoint.get("coco_data")
+            annotation_id = checkpoint.get("next_annotation_id", 1)
+            # Restore objects_by_class counts
+            if "objects_by_class" in checkpoint:
+                job["objects_by_class"] = checkpoint["objects_by_class"]
+                job["total_objects_found"] = sum(checkpoint["objects_by_class"].values())
+            logger.info(f"Resuming job {job_id} from image {resume_from}, annotation_id {annotation_id}")
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}, starting fresh")
+            coco_result = None
+
+    # Initialize fresh if no checkpoint loaded
+    if coco_result is None:
+        coco_result = {
+            "info": {
+                "description": "Auto-labeled dataset",
+                "date_created": datetime.now().isoformat(),
+                "version": "1.0"
+            },
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": [{"id": i + 1, "name": cls, "supercategory": ""} for i, cls in enumerate(final_classes)]
+        }
+        resume_from = 0  # Reset if no valid checkpoint
+
+    # Map final class names to category IDs
+    category_map = {cls: i + 1 for i, cls in enumerate(final_classes)}
+
+    # Process images starting from resume_from
+    for img_idx, img_path in enumerate(image_paths):
+        # Skip already processed images when resuming
+        if img_idx < resume_from:
+            continue
+
+        job["current_image"] = Path(img_path).name
+        job["processed_images"] = img_idx
+
+        try:
+            # Load image
+            image = cv2.imread(img_path)
+            if image is None:
+                job["errors"].append(f"Failed to load: {img_path}")
+                continue
+
+            h, w = image.shape[:2]
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_image = PILImage.fromarray(image_rgb)
+
+            # Add image to COCO
+            image_id = img_idx + 1
+            coco_result["images"].append({
+                "id": image_id,
+                "file_name": Path(img_path).name,
+                "width": w,
+                "height": h
+            })
+
+            # Process each class (cls is the search prompt)
+            for cls in classes:
+                # Get final class name (may be different if mapping exists)
+                final_class = class_mapping.get(cls, cls) if class_mapping else cls
+
+                # Run SAM3 text prompt segmentation using original prompt
+                inputs = state.sam3_processor(
+                    images=pil_image,
+                    text=cls,  # Use original prompt for detection
+                    return_tensors="pt"
+                ).to(state.device)
+
+                with torch.no_grad():
+                    outputs = state.sam3_model(**inputs)
+
+                # Post-process results
+                target_sizes = inputs.get("original_sizes")
+                if target_sizes is not None:
+                    target_sizes = target_sizes.tolist()
+                else:
+                    target_sizes = [(h, w)]
+
+                results = state.sam3_processor.post_process_instance_segmentation(
+                    outputs,
+                    threshold=min_confidence,
+                    mask_threshold=min_confidence,
+                    target_sizes=target_sizes
+                )[0]
+
+                if 'masks' not in results or len(results['masks']) == 0:
+                    continue
+
+                # Process each detected instance
+                instances_added = 0
+                for mask, score in zip(results['masks'], results['scores']):
+                    if instances_added >= max_instances:
+                        break
+
+                    score_val = score.cpu().item()
+                    if score_val < min_confidence:
+                        continue
+
+                    mask_np = mask.cpu().numpy().astype(np.uint8)
+                    if mask_np.shape != (h, w):
+                        mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                    # Calculate area
+                    area = int(np.sum(mask_np > 0))
+                    if area < min_area:
+                        continue
+
+                    # Get bounding box
+                    contours, _ = cv2.findContours(
+                        (mask_np * 255).astype(np.uint8),
+                        cv2.RETR_EXTERNAL,
+                        cv2.CHAIN_APPROX_SIMPLE
+                    )
+
+                    if not contours:
+                        continue
+
+                    x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
+                    bbox = [float(x), float(y), float(bw), float(bh)]
+
+                    # Build annotation (use final_class for category lookup)
+                    annotation = {
+                        "id": annotation_id,
+                        "image_id": image_id,
+                        "category_id": category_map[final_class],
+                        "bbox": bbox,
+                        "area": area,
+                        "iscrowd": 0,
+                    }
+
+                    # Add segmentation if task requires it
+                    if task_type in ["segmentation", "both"]:
+                        polygons = state.object_extractor.mask_to_polygon(
+                            (mask_np * 255).astype(np.uint8),
+                            simplify=simplify_polygons,
+                            tolerance=simplify_tolerance
+                        )
+                        if polygons:
+                            annotation["segmentation"] = polygons
+
+                    coco_result["annotations"].append(annotation)
+                    annotation_id += 1
+                    instances_added += 1
+
+                    # Track by final class name
+                    job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
+                    job["total_objects_found"] += 1
+
+            # Save checkpoint periodically
+            if (img_idx + 1) % checkpoint_interval == 0:
+                _save_labeling_checkpoint(
+                    checkpoint_path, coco_result, annotation_id,
+                    img_idx + 1, job["objects_by_class"]
+                )
+                logger.debug(f"Saved checkpoint at image {img_idx + 1}")
+
+            # Garbage collection periodically to prevent memory buildup
+            if (img_idx + 1) % gc_interval == 0:
+                # Clear image references
+                del image, image_rgb, pil_image
+                # Clear CUDA cache if available
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            # Yield to event loop to allow health checks and other operations
+            if (img_idx + 1) % yield_interval == 0:
+                await asyncio.sleep(0)
+
+        except Exception as e:
+            job["errors"].append(f"Error processing {img_path}: {str(e)}")
+            logger.error(f"Error processing {img_path}: {e}")
+            # Save checkpoint on error so we can resume
+            _save_labeling_checkpoint(
+                checkpoint_path, coco_result, annotation_id,
+                img_idx, job["objects_by_class"]
+            )
+            # Clean up on error
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    # Save results
+    job["processed_images"] = len(image_paths)
+    job["processing_time_ms"] = (time.time() - start_time) * 1000
+
+    # Save COCO JSON
+    coco_path = output_dir / "annotations.json"
+    with open(coco_path, 'w') as f:
+        json.dump(coco_result, f, indent=2)
+
+    # Save in other formats if requested
+    if "yolo" in job["output_formats"]:
+        _export_to_yolo(coco_result, output_dir, image_paths)
+
+    if "voc" in job["output_formats"]:
+        _export_to_voc(coco_result, output_dir, image_paths)
+
+    # Remove checkpoint file on successful completion
+    if checkpoint_path.exists():
+        try:
+            checkpoint_path.unlink()
+            logger.debug(f"Removed checkpoint file after successful completion")
+        except Exception as e:
+            logger.warning(f"Failed to remove checkpoint file: {e}")
+
+    logger.info(f"Labeling job {job_id} completed: {job['total_objects_found']} objects found")
+
+
+def _save_labeling_checkpoint(checkpoint_path: Path, coco_data: Dict, next_annotation_id: int,
+                               last_processed_idx: int, objects_by_class: Dict[str, int]):
+    """Save checkpoint for labeling job recovery."""
+    checkpoint = {
+        "coco_data": coco_data,
+        "next_annotation_id": next_annotation_id,
+        "last_processed_idx": last_processed_idx,
+        "objects_by_class": objects_by_class,
+        "saved_at": datetime.now().isoformat()
+    }
+    try:
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint, f)
+    except Exception as e:
+        logger.error(f"Failed to save checkpoint: {e}")
+
+
+async def _process_relabeling_job(job_id: str):
+    """Process a relabeling job."""
+    import gc
+    import torch
+    from PIL import Image as PILImage
+
+    logger.info(f"[RELABEL] _process_relabeling_job started for {job_id}")
+
+    job = labeling_jobs[job_id]
+    start_time = time.time()
+
+    relabel_mode = job["_relabel_mode"]
+    logger.info(f"[RELABEL] Mode: {relabel_mode}, Classes: {job.get('_classes', [])[:5]}...")
+    coco_data = job.get("_coco_data")
+    image_paths = job["_image_paths"]
+    image_lookup = job["_image_lookup"]
+    classes = job["_classes"]
+    min_confidence = job["_min_confidence"]
+    simplify_polygons = job["_simplify_polygons"]
+    output_dir = Path(job["output_dir"])
+    gc_interval = 5  # Run garbage collection every N images
+
+    # Initialize result based on mode
+    if relabel_mode == "add" and coco_data:
+        # Start with existing data
+        coco_result = coco_data.copy()
+        # Add new categories
+        existing_cats = {c["name"] for c in coco_result.get("categories", [])}
+        max_cat_id = max([c["id"] for c in coco_result.get("categories", [])], default=0)
+        for cls in classes:
+            if cls not in existing_cats:
+                max_cat_id += 1
+                coco_result["categories"].append({"id": max_cat_id, "name": cls, "supercategory": ""})
+        annotation_id = max([a["id"] for a in coco_result.get("annotations", [])], default=0) + 1
+    else:
+        # Start fresh
+        coco_result = {
+            "info": {
+                "description": "Relabeled dataset",
+                "date_created": datetime.now().isoformat(),
+                "version": "1.0"
+            },
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": [{"id": i + 1, "name": cls, "supercategory": ""} for i, cls in enumerate(classes)]
+        }
+        annotation_id = 1
+
+    category_map = {c["name"]: c["id"] for c in coco_result.get("categories", [])}
+    logger.info(f"[RELABEL] Category map: {category_map}")
+    logger.info(f"[RELABEL] Starting to process {len(image_paths)} images")
+
+    # Process images
+    for img_idx, img_path in enumerate(image_paths):
+        job["current_image"] = Path(img_path).name
+        job["processed_images"] = img_idx
+
+        if img_idx == 0 or img_idx % 100 == 0:
+            logger.info(f"[RELABEL] Processing image {img_idx + 1}/{len(image_paths)}: {Path(img_path).name}")
+
+        try:
+            image = cv2.imread(img_path)
+            if image is None:
+                continue
+
+            h, w = image.shape[:2]
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_image = PILImage.fromarray(image_rgb)
+
+            image_id = img_idx + 1
+
+            # Add image if not in replace mode with existing data
+            if relabel_mode != "add":
+                coco_result["images"].append({
+                    "id": image_id,
+                    "file_name": Path(img_path).name,
+                    "width": w,
+                    "height": h
+                })
+
+            # Handle improve_segmentation mode differently
+            if relabel_mode == "improve_segmentation" and coco_data:
+                # Get existing annotations for this image
+                img_anns = [a for a in coco_data.get("annotations", [])
+                           if a.get("image_id") == image_id and not a.get("segmentation")]
+
+                for ann in img_anns:
+                    bbox = ann.get("bbox", [0, 0, 0, 0])
+                    if len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0:
+                        # Use SAM3 to generate segmentation from bbox
+                        x, y, bw, bh = bbox
+                        input_box = [[x, y, x + bw, y + bh]]
+
+                        inputs = state.sam3_processor(
+                            images=pil_image,
+                            input_boxes=[input_box],
+                            return_tensors="pt"
+                        ).to(state.device)
+
+                        with torch.no_grad():
+                            outputs = state.sam3_model(**inputs)
+
+                        masks = state.sam3_processor.post_process_masks(
+                            outputs.pred_masks,
+                            inputs["original_sizes"],
+                            inputs["reshaped_input_sizes"]
+                        )
+
+                        if len(masks) > 0 and len(masks[0]) > 0:
+                            mask = masks[0][0]
+                            mask_np = mask.cpu().numpy().astype(np.uint8) * 255
+
+                            if mask_np.shape != (h, w):
+                                mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                            polygons = state.object_extractor.mask_to_polygon(
+                                mask_np,
+                                simplify=simplify_polygons,
+                                tolerance=2.0
+                            )
+
+                            if polygons:
+                                # Update annotation with segmentation
+                                ann["segmentation"] = polygons
+                                ann["area"] = int(np.sum(mask_np > 0))
+                                job["total_objects_found"] += 1
+
+            else:
+                # Regular labeling with text prompts
+                for cls in classes:
+                    if cls not in category_map:
+                        continue
+
+                    inputs = state.sam3_processor(
+                        images=pil_image,
+                        text=cls,
+                        return_tensors="pt"
+                    ).to(state.device)
+
+                    with torch.no_grad():
+                        outputs = state.sam3_model(**inputs)
+
+                    target_sizes = [(h, w)]
+                    results = state.sam3_processor.post_process_instance_segmentation(
+                        outputs,
+                        threshold=min_confidence,
+                        mask_threshold=min_confidence,
+                        target_sizes=target_sizes
+                    )[0]
+
+                    if 'masks' not in results:
+                        continue
+
+                    for mask, score in zip(results['masks'], results['scores']):
+                        score_val = score.cpu().item()
+                        if score_val < min_confidence:
+                            continue
+
+                        mask_np = mask.cpu().numpy().astype(np.uint8)
+                        if mask_np.shape != (h, w):
+                            mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                        area = int(np.sum(mask_np > 0))
+                        if area < 100:
+                            continue
+
+                        contours, _ = cv2.findContours(
+                            (mask_np * 255).astype(np.uint8),
+                            cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE
+                        )
+
+                        if not contours:
+                            continue
+
+                        x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
+
+                        polygons = state.object_extractor.mask_to_polygon(
+                            (mask_np * 255).astype(np.uint8),
+                            simplify=simplify_polygons,
+                            tolerance=2.0
+                        )
+
+                        annotation = {
+                            "id": annotation_id,
+                            "image_id": image_id,
+                            "category_id": category_map[cls],
+                            "bbox": [float(x), float(y), float(bw), float(bh)],
+                            "area": area,
+                            "iscrowd": 0,
+                        }
+
+                        if polygons:
+                            annotation["segmentation"] = polygons
+
+                        coco_result["annotations"].append(annotation)
+                        annotation_id += 1
+
+                        job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
+                        job["total_objects_found"] += 1
+
+            # Garbage collection and yielding
+            if (img_idx + 1) % gc_interval == 0:
+                del image, image_rgb, pil_image
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            # Yield to event loop
+            await asyncio.sleep(0)
+
+        except Exception as e:
+            job["errors"].append(f"Error processing {img_path}: {str(e)}")
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    # Save results
+    job["processed_images"] = len(image_paths)
+    job["processing_time_ms"] = (time.time() - start_time) * 1000
+
+    coco_path = output_dir / "annotations.json"
+    with open(coco_path, 'w') as f:
+        json.dump(coco_result, f, indent=2)
+
+    if "yolo" in job["output_formats"]:
+        _export_to_yolo(coco_result, output_dir, image_paths)
+
+    if "voc" in job["output_formats"]:
+        _export_to_voc(coco_result, output_dir, image_paths)
+
+    logger.info(f"Relabeling job {job_id} completed")
+
+
+def _export_to_yolo(coco_data: Dict, output_dir: Path, image_paths: List[str]):
+    """Export COCO data to YOLO format."""
+    yolo_dir = output_dir / "yolo"
+    yolo_dir.mkdir(exist_ok=True)
+
+    labels_dir = yolo_dir / "labels"
+    labels_dir.mkdir(exist_ok=True)
+
+    # Build image lookup
+    image_dims = {img["id"]: (img["width"], img["height"]) for img in coco_data.get("images", [])}
+    image_names = {img["id"]: img["file_name"] for img in coco_data.get("images", [])}
+
+    # Category mapping (YOLO uses 0-indexed)
+    categories = coco_data.get("categories", [])
+    cat_map = {c["id"]: i for i, c in enumerate(categories)}
+
+    # Group annotations by image
+    anns_by_image = {}
+    for ann in coco_data.get("annotations", []):
+        img_id = ann["image_id"]
+        if img_id not in anns_by_image:
+            anns_by_image[img_id] = []
+        anns_by_image[img_id].append(ann)
+
+    # Write labels
+    for img_id, anns in anns_by_image.items():
+        if img_id not in image_dims:
+            continue
+
+        w, h = image_dims[img_id]
+        filename = Path(image_names[img_id]).stem + ".txt"
+
+        lines = []
+        for ann in anns:
+            cat_idx = cat_map.get(ann["category_id"], 0)
+            bbox = ann.get("bbox", [0, 0, 0, 0])
+
+            # Convert to YOLO format (center x, center y, width, height) normalized
+            x_center = (bbox[0] + bbox[2] / 2) / w
+            y_center = (bbox[1] + bbox[3] / 2) / h
+            bw = bbox[2] / w
+            bh = bbox[3] / h
+
+            lines.append(f"{cat_idx} {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
+
+        with open(labels_dir / filename, 'w') as f:
+            f.write('\n'.join(lines))
+
+    # Write classes.txt
+    with open(yolo_dir / "classes.txt", 'w') as f:
+        for cat in categories:
+            f.write(f"{cat['name']}\n")
+
+
+def _export_to_voc(coco_data: Dict, output_dir: Path, image_paths: List[str]):
+    """Export COCO data to Pascal VOC format."""
+    voc_dir = output_dir / "voc"
+    voc_dir.mkdir(exist_ok=True)
+
+    annotations_dir = voc_dir / "Annotations"
+    annotations_dir.mkdir(exist_ok=True)
+
+    # Build lookups
+    image_info = {img["id"]: img for img in coco_data.get("images", [])}
+    cat_names = {c["id"]: c["name"] for c in coco_data.get("categories", [])}
+
+    # Group annotations by image
+    anns_by_image = {}
+    for ann in coco_data.get("annotations", []):
+        img_id = ann["image_id"]
+        if img_id not in anns_by_image:
+            anns_by_image[img_id] = []
+        anns_by_image[img_id].append(ann)
+
+    # Write XML files
+    for img_id, anns in anns_by_image.items():
+        if img_id not in image_info:
+            continue
+
+        img = image_info[img_id]
+        filename = Path(img["file_name"]).stem + ".xml"
+
+        xml_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<annotation>',
+            f'  <filename>{img["file_name"]}</filename>',
+            '  <size>',
+            f'    <width>{img["width"]}</width>',
+            f'    <height>{img["height"]}</height>',
+            '    <depth>3</depth>',
+            '  </size>',
+        ]
+
+        for ann in anns:
+            bbox = ann.get("bbox", [0, 0, 0, 0])
+            cat_name = cat_names.get(ann["category_id"], "unknown")
+
+            xmin = int(bbox[0])
+            ymin = int(bbox[1])
+            xmax = int(bbox[0] + bbox[2])
+            ymax = int(bbox[1] + bbox[3])
+
+            xml_lines.extend([
+                '  <object>',
+                f'    <name>{cat_name}</name>',
+                '    <bndbox>',
+                f'      <xmin>{xmin}</xmin>',
+                f'      <ymin>{ymin}</ymin>',
+                f'      <xmax>{xmax}</xmax>',
+                f'      <ymax>{ymax}</ymax>',
+                '    </bndbox>',
+                '  </object>',
+            ])
+
+        xml_lines.append('</annotation>')
+
+        with open(annotations_dir / filename, 'w') as f:
+            f.write('\n'.join(xml_lines))
 
 
 if __name__ == "__main__":

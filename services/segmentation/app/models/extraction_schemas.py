@@ -429,3 +429,171 @@ class ExtractionSummary(BaseModel):
     failed_extractions: int
     errors: List[str]
     processing_time_seconds: float
+
+
+# =============================================================================
+# LABELING TOOL SCHEMAS
+# =============================================================================
+
+class LabelingTaskType(str, Enum):
+    """Type of labeling task"""
+    SEGMENTATION = "segmentation"  # Instance segmentation with polygons
+    DETECTION = "detection"        # Bounding boxes only
+    BOTH = "both"                  # Both segmentation and detection
+
+
+class LabelingOutputFormat(str, Enum):
+    """Output format for labeled dataset"""
+    COCO = "coco"
+    YOLO = "yolo"
+    VOC = "voc"
+
+
+class RelabelMode(str, Enum):
+    """Mode for relabeling existing datasets"""
+    ADD = "add"                         # Add new classes, keep existing annotations
+    REPLACE = "replace"                  # Replace all annotations with new labeling
+    IMPROVE_SEGMENTATION = "improve_segmentation"  # Only improve bbox->segmentation
+
+
+class StartLabelingRequest(BaseModel):
+    """Request to start a new labeling job"""
+    image_directories: List[str] = Field(
+        ...,
+        min_length=1,
+        description="List of directories containing images to label"
+    )
+    classes: List[str] = Field(
+        ...,
+        min_length=1,
+        description="List of class names to detect and label"
+    )
+    class_mapping: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Optional mapping from search prompts to final class names. "
+                    "E.g., {'tropical fish': 'fish', 'reef fish': 'fish'} "
+                    "When set, prompts are used for detection but mapped to final classes in output."
+    )
+    output_dir: str = Field(
+        ...,
+        description="Output directory for labeled dataset"
+    )
+    output_formats: List[str] = Field(
+        default=["coco"],
+        description="Output formats: coco, yolo, voc"
+    )
+    task_type: str = Field(
+        default="segmentation",
+        description="Task type: segmentation, detection, or both"
+    )
+    min_confidence: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=1.0,
+        description="Minimum confidence threshold for detections"
+    )
+    min_area: int = Field(
+        default=100,
+        ge=10,
+        description="Minimum object area in pixels"
+    )
+    max_instances_per_image: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum instances to detect per image"
+    )
+    simplify_polygons: bool = Field(
+        default=True,
+        description="Whether to simplify segmentation polygons"
+    )
+    simplify_tolerance: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=10.0,
+        description="Polygon simplification tolerance"
+    )
+    save_visualizations: bool = Field(
+        default=False,
+        description="Whether to save images with annotations overlaid"
+    )
+
+
+class StartRelabelingRequest(BaseModel):
+    """Request to start a relabeling job for existing dataset"""
+    coco_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Existing COCO dataset to relabel"
+    )
+    image_directories: List[str] = Field(
+        ...,
+        min_length=1,
+        description="List of directories to search for images"
+    )
+    new_classes: List[str] = Field(
+        default=[],
+        description="New class names to detect (for add/replace modes)"
+    )
+    relabel_mode: str = Field(
+        default="add",
+        description="Mode: add, replace, or improve_segmentation"
+    )
+    output_dir: str = Field(
+        ...,
+        description="Output directory for relabeled dataset"
+    )
+    output_formats: List[str] = Field(
+        default=["coco"],
+        description="Output formats: coco, yolo, voc"
+    )
+    min_confidence: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=1.0,
+        description="Minimum confidence threshold"
+    )
+    simplify_polygons: bool = Field(
+        default=True,
+        description="Whether to simplify segmentation polygons"
+    )
+
+
+class LabelingJobResponse(BaseModel):
+    """Response from labeling job creation"""
+    success: bool
+    job_id: str = ""
+    status: JobStatus = JobStatus.QUEUED
+    message: str = ""
+    total_images: int = 0
+    error: Optional[str] = None
+
+
+class LabelingJobStatus(BaseModel):
+    """Status of a labeling job"""
+    job_id: str
+    job_type: str = "labeling"
+    status: JobStatus
+    total_images: int = 0
+    processed_images: int = 0
+    total_objects_found: int = 0
+    objects_by_class: Dict[str, int] = {}
+    current_image: str = ""
+    output_dir: str = ""
+    output_formats: List[str] = []
+    errors: List[str] = []
+    processing_time_ms: float = 0.0
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    can_resume: bool = Field(
+        default=False,
+        description="Whether the job can be resumed (has checkpoint)"
+    )
+
+
+class LabelingResultResponse(BaseModel):
+    """Response containing labeled dataset"""
+    success: bool
+    data: Optional[Dict[str, Any]] = None  # COCO format dataset
+    output_files: Dict[str, str] = {}  # Format -> file path
+    summary: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
