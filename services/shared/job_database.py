@@ -111,6 +111,40 @@ class JobDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_logs_timestamp ON job_logs(timestamp)")
 
+            # Dataset metadata table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dataset_metadata (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL UNIQUE,
+                    dataset_name TEXT NOT NULL,
+                    dataset_type TEXT NOT NULL,
+
+                    coco_json_path TEXT NOT NULL,
+                    images_dir TEXT NOT NULL,
+                    effects_config_path TEXT,
+
+                    num_images INTEGER NOT NULL,
+                    num_annotations INTEGER NOT NULL,
+                    num_categories INTEGER NOT NULL,
+                    class_distribution TEXT,
+
+                    generation_config TEXT,
+
+                    preview_images TEXT,
+                    categories TEXT,
+
+                    created_at TIMESTAMP NOT NULL,
+                    file_size_mb REAL,
+
+                    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Create indexes for dataset_metadata
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_job_id ON dataset_metadata(job_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_type ON dataset_metadata(dataset_type)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_created ON dataset_metadata(created_at DESC)")
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert a database row to a dictionary, parsing JSON fields."""
         if row is None:
@@ -363,6 +397,135 @@ class JobDatabase:
         if job:
             return job.get("request_params")
         return None
+
+    # ==================== Dataset Metadata Operations ====================
+
+    def create_dataset_metadata(
+        self,
+        job_id: str,
+        dataset_name: str,
+        dataset_type: str,
+        coco_json_path: str,
+        images_dir: str,
+        num_images: int,
+        num_annotations: int,
+        num_categories: int,
+        class_distribution: Dict[str, int],
+        categories: List[Dict],
+        preview_images: Optional[List[str]] = None,
+        generation_config: Optional[Dict] = None,
+        effects_config_path: Optional[str] = None,
+        file_size_mb: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Create dataset metadata entry after successful generation."""
+        import json
+        from datetime import datetime
+
+        now = datetime.now().isoformat()
+
+        with self._cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO dataset_metadata (
+                    job_id, dataset_name, dataset_type, coco_json_path, images_dir,
+                    effects_config_path, num_images, num_annotations, num_categories,
+                    class_distribution, generation_config, preview_images, categories,
+                    created_at, file_size_mb
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                job_id, dataset_name, dataset_type, coco_json_path, images_dir,
+                effects_config_path, num_images, num_annotations, num_categories,
+                json.dumps(class_distribution) if class_distribution else None,
+                json.dumps(generation_config) if generation_config else None,
+                json.dumps(preview_images) if preview_images else None,
+                json.dumps(categories) if categories else None,
+                now, file_size_mb
+            ))
+
+        return self.get_dataset_metadata(job_id)
+
+    def get_dataset_metadata(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata for a specific dataset."""
+        import json
+
+        with self._cursor() as cursor:
+            cursor.execute("SELECT * FROM dataset_metadata WHERE job_id = ?", (job_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            result = dict(row)
+
+            # Parse JSON fields
+            json_fields = ["class_distribution", "generation_config", "preview_images", "categories"]
+            for field in json_fields:
+                if field in result and result[field]:
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        result[field] = None
+
+            return result
+
+    def list_datasets(
+        self,
+        dataset_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List all datasets with metadata, optionally filtered by type."""
+        import json
+
+        where_clause = "1=1"
+        params = []
+
+        if dataset_type:
+            where_clause += " AND dataset_type = ?"
+            params.append(dataset_type)
+
+        with self._cursor() as cursor:
+            cursor.execute(f"""
+                SELECT * FROM dataset_metadata
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, params + [limit, offset])
+
+            rows = cursor.fetchall()
+            results = []
+
+            for row in rows:
+                result = dict(row)
+
+                # Parse JSON fields
+                json_fields = ["class_distribution", "generation_config", "preview_images", "categories"]
+                for field in json_fields:
+                    if field in result and result[field]:
+                        try:
+                            result[field] = json.loads(result[field])
+                        except:
+                            result[field] = None
+
+                results.append(result)
+
+            return results
+
+    def update_dataset_preview(
+        self,
+        job_id: str,
+        preview_images: List[str]
+    ) -> bool:
+        """Update preview images for a dataset."""
+        import json
+
+        with self._cursor() as cursor:
+            cursor.execute("""
+                UPDATE dataset_metadata
+                SET preview_images = ?
+                WHERE job_id = ?
+            """, (json.dumps(preview_images), job_id))
+
+            return cursor.rowcount > 0
 
     # ==================== Log Operations ====================
 
