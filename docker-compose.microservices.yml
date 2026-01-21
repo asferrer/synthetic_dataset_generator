@@ -69,7 +69,7 @@ services:
     # Límites de recursos - RTX 5090 32GB VRAM (CPU reducido: 4 de 24 cores)
     mem_limit: 12G
     memswap_limit: 12G
-    cpus: 4
+    cpus: 3
     deploy:
       resources:
         reservations:
@@ -117,7 +117,7 @@ services:
     # Límites de recursos - RTX 5090 32GB VRAM (CPU reducido: 4 de 24 cores)
     mem_limit: 12G
     memswap_limit: 12G
-    cpus: 4
+    cpus: 3
     deploy:
       resources:
         reservations:
@@ -194,8 +194,8 @@ services:
     # Límites de recursos - SERVICIO CRÍTICO (RTX 5090, 96GB RAM, 24 cores)
     mem_limit: 24G
     memswap_limit: 24G
-    cpus: 10
-    shm_size: 4G
+    cpus: 8
+    shm_size: 8G  # Aumentado para operaciones GPU compartidas
     deploy:
       resources:
         reservations:
