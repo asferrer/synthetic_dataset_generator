@@ -48,6 +48,47 @@ class ComposeResult:
     effects_applied: List[str] = field(default_factory=list)
 
 
+@dataclass
+class BlurBudget:
+    """
+    Tracks cumulative blur to prevent over-processing small objects (BUG #5 FIX).
+
+    Manages a "blur budget" that scales with object size. Smaller objects have
+    tighter budgets to prevent them from becoming unrecognizable blobs.
+    """
+    max_blur_budget: float  # Max total blur in pixels
+    object_size: int  # min(width, height) of object
+    used_blur: float = 0.0
+
+    def _get_scaled_budget(self) -> float:
+        """
+        Calculate scaled budget based on object size.
+
+        Smaller objects get proportionally smaller budgets:
+        - 100px object: 100% of budget
+        - 50px object: 50% of budget
+        - 25px object: 50% of budget (clamped at 0.5)
+        """
+        return self.max_blur_budget * max(self.object_size / 100, 0.5)
+
+    def can_apply(self, blur_amount: float) -> bool:
+        """Check if blur can be applied without exceeding budget."""
+        return (self.used_blur + blur_amount) <= self._get_scaled_budget()
+
+    def apply(self, blur_amount: float) -> float:
+        """
+        Apply blur and return actual amount (may be reduced).
+
+        Returns:
+            Actual blur amount applied (0 if budget exceeded)
+        """
+        scaled_budget = self._get_scaled_budget()
+        available = scaled_budget - self.used_blur
+        actual = min(blur_amount, max(available, 0))
+        self.used_blur += actual
+        return actual
+
+
 # =============================================================================
 # VRAM Monitor for Parallel Processing
 # =============================================================================
@@ -55,18 +96,18 @@ class ComposeResult:
 class VRAMMonitor:
     """Monitors VRAM usage and triggers cleanup when needed."""
 
-    def __init__(self, threshold: float = 0.7, device: int = 0):
+    def __init__(self, threshold: float = 0.5, device: int = 0):
         """
         Initialize VRAM monitor.
 
         Args:
-            threshold: VRAM usage fraction to trigger cleanup (default 0.7 = 70%)
+            threshold: VRAM usage fraction to trigger cleanup (default 0.5 = 50%)
             device: CUDA device ID to monitor (default 0)
         """
         self.threshold = threshold
         self.device = device
         self.last_check = 0
-        self.check_interval = 5  # Check every 5 iterations
+        self.check_interval = 2  # Check every 2 iterations (more aggressive)
 
     def get_vram_usage(self) -> float:
         """
@@ -308,18 +349,20 @@ def check_mask_overlap(
 def refine_object_mask(
     alpha_channel: np.ndarray,
     mask_bin: np.ndarray,
-    feather_radius: int = 3
+    feather_radius: int = 3,
+    use_binary_alpha: bool = False
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Refine binary mask for smoother edges with proper feathering.
+    Refine binary mask for smoother edges with configurable feathering (BUG #2 FIX).
 
-    Creates a gradual transition at object edges to prevent hard cutoffs.
-    Uses distance transform for natural edge falloff.
+    Creates a gradual transition at object edges. Can use either binary alpha
+    (minimal feathering) or gradient alpha (more blending) based on configuration.
 
     Args:
         alpha_channel: Original alpha channel (0-255)
         mask_bin: Binary mask (0 or 255)
-        feather_radius: Pixels to feather at edges (default: 3)
+        feather_radius: Pixels to feather at edges (default: 3, recommended: 1-2 for binary)
+        use_binary_alpha: If True, use minimal feathering to prevent color bleeding
 
     Returns:
         Tuple of (refined_alpha as float 0-1, binary_mask)
@@ -327,7 +370,7 @@ def refine_object_mask(
     unique_vals = np.unique(alpha_channel)
     has_transparency = len(unique_vals) > 5
 
-    if has_transparency:
+    if has_transparency and not use_binary_alpha:
         # Image already has gradual alpha - enhance edges slightly
         alpha_refined = alpha_channel.astype(np.float32) / 255.0
         alpha_refined[alpha_refined < 0.05] = 0.0
@@ -340,37 +383,49 @@ def refine_object_mask(
         )
         return alpha_refined, mask_refined_bin
 
-    # For binary masks, create smooth feathered edges using distance transform
-    mask_float = mask_bin.astype(np.float32) / 255.0
-
+    # For binary masks OR if binary_alpha is enforced
     # Calculate distance from edge (inward)
     dist_inside = cv2.distanceTransform(mask_bin, cv2.DIST_L2, 5)
 
-    # Calculate distance from edge (outward) - invert mask
-    mask_inv = 255 - mask_bin
-    dist_outside = cv2.distanceTransform(mask_inv, cv2.DIST_L2, 5)
+    if use_binary_alpha:
+        # BINARY ALPHA MODE (BUG #2 FIX): Minimal feathering to prevent color bleeding
+        feather = max(feather_radius, 1)  # 1-2px recommended
 
-    # Create signed distance field (positive inside, negative outside)
-    # Then convert to smooth alpha using feather radius
-    feather = max(feather_radius, 2)
+        # Core region: fully opaque
+        core_mask = dist_inside > feather
+        # Feather zone: gradient over 1-2px
+        feather_zone = (dist_inside > 0) & (dist_inside <= feather)
 
-    # Normalize distances to feather zone
-    alpha_inside = np.clip(dist_inside / feather, 0, 1)
-    alpha_outside = np.clip(dist_outside / feather, 0, 1)
+        # Create alpha
+        alpha_refined = np.zeros_like(dist_inside, dtype=np.float32)
+        alpha_refined[core_mask] = 1.0
+        alpha_refined[feather_zone] = dist_inside[feather_zone] / feather
 
-    # Combine: fully opaque in center, gradient at edges
-    # Inside the mask: 1 where far from edge, gradient near edge
-    # Outside the mask: 0
-    alpha_refined = alpha_inside * mask_float
+        # Minimal smoothing (1px) for anti-aliasing
+        alpha_refined = cv2.GaussianBlur(alpha_refined, (3, 3), 0.5)
 
-    # Apply smoothing for natural falloff
-    alpha_refined = cv2.GaussianBlur(alpha_refined, (5, 5), 1.5)
+        # Ensure core stays fully opaque
+        alpha_refined[core_mask] = 1.0
 
-    # Ensure core of object remains fully opaque
-    core_mask = dist_inside > feather
-    alpha_refined[core_mask] = 1.0
+        return alpha_refined, mask_bin
 
-    return alpha_refined, mask_bin
+    else:
+        # GRADIENT ALPHA MODE (legacy behavior)
+        mask_float = mask_bin.astype(np.float32) / 255.0
+        feather = max(feather_radius, 2)
+
+        # Normalize distances to feather zone
+        alpha_inside = np.clip(dist_inside / feather, 0, 1)
+        alpha_refined = alpha_inside * mask_float
+
+        # Apply smoothing for natural falloff
+        alpha_refined = cv2.GaussianBlur(alpha_refined, (5, 5), 1.5)
+
+        # Ensure core of object remains fully opaque
+        core_mask = dist_inside > feather
+        alpha_refined[core_mask] = 1.0
+
+        return alpha_refined, mask_bin
 
 
 # =============================================================================
@@ -410,6 +465,7 @@ class ImageComposer:
         self._lighting_estimator = None
         self._segmentation_client = None
         self._caustics_cache = {}
+        self._caustics_cache_maxsize = 50  # Límite para evitar memory leaks
 
         # Segmentation service URL
         self.segmentation_service_url = os.environ.get("SEGMENTATION_SERVICE_URL", "http://segmentation:8002")
@@ -457,6 +513,7 @@ class ImageComposer:
         background_path: str,
         objects: List[ObjectPlacement],
         depth_map_path: Optional[str] = None,
+        depth_map: Optional[np.ndarray] = None,
         lighting_info: Optional[LightingInfo] = None,
         effects: List[EffectType] = None,
         effects_config: EffectsConfig = None,
@@ -470,7 +527,8 @@ class ImageComposer:
         Args:
             background_path: Path to background image
             objects: List of objects to place
-            depth_map_path: Optional pre-computed depth map
+            depth_map_path: Optional pre-computed depth map (path to .npy file)
+            depth_map: Optional pre-computed depth map (numpy array, takes precedence over depth_map_path)
             lighting_info: Optional pre-computed lighting
             effects: Effects to apply
             effects_config: Effect configuration
@@ -498,12 +556,15 @@ class ImageComposer:
             cv2.imwrite(os.path.join(debug_output_dir, "00_background.jpg"), bg_image)
             logger.info(f"Pipeline debug: saved 00_background.jpg")
 
-        # Load or compute depth map
-        depth_map = None
-        if depth_map_path:
+        # Load or compute depth map (depth_map numpy array takes precedence over depth_map_path)
+        if depth_map is None and depth_map_path:
             depth_map = np.load(depth_map_path)
             result.depth_used = True
-        elif EffectType.BLUR_MATCHING in effects or EffectType.SHADOWS in effects:
+        elif depth_map is not None:
+            result.depth_used = True
+
+        # If no depth map provided but needed for effects, compute it
+        if depth_map is None and (EffectType.BLUR_MATCHING in effects or EffectType.SHADOWS in effects):
             depth_map = await self._get_depth_map(bg_image)
             if depth_map is not None:
                 result.depth_used = True
@@ -570,6 +631,7 @@ class ImageComposer:
 
         # Place each object - track all objects in debug mode
         object_debug_results = []  # Collect debug info for all objects
+        placed_objects_metadata = []  # Store metadata to create annotations AFTER global effects (BUG #1, #6 FIX)
         for obj_idx, obj_placement in enumerate(objects):
             # Create per-object debug directory if in debug mode
             obj_debug_dir = None
@@ -630,18 +692,12 @@ class ImageComposer:
                     dilated = cv2.dilate(obj_mask, kernel, iterations=1)
                     placement_mask = cv2.bitwise_or(placement_mask, dilated)
 
-                # Create annotation
-                x1, y1, x2, y2 = bbox
-                annotation = AnnotationBox(
-                    x=x1,
-                    y=y1,
-                    width=x2 - x1,
-                    height=y2 - y1,
-                    class_name=obj_placement.class_name,
-                    confidence=1.0,
-                    area=(x2 - x1) * (y2 - y1),
-                )
-                result.annotations.append(annotation)
+                # Store metadata for annotation creation AFTER global effects (BUG #1, #6 FIX)
+                placed_objects_metadata.append({
+                    'bbox': bbox,
+                    'class_name': obj_placement.class_name,
+                    'mask': obj_mask,
+                })
                 result.objects_placed += 1
 
         # Debug: Save composite after object placement (before global effects)
@@ -672,9 +728,17 @@ class ImageComposer:
                 cv2.imwrite(os.path.join(debug_output_dir, "08c_multi_object_summary.jpg"), summary_vis)
                 logger.info(f"Pipeline debug: saved 08c_multi_object_summary.jpg with {len(object_debug_results)} objects")
 
+        # Save composite BEFORE global effects for bbox recalculation (BUG #1, #6 FIX)
+        composite_before_global = composite.copy()
+        global_effects_applied = EffectType.CAUSTICS in effects or EffectType.UNDERWATER in effects
+
         # Apply global effects
         if EffectType.CAUSTICS in effects:
-            composite = self._apply_caustics(composite, effects_config.caustics_intensity)
+            composite = self._apply_caustics(
+                composite,
+                effects_config.caustics_intensity,
+                deterministic=effects_config.caustics_deterministic
+            )
             # Debug: Save after caustics
             if debug_output_dir:
                 cv2.imwrite(os.path.join(debug_output_dir, "09_caustics.jpg"), composite)
@@ -690,6 +754,34 @@ class ImageComposer:
             if debug_output_dir:
                 cv2.imwrite(os.path.join(debug_output_dir, "10_underwater.jpg"), composite)
                 logger.info(f"Pipeline debug: saved 10_underwater.jpg")
+
+        # Create annotations AFTER global effects with recalculated bboxes (BUG #1, #6, #9 FIX)
+        for obj_meta in placed_objects_metadata:
+            bbox = obj_meta['bbox']
+
+            # Recalculate bbox to include global effects if enabled
+            if global_effects_applied and effects_config.recalculate_bbox_after_global:
+                bbox = self._recalculate_bbox_after_global_effects(
+                    composite_before_global,
+                    composite,
+                    bbox
+                )
+
+            # Clip bbox to image bounds (BUG #9 FIX)
+            bbox = self._clip_bbox_to_image(bbox, bg_w, bg_h)
+
+            # Create annotation with final bbox
+            x1, y1, x2, y2 = bbox
+            annotation = AnnotationBox(
+                x=x1,
+                y=y1,
+                width=x2 - x1,
+                height=y2 - y1,
+                class_name=obj_meta['class_name'],
+                confidence=1.0,
+                area=(x2 - x1) * (y2 - y1),
+            )
+            result.annotations.append(annotation)
 
         # Debug: Save final result
         if debug_output_dir:
@@ -728,6 +820,7 @@ class ImageComposer:
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         resume_from_index: int = 0,
+        dataset_info: Optional[Dict] = None,
     ) -> BatchResult:
         """
         Compose multiple synthetic images in batch.
@@ -750,6 +843,7 @@ class ImageComposer:
             progress_callback: Callback for progress updates
             cancel_check: Callback that returns True if job should be cancelled
             resume_from_index: Starting image index for resume (0 = start fresh)
+            dataset_info: Dataset metadata (name, description, version, license, etc.)
 
         Returns:
             BatchResult with generation statistics
@@ -824,8 +918,8 @@ class ImageComposer:
         max_iterations = num_images * 5  # Safety limit - optimizado para hardware potente (96GB RAM)
 
         for iteration in range(max_iterations):
-            # Garbage collection y CUDA cache cleanup cada 10 iteraciones
-            if iteration > 0 and iteration % 10 == 0:
+            # Garbage collection y CUDA cache cleanup cada 3 iteraciones (más agresivo para evitar memory leaks)
+            if iteration > 0 and iteration % 3 == 0:
                 # Force GPU sync, Python GC, then CUDA cache clear
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -941,10 +1035,15 @@ class ImageComposer:
                 del compose_result
             if 'objects' in locals():
                 del objects
-            # Clear CUDA cache after each image to prevent fragmentation
+            # Limpieza explícita de bg_image y depth_map (no esperar al GC)
+            if 'bg_image' in locals():
+                del bg_image
+            if 'depth_map' in locals() and depth_map is not None:
+                del depth_map
+            # Clear CUDA cache and run GC after each image to prevent memory fragmentation
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            # Note: bg_image and depth_map are deleted in next iteration when reloaded
 
         # Generate COCO JSON (merge with existing if resuming)
         coco_path = os.path.join(output_dir, "synthetic_dataset.json")
@@ -952,7 +1051,8 @@ class ImageComposer:
             all_annotations,
             available_classes,
             coco_path,
-            existing_coco=existing_coco
+            existing_coco=existing_coco,
+            dataset_info=dataset_info,
         )
 
         result.images_generated = generated
@@ -989,9 +1089,9 @@ class ImageComposer:
         output_dir: str,
         images_dir: str,
         depth_aware: bool,
-        validate_quality: bool,
-        quality_threshold: float,
+        effects: List[EffectType],
         effects_config: Optional[EffectsConfig],
+        debug_dir: Optional[str],
         cancel_check: Optional[Callable[[], bool]],
     ) -> Optional[Dict[str, Any]]:
         """
@@ -1057,14 +1157,20 @@ class ImageComposer:
                 # Compose image
                 output_path = os.path.join(images_dir, f"synthetic_{image_index:05d}.jpg")
 
+                # Pass debug_dir only for the first successfully generated image
+                current_debug_dir = None
+                async with counters_lock:
+                    if debug_dir and counters['generated'] == 0:
+                        current_debug_dir = debug_dir
+
                 compose_result = await self.compose(
                     background_path=bg_file,
                     objects=objects,
                     output_path=output_path,
                     depth_map=depth_map,
-                    validate_quality=validate_quality,
-                    quality_threshold=quality_threshold,
+                    effects=effects,
                     effects_config=effects_config,
+                    debug_output_dir=current_debug_dir,
                 )
 
                 if compose_result.objects_placed == 0:
@@ -1082,9 +1188,15 @@ class ImageComposer:
                 if vram_monitor.should_cleanup():
                     await self._cleanup_vram()
 
+                # Get image dimensions
+                bg_h, bg_w = bg_image.shape[:2]
+
                 return {
                     'compose_result': compose_result,
                     'image_index': image_index,
+                    'image_name': os.path.basename(output_path),
+                    'width': bg_w,
+                    'height': bg_h,
                 }
 
             except Exception as e:
@@ -1094,7 +1206,16 @@ class ImageComposer:
                 return None
 
             finally:
-                # Per-task cleanup
+                # Per-task cleanup - liberar memoria explícitamente
+                if 'bg_image' in locals():
+                    del bg_image
+                if 'depth_map' in locals() and depth_map is not None:
+                    del depth_map
+                if 'objects' in locals():
+                    del objects
+                if 'compose_result' in locals():
+                    del compose_result
+                gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
@@ -1105,16 +1226,17 @@ class ImageComposer:
         objects_dir: str,
         output_dir: str,
         concurrent_limit: int = 4,
-        vram_threshold: float = 0.7,
+        vram_threshold: float = 0.5,
         depth_aware: bool = True,
         max_objects_per_image: int = 10,
         targets_per_class: Optional[Dict[str, int]] = None,
         resume_from_index: int = 0,
-        validate_quality: bool = False,
-        quality_threshold: float = 0.7,
+        effects: List[EffectType] = None,
         effects_config: Optional[EffectsConfig] = None,
+        save_pipeline_debug: bool = False,
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        dataset_info: Optional[Dict] = None,
     ) -> BatchResult:
         """
         Composes a batch of synthetic images with PARALLEL processing.
@@ -1123,7 +1245,8 @@ class ImageComposer:
 
         Args:
             concurrent_limit: Max images to process simultaneously (default 4)
-            vram_threshold: VRAM usage % to trigger cleanup (default 0.7 = 70%)
+            vram_threshold: VRAM usage % to trigger cleanup (default 0.5 = 50%)
+            dataset_info: Dataset metadata (name, description, version, license, etc.)
             ... (other args same as compose_batch)
 
         Returns:
@@ -1134,10 +1257,25 @@ class ImageComposer:
             f"{concurrent_limit} concurrent, {vram_threshold*100:.0f}% VRAM threshold"
         )
 
+        # Initialize effects if not provided
+        effects = effects or [
+            EffectType.COLOR_CORRECTION,
+            EffectType.BLUR_MATCHING,
+            EffectType.CAUSTICS,
+        ]
+        effects_config = effects_config or EffectsConfig()
+
         # Setup
         result = BatchResult()
         images_dir = os.path.join(output_dir, "images")
         os.makedirs(images_dir, exist_ok=True)
+
+        # Setup pipeline debug directory if requested
+        debug_dir = None
+        if save_pipeline_debug:
+            debug_dir = os.path.join(output_dir, "pipeline_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            logger.info(f"Pipeline debug enabled: {debug_dir}")
 
         # Load backgrounds and objects
         bg_files = glob.glob(os.path.join(backgrounds_dir, "**/*.jpg"), recursive=True) + \
@@ -1158,10 +1296,28 @@ class ImageComposer:
 
         # Determine required counts per class
         if targets_per_class:
-            required = targets_per_class
+            # Filter to only classes that have objects available
+            required = {
+                cls: count for cls, count in targets_per_class.items()
+                if cls in available_classes
+            }
+            # Warn about missing classes
+            missing_classes = set(targets_per_class.keys()) - set(available_classes)
+            if missing_classes:
+                logger.warning(
+                    f"Requested classes not found in objects directory: {missing_classes}. "
+                    f"Available classes: {available_classes}"
+                )
         else:
             count_per_class = max(1, num_images // len(available_classes))
             required = {cls: count_per_class for cls in available_classes}
+
+        if not required:
+            raise ValueError(
+                f"No valid object classes available. "
+                f"Requested: {list(targets_per_class.keys()) if targets_per_class else 'auto'}, "
+                f"Available: {available_classes}"
+            )
 
         # Resume support - load existing COCO if resuming
         existing_coco = None
@@ -1191,6 +1347,8 @@ class ImageComposer:
         # Task tracking
         tasks = []
         all_results = []
+        all_annotations = []  # Procesar anotaciones incrementalmente para liberar memoria
+        results_batch_size = 50  # Procesar cada 50 resultados para evitar memory leaks
 
         max_iterations = num_images * 5  # Safety limit
 
@@ -1215,9 +1373,9 @@ class ImageComposer:
                     output_dir=output_dir,
                     images_dir=images_dir,
                     depth_aware=depth_aware,
-                    validate_quality=validate_quality,
-                    quality_threshold=quality_threshold,
+                    effects=effects,
                     effects_config=effects_config,
+                    debug_dir=debug_dir,
                     cancel_check=cancel_check,
                 )
             )
@@ -1231,6 +1389,23 @@ class ImageComposer:
                     if result_data:
                         all_results.append(result_data)
                 tasks = list(pending)
+
+                # Procesamiento incremental: cada 50 resultados, convertir a anotaciones y liberar memoria
+                if len(all_results) >= results_batch_size:
+                    for result_data in all_results:
+                        compose_result = result_data['compose_result']
+                        all_annotations.append({
+                            'image_name': result_data['image_name'],
+                            'width': result_data['width'],
+                            'height': result_data['height'],
+                            'annotations': compose_result.annotations,
+                        })
+                    # Liberar memoria de los resultados procesados
+                    all_results.clear()
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    logger.debug(f"Processed {results_batch_size} results incrementally, freed memory")
 
                 # Progress callback
                 if progress_callback:
@@ -1250,13 +1425,18 @@ class ImageComposer:
                 if result_data:
                     all_results.append(result_data)
 
-        # Collect all annotations
-        all_annotations = []
+        # Procesar resultados restantes (los que no llegaron al batch size)
         for result_data in all_results:
             compose_result = result_data['compose_result']
-            image_index = result_data['image_index']
-            for ann in compose_result.annotations:
-                all_annotations.append(ann)
+            all_annotations.append({
+                'image_name': result_data['image_name'],
+                'width': result_data['width'],
+                'height': result_data['height'],
+                'annotations': compose_result.annotations,
+            })
+        # Liberar memoria de los últimos resultados
+        all_results.clear()
+        gc.collect()
 
         # Generate COCO JSON
         coco_path = os.path.join(output_dir, "synthetic_dataset.json")
@@ -1264,7 +1444,8 @@ class ImageComposer:
             all_annotations,
             available_classes,
             coco_path,
-            existing_coco=existing_coco
+            existing_coco=existing_coco,
+            dataset_info=dataset_info,
         )
 
         async with counters_lock:
@@ -1335,6 +1516,10 @@ class ImageComposer:
         bg_h, bg_w = composite.shape[:2]
         bg_area = bg_h * bg_w
 
+        # Create blur budget based on object size (BUG #5 FIX)
+        # Will be initialized properly after first transform
+        blur_budget = None
+
         for attempt in range(self.try_count):
             # Apply transformations with physics-based scaling
             transformed, pos, scale = self._transform_object(
@@ -1345,10 +1530,20 @@ class ImageComposer:
                 obj_placement.scale,
                 obj_placement.rotation,
                 object_class=obj_placement.class_name,
+                blur_budget=blur_budget,
             )
 
             if transformed is None:
                 continue
+
+            # Initialize blur budget after first successful transform (BUG #5 FIX)
+            if blur_budget is None:
+                p_h, p_w = transformed.shape[:2]
+                min_dim = min(p_h, p_w)
+                blur_budget = BlurBudget(
+                    max_blur_budget=effects_config.max_blur_budget,
+                    object_size=min_dim
+                )
 
             # Debug: Save transformed object (only once)
             if debug_output_dir and attempt == 0:
@@ -1365,7 +1560,12 @@ class ImageComposer:
 
             # Create mask
             _, mask_bin = cv2.threshold(alpha_channel, 10, 255, cv2.THRESH_BINARY)
-            alpha_factor, mask_bin = refine_object_mask(alpha_channel, mask_bin)
+            alpha_factor, mask_bin = refine_object_mask(
+                alpha_channel,
+                mask_bin,
+                feather_radius=effects_config.alpha_feather_radius,
+                use_binary_alpha=effects_config.use_binary_alpha
+            )
 
             # Check area constraints
             object_area = cv2.countNonZero(mask_bin)
@@ -1418,6 +1618,7 @@ class ImageComposer:
             roi = composite[y_start_bg:y_end_bg, x_start_bg:x_end_bg]
 
             # Apply per-object effects
+            obj_bgr_eff_original = obj_bgr_eff.copy()  # Save original for identity validation (BUG #3, #10 FIX)
             obj_processed = obj_bgr_eff.copy()
 
             if EffectType.COLOR_CORRECTION in effects:
@@ -1435,7 +1636,7 @@ class ImageComposer:
 
             if EffectType.BLUR_MATCHING in effects:
                 obj_processed = self._apply_blur_matching(
-                    obj_processed, roi, mask_bin_eff, effects_config.blur_strength
+                    obj_processed, roi, mask_bin_eff, effects_config.blur_strength, blur_budget
                 )
                 # Debug: Save after blur matching
                 if debug_output_dir:
@@ -1451,14 +1652,32 @@ class ImageComposer:
                     obj_processed, effects_config.lighting_type, effects_config.lighting_intensity
                 )
 
-            # Apply motion blur with probability
+            # Apply motion blur with probability (BUG #5 FIX - with blur budget)
             if EffectType.MOTION_BLUR in effects:
                 if random.random() < effects_config.motion_blur_probability:
                     obj_processed = self._apply_motion_blur(
-                        obj_processed, effects_config.motion_blur_kernel
+                        obj_processed, effects_config.motion_blur_kernel, blur_budget
                     )
 
             obj_processed = np.clip(obj_processed, 0, 255).astype(np.uint8)
+
+            # Validate object identity after effects (BUG #3, #10 FIX)
+            if effects_config.validate_identity:
+                is_valid, metrics = self._validate_object_identity(
+                    obj_bgr_eff_original,
+                    obj_processed,
+                    mask_bin_eff,
+                    effects_config
+                )
+                if not is_valid:
+                    logger.warning(
+                        f"Object identity validation failed for {obj_placement.class_name} "
+                        f"(attempt {attempt+1}/{self.try_count}): "
+                        f"color_shift={metrics['color_shift']:.1f}, "
+                        f"sharpness={metrics['sharpness_ratio']:.2f}, "
+                        f"contrast={metrics['contrast_ratio']:.2f}"
+                    )
+                    continue  # Try next placement attempt
 
             # Generate depth-aware shadow
             bg_with_shadow = composite.copy()
@@ -1579,6 +1798,7 @@ class ImageComposer:
         scale: Optional[float],
         rotation: Optional[float],
         object_class: str = "default",
+        blur_budget: Optional[BlurBudget] = None,
     ) -> Tuple[Optional[np.ndarray], Tuple[int, int], float]:
         """
         Apply geometric transformations to object with high-quality interpolation.
@@ -1593,20 +1813,33 @@ class ImageComposer:
         bg_h, bg_w = bg_shape
         transformed = obj_img.copy()
 
-        # Pre-processing: Apply slight blur to very small objects to reduce aliasing
+        # Pre-processing: Apply slight blur to very small objects to reduce aliasing (BUG #5 FIX)
         h, w = transformed.shape[:2]
         min_dim = min(h, w)
         if min_dim < 100:
             # Small objects need anti-aliasing to prevent jaggies
             blur_size = 3 if min_dim > 50 else 5
-            # Only blur the RGB channels, not alpha
-            if transformed.shape[2] == 4:
-                rgb = transformed[:, :, :3]
-                alpha = transformed[:, :, 3:4]
-                rgb = cv2.GaussianBlur(rgb, (blur_size, blur_size), 0.5)
-                transformed = np.concatenate([rgb, alpha], axis=2)
-            else:
-                transformed = cv2.GaussianBlur(transformed, (blur_size, blur_size), 0.5)
+
+            # Apply blur budget if provided (BUG #5 FIX)
+            if blur_budget:
+                actual_blur = blur_budget.apply(blur_size)
+                if actual_blur >= 3:
+                    blur_size = int(actual_blur)
+                    if blur_size % 2 == 0:
+                        blur_size += 1
+                else:
+                    # Skip pre-blur if budget exceeded
+                    blur_size = 0
+
+            if blur_size >= 3:
+                # Only blur the RGB channels, not alpha
+                if transformed.shape[2] == 4:
+                    rgb = transformed[:, :, :3]
+                    alpha = transformed[:, :, 3:4]
+                    rgb = cv2.GaussianBlur(rgb, (blur_size, blur_size), 0.5)
+                    transformed = np.concatenate([rgb, alpha], axis=2)
+                else:
+                    transformed = cv2.GaussianBlur(transformed, (blur_size, blur_size), 0.5)
 
         # Apply rotation with high-quality interpolation
         if rotation is None:
@@ -1675,10 +1908,13 @@ class ImageComposer:
         if p_h == 0 or p_w == 0:
             return None, (0, 0), scale
 
-        # Minimum size check: reject objects that would be too small
-        # (These would appear as blurry blobs with visible aliasing)
-        if p_h < 30 or p_w < 30:
-            logger.debug(f"Object too small after scaling ({p_w}x{p_h}), skipping")
+        # Adaptive minimum size check (BUG #7 FIX)
+        # Calculate minimum based on image size (2.5% of min dimension)
+        min_dimension = int(min(bg_h, bg_w) * 0.025)  # 2.5% = 16px for 640x640
+        min_dimension = max(min_dimension, 15)  # Absolute minimum: 15px
+
+        if p_h < min_dimension or p_w < min_dimension:
+            logger.debug(f"Object too small after scaling ({p_w}x{p_h} < {min_dimension}), skipping")
             return None, (0, 0), scale
 
         # Calculate position
@@ -1979,6 +2215,167 @@ class ImageComposer:
             color_temperature=float(color_temp),
             ambient_intensity=float(gray.mean() / 255.0),
         )
+
+    # =========================================================================
+    # Utility Methods for Bug Fixes
+    # =========================================================================
+
+    def _clip_bbox_to_image(
+        self,
+        bbox: Tuple[int, int, int, int],
+        img_width: int,
+        img_height: int
+    ) -> Tuple[int, int, int, int]:
+        """
+        Clip bounding box to image bounds (BUG #9 FIX).
+
+        Args:
+            bbox: (x1, y1, x2, y2)
+            img_width, img_height: Image dimensions
+
+        Returns:
+            Clipped (x1, y1, x2, y2) within [0, img_width) x [0, img_height)
+        """
+        x1, y1, x2, y2 = bbox
+
+        # Clip to image bounds
+        x1 = max(0, min(x1, img_width - 1))
+        y1 = max(0, min(y1, img_height - 1))
+        x2 = max(x1 + 1, min(x2, img_width))
+        y2 = max(y1 + 1, min(y2, img_height))
+
+        return (x1, y1, x2, y2)
+
+    def _recalculate_bbox_after_global_effects(
+        self,
+        before_image: np.ndarray,
+        after_image: np.ndarray,
+        initial_bbox: Tuple[int, int, int, int],
+        threshold: int = 3
+    ) -> Tuple[int, int, int, int]:
+        """
+        Recalculate bbox to include visual changes from global effects (BUG #1, #6 FIX).
+
+        Uses image differencing to detect caustics/underwater color shifts.
+        More conservative threshold than shadow detection (3 vs 5).
+
+        Args:
+            before_image: Composite before global effects
+            after_image: Composite after global effects
+            initial_bbox: Original bbox (x1, y1, x2, y2)
+            threshold: Change detection threshold (default: 3)
+
+        Returns:
+            Expanded bbox (x1, y1, x2, y2) including global effect changes
+        """
+        x1, y1, x2, y2 = initial_bbox
+        bg_h, bg_w = before_image.shape[:2]
+
+        # Expand search region (20px - less than shadows: 80px)
+        expansion = 20
+        search_x1 = max(0, x1 - expansion)
+        search_y1 = max(0, y1 - expansion)
+        search_x2 = min(bg_w, x2 + expansion)
+        search_y2 = min(bg_h, y2 + expansion)
+
+        # Extract ROIs
+        roi_before = before_image[search_y1:search_y2, search_x1:search_x2]
+        roi_after = after_image[search_y1:search_y2, search_x1:search_x2]
+
+        # Detect changes
+        diff = cv2.absdiff(roi_after, roi_before)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, visible_mask = cv2.threshold(diff_gray, threshold, 255, cv2.THRESH_BINARY)
+
+        # Clean noise
+        kernel = np.ones((3, 3), np.uint8)
+        visible_mask = cv2.morphologyEx(visible_mask, cv2.MORPH_OPEN, kernel)
+
+        # Find contours
+        contours, _ = cv2.findContours(visible_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            x_rel, y_rel, w_rel, h_rel = cv2.boundingRect(largest)
+
+            # Convert to global coordinates
+            x_new = search_x1 + x_rel
+            y_new = search_y1 + y_rel
+
+            # Union with original bbox
+            x1 = min(x1, x_new)
+            y1 = min(y1, y_new)
+            x2 = max(x2, x_new + w_rel)
+            y2 = max(y2, y_new + h_rel)
+
+        return (x1, y1, x2, y2)
+
+    def _validate_object_identity(
+        self,
+        original: np.ndarray,
+        processed: np.ndarray,
+        mask: np.ndarray,
+        effects_config: EffectsConfig
+    ) -> Tuple[bool, Dict[str, float]]:
+        """
+        Validate that object remains recognizable after effects (BUG #3, #10 FIX).
+
+        Checks:
+        1. Color shift in LAB < 30 (JND threshold)
+        2. Sharpness ratio > 0.3 (preserve 30% of original sharpness)
+        3. Contrast ratio > 0.5 (preserve 50% of original contrast)
+
+        Args:
+            original: Original object image (before effects)
+            processed: Processed object image (after effects)
+            mask: Binary mask of object
+            effects_config: Configuration with validation thresholds
+
+        Returns:
+            (is_valid, metrics_dict)
+        """
+        mask_bool = mask > 127
+        if not mask_bool.any():
+            return True, {}
+
+        try:
+            # 1. Color shift in LAB space
+            orig_lab = cv2.cvtColor(original, cv2.COLOR_BGR2LAB)
+            proc_lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
+            color_shift = np.linalg.norm(
+                orig_lab[mask_bool].mean(axis=0) - proc_lab[mask_bool].mean(axis=0)
+            )
+
+            # 2. Sharpness preservation
+            orig_gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+            proc_gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            orig_sharp = cv2.Laplacian(orig_gray, cv2.CV_64F).var()
+            proc_sharp = cv2.Laplacian(proc_gray, cv2.CV_64F).var()
+            sharpness_ratio = proc_sharp / max(orig_sharp, 1e-6)
+
+            # 3. Contrast preservation
+            orig_roi = original[mask_bool]
+            proc_roi = processed[mask_bool]
+            orig_contrast = (orig_roi.max() - orig_roi.min()) / (orig_roi.max() + orig_roi.min() + 1e-6)
+            proc_contrast = (proc_roi.max() - proc_roi.min()) / (proc_roi.max() + proc_roi.min() + 1e-6)
+            contrast_ratio = proc_contrast / max(orig_contrast, 1e-6)
+
+            metrics = {
+                'color_shift': float(color_shift),
+                'sharpness_ratio': float(sharpness_ratio),
+                'contrast_ratio': float(contrast_ratio),
+            }
+
+            is_valid = (
+                color_shift < effects_config.max_color_shift and
+                sharpness_ratio > effects_config.min_sharpness_ratio and
+                contrast_ratio > effects_config.min_contrast_ratio
+            )
+
+            return is_valid, metrics
+
+        except Exception as e:
+            logger.warning(f"Identity validation failed with error: {e}")
+            return True, {}  # Don't reject on validation error
 
     def _visualize_lighting(
         self,
@@ -2323,6 +2720,7 @@ class ImageComposer:
         classes: List[str],
         output_path: str,
         existing_coco: Optional[dict] = None,
+        dataset_info: Optional[dict] = None,
     ):
         """
         Generate COCO format JSON from annotations.
@@ -2332,6 +2730,7 @@ class ImageComposer:
             classes: List of class names
             output_path: Path to save COCO JSON
             existing_coco: Existing COCO data to merge with (for resume)
+            dataset_info: Dataset metadata (name, description, version, license, etc.)
         """
         category_map = {cls: idx for idx, cls in enumerate(sorted(classes))}
 
@@ -2376,9 +2775,42 @@ class ImageComposer:
             for name, cat_id in category_map.items()
         ]
 
+        # Build info section from dataset_info or use defaults
+        if dataset_info:
+            from datetime import datetime
+            info = {
+                "description": dataset_info.get("name", "Synthetic Dataset"),
+                "version": dataset_info.get("version", "1.0"),
+                "year": dataset_info.get("year", datetime.now().year),
+                "contributor": dataset_info.get("contributor", ""),
+                "url": dataset_info.get("url", ""),
+                "date_created": dataset_info.get("date_created") or datetime.now().isoformat(),
+            }
+            # Add full description if provided
+            if dataset_info.get("description"):
+                info["description"] = f"{dataset_info.get('name', 'Synthetic Dataset')} - {dataset_info.get('description')}"
+        else:
+            from datetime import datetime
+            info = {
+                "description": "Synthetic Dataset",
+                "version": "1.0",
+                "year": datetime.now().year,
+                "contributor": "",
+                "date_created": datetime.now().isoformat(),
+            }
+
+        # Build licenses section
+        licenses = []
+        if dataset_info and dataset_info.get("license_name"):
+            licenses.append({
+                "id": 1,
+                "name": dataset_info.get("license_name", ""),
+                "url": dataset_info.get("license_url", ""),
+            })
+
         coco_data = {
-            "info": {"description": "Synthetic Dataset"},
-            "licenses": [],
+            "info": info,
+            "licenses": licenses,
             "images": images,
             "annotations": annotations,
             "categories": categories,
@@ -2453,12 +2885,13 @@ class ImageComposer:
         roi: np.ndarray,
         mask: np.ndarray,
         strength: float = 1.0,
+        blur_budget: Optional[BlurBudget] = None,
     ) -> np.ndarray:
         """
-        Subtly match blur level of object to background.
+        Subtly match blur level of object to background (BUG #5 FIX).
 
         Uses conservative blur to avoid destroying object details.
-        Objects need to remain recognizable for training data.
+        Respects blur budget to prevent over-processing small objects.
         """
         try:
             # Estimate blur from Laplacian variance (higher = sharper)
@@ -2479,6 +2912,15 @@ class ImageComposer:
                 # Very conservative blur amount (max 5px kernel)
                 blur_amount = int(dampened_ratio * strength * 0.5)
                 blur_amount = max(3, min(blur_amount, 5))
+
+                # Apply blur budget if provided (BUG #5 FIX)
+                if blur_budget:
+                    actual_blur = blur_budget.apply(blur_amount)
+                    if actual_blur < 3:
+                        logger.debug(f"Blur budget exceeded, skipping blur matching")
+                        return obj
+                    blur_amount = int(actual_blur)
+
                 if blur_amount % 2 == 0:
                     blur_amount += 1
 
@@ -2529,9 +2971,28 @@ class ImageComposer:
         self,
         obj: np.ndarray,
         kernel_size: int = 15,
+        blur_budget: Optional[BlurBudget] = None,
     ) -> np.ndarray:
-        """Apply motion blur to object."""
+        """
+        Apply motion blur to object (BUG #5 FIX).
+
+        Respects blur budget - motion blur uses ~1/3 of kernel size as effective blur.
+        """
         try:
+            # Apply blur budget if provided (BUG #5 FIX)
+            if blur_budget:
+                # Motion blur effective blur is ~1/3 of kernel size
+                effective_blur = kernel_size / 3.0
+                actual_blur = blur_budget.apply(effective_blur)
+                if actual_blur < 2:
+                    logger.debug(f"Blur budget exceeded, skipping motion blur")
+                    return obj
+                kernel_size = int(actual_blur * 3)
+                if kernel_size < 3:
+                    return obj
+                if kernel_size % 2 == 0:
+                    kernel_size += 1
+
             angle = random.uniform(0, 360)
             k = np.zeros((kernel_size, kernel_size))
             k[kernel_size // 2, :] = 1
@@ -2701,26 +3162,56 @@ class ImageComposer:
         self,
         image: np.ndarray,
         intensity: float = 0.15,
+        deterministic: bool = True
     ) -> np.ndarray:
-        """Apply underwater caustics effect."""
+        """
+        Apply underwater caustics effect (BUG #4 FIX).
+
+        Args:
+            image: Input image
+            intensity: Caustics intensity (0.0-0.5)
+            deterministic: If True, use fixed pattern for consistency (recommended for training)
+        """
         try:
             h, w = image.shape[:2]
-            cache_key = (w, h)
 
-            if cache_key not in self._caustics_cache:
+            if deterministic:
+                cache_key = (w, h, 'deterministic')
+            else:
+                cache_key = None  # Don't cache random patterns
+
+            if cache_key and cache_key in self._caustics_cache:
+                caustics = self._caustics_cache[cache_key]
+            else:
                 # Generate caustics pattern
                 x = np.linspace(0, 4 * np.pi, w)
                 y = np.linspace(0, 4 * np.pi, h)
                 X, Y = np.meshgrid(x, y)
 
-                caustics = np.sin(X + np.random.uniform(0, 2*np.pi))
-                caustics += np.sin(Y + np.random.uniform(0, 2*np.pi))
-                caustics += np.sin((X + Y) / 2 + np.random.uniform(0, 2*np.pi))
+                if deterministic:
+                    # Fixed phases for consistency (BUG #4 FIX)
+                    phase1, phase2, phase3 = 0.0, np.pi/3, np.pi/2
+                else:
+                    # Random phases for variety
+                    phase1 = np.random.uniform(0, 2*np.pi)
+                    phase2 = np.random.uniform(0, 2*np.pi)
+                    phase3 = np.random.uniform(0, 2*np.pi)
+
+                caustics = np.sin(X + phase1)
+                caustics += np.sin(Y + phase2)
+                caustics += np.sin((X + Y) / 2 + phase3)
                 caustics = (caustics - caustics.min()) / (caustics.max() - caustics.min())
 
-                self._caustics_cache[cache_key] = caustics
+                if cache_key:
+                    # Limpiar caché si excede el límite (FIFO simplificado)
+                    if len(self._caustics_cache) >= self._caustics_cache_maxsize:
+                        # Eliminar la mitad más antigua
+                        keys_to_remove = list(self._caustics_cache.keys())[:len(self._caustics_cache) // 2]
+                        for k in keys_to_remove:
+                            del self._caustics_cache[k]
+                        logger.debug(f"Caustics cache cleaned: removed {len(keys_to_remove)} entries")
+                    self._caustics_cache[cache_key] = caustics
 
-            caustics = self._caustics_cache[cache_key]
             caustics_3ch = caustics[:, :, np.newaxis]
 
             result = image.astype(np.float32)
