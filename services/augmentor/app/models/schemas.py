@@ -52,6 +52,19 @@ class WaterClarity(str, Enum):
 # Data Models
 # =============================================================================
 
+class DatasetInfo(BaseModel):
+    """Metadata information for the generated dataset (COCO format info section)"""
+    name: str = Field("Synthetic Dataset", description="Dataset name")
+    description: str = Field("", description="Dataset description")
+    version: str = Field("1.0", description="Dataset version")
+    year: int = Field(default_factory=lambda: datetime.now().year, description="Year of creation")
+    contributor: str = Field("", description="Dataset contributor/author")
+    url: str = Field("", description="Dataset URL or project link")
+    license_name: str = Field("", description="License name (e.g., CC BY 4.0, MIT)")
+    license_url: str = Field("", description="License URL")
+    date_created: Optional[str] = Field(None, description="Creation date (auto-filled if empty)")
+
+
 class ObjectPlacement(BaseModel):
     """Object to be placed in the composition"""
     image_path: str = Field(..., description="Path to object image (RGBA)")
@@ -75,24 +88,49 @@ class AnnotationBox(BaseModel):
 
 class EffectsConfig(BaseModel):
     """Configuration for realism effects"""
-    # Intensities
-    color_intensity: float = Field(0.15, ge=0, le=1, description="Color correction intensity (0.1-0.2 recommended to preserve object details)")
+    # ===== REVISED INTENSITY DEFAULTS (BUG #11 FIX) =====
+    color_intensity: float = Field(0.12, ge=0, le=1, description="Color correction intensity (0.1-0.15 recommended to preserve object details)")
     blur_strength: float = Field(0.5, ge=0, le=2, description="Blur matching strength (low to preserve object details)")
     underwater_intensity: float = Field(0.15, ge=0, le=1, description="Underwater tint intensity (subtle for training data)")
-    caustics_intensity: float = Field(0.15, ge=0, le=0.5, description="Caustics effect intensity")
-    shadow_opacity: float = Field(0.12, ge=0, le=0.5, description="Shadow darkness (subtle underwater shadows)")
+    caustics_intensity: float = Field(0.10, ge=0, le=0.5, description="Caustics effect intensity")
+    shadow_opacity: float = Field(0.10, ge=0, le=0.5, description="Shadow darkness (subtle underwater shadows)")
 
     # Options
     lighting_type: str = Field("ambient", description="spotlight|gradient|ambient")
     lighting_intensity: float = Field(0.5, ge=0, le=1, description="Lighting effect intensity")
     motion_blur_probability: float = Field(0.2, ge=0, le=1, description="Probability of motion blur")
-    motion_blur_kernel: int = Field(15, ge=3, le=50, description="Motion blur kernel size")
-    shadow_blur: int = Field(31, ge=3, le=61, description="Shadow blur kernel size (soft underwater shadows)")
+    motion_blur_kernel: int = Field(11, ge=3, le=50, description="Motion blur kernel size")
+    shadow_blur: int = Field(25, ge=3, le=61, description="Shadow blur kernel size (soft underwater shadows)")
     edge_feather: int = Field(4, ge=1, le=15, description="Edge feathering pixels for smooth transitions")
 
     # Water settings
     water_color: Tuple[int, int, int] = Field((120, 80, 20), description="BGR water tint color")
     water_clarity: WaterClarity = Field(WaterClarity.CLEAR, description="Water clarity level")
+
+    # ===== NEW FIELDS (BUG FIXES) =====
+    # Identity validation (BUG #3, #10)
+    # Note: Disabled by default as thresholds are difficult to calibrate for strong underwater effects
+    validate_identity: bool = Field(False, description="Validate object remains recognizable after effects")
+    max_color_shift: float = Field(50, ge=10, le=100, description="Max LAB color shift for identity validation (delta-E units)")
+    min_sharpness_ratio: float = Field(0.15, ge=0.05, le=1.0, description="Min sharpness preservation ratio for identity validation")
+    min_contrast_ratio: float = Field(0.2, ge=0.05, le=1.0, description="Min contrast preservation ratio for identity validation")
+
+    # Alpha blending (BUG #2)
+    use_binary_alpha: bool = Field(True, description="Use binary alpha instead of gradients to prevent color bleeding")
+    alpha_feather_radius: int = Field(1, ge=0, le=3, description="Alpha feathering pixels (0=hard edge, 1-2=recommended)")
+
+    # Blur budget (BUG #5)
+    max_blur_budget: float = Field(10.0, ge=3, le=20, description="Max cumulative blur in pixels for small objects")
+
+    # Size constraints (BUG #7)
+    min_object_size_ratio: float = Field(0.025, ge=0.01, le=0.1, description="Min object size as ratio of image dimension (2.5% = 16px for 640x640)")
+    absolute_min_size: int = Field(15, ge=10, le=30, description="Absolute minimum object size in pixels")
+
+    # Caustics (BUG #4)
+    caustics_deterministic: bool = Field(True, description="Use deterministic caustics pattern for training data consistency")
+
+    # Bbox recalculation (BUG #1, #6)
+    recalculate_bbox_after_global: bool = Field(True, description="Recalculate bbox after global effects (caustics, underwater)")
 
 
 class LightSourceInfo(BaseModel):
@@ -209,6 +247,12 @@ class ComposeBatchRequest(BaseModel):
         ge=0.5,
         le=0.9,
         description="VRAM usage threshold to trigger cleanup (0.5-0.9, recommended: 0.7)"
+    )
+
+    # Dataset Metadata
+    dataset_info: Optional[DatasetInfo] = Field(
+        None,
+        description="Dataset metadata (name, description, version, license, etc.)"
     )
 
 
