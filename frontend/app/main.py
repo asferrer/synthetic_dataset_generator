@@ -37,6 +37,7 @@ inject_styles()
 WORKFLOW_NAV = {
     "① Análisis": "analysis",
     "② Configurar": "configure",
+    "②.5 Fuente": "source_selection",
     "③ Generar": "generate",
     "④ Exportar": "export",
     "⑤ Combinar": "combine",
@@ -47,6 +48,7 @@ WORKFLOW_NAV = {
 TOOLS_NAV = {
     "🎯 Extraer Objetos": "extract_objects",
     "🔬 SAM3": "sam3_tool",
+    "🤖 Etiquetar Auto": "labeling_tool",
     "🏷️ Etiquetas": "labels",
     "📤 Exportar": "export_tool",
     "🔗 Combinar": "combine_tool",
@@ -97,21 +99,29 @@ def render_sidebar():
         completed_steps = st.session_state.get("workflow_completed", [])
 
         # Workflow navigation with styled step indicators
-        step_names = ["Análisis", "Configurar", "Generar", "Exportar", "Combinar", "Splits"]
+        # Map workflow items to their step numbers and display names
+        workflow_items = [
+            ("① Análisis", "analysis", 1, "Análisis"),
+            ("② Configurar", "configure", 2, "Configurar"),
+            ("②.5 Fuente", "source_selection", 2.5, "Fuente"),
+            ("③ Generar", "generate", 3, "Generar"),
+            ("④ Exportar", "export", 4, "Exportar"),
+            ("⑤ Combinar", "combine", 5, "Combinar"),
+            ("⑥ Splits", "splits", 6, "Splits"),
+        ]
 
-        for i, (label, _) in enumerate(WORKFLOW_NAV.items(), 1):
+        for label, page_id, step_num, display_name in workflow_items:
             is_current = st.session_state.get("nav_menu") == label
-            is_completed = i in completed_steps
-            is_accessible = i <= current_step + 1 or current_step == 0
+            is_completed = int(step_num) in completed_steps if step_num == int(step_num) else False
+            is_accessible = step_num <= current_step + 1 or current_step == 0
 
             # Build display label with step indicator
             if is_completed:
                 # Green checkmark for completed steps
-                display_label = f"✅ {step_names[i-1]}"
+                display_label = f"✅ {display_name}"
             else:
-                # Number circle for non-completed steps
-                number_icons = ["①", "②", "③", "④", "⑤", "⑥"]
-                display_label = f"{number_icons[i-1]} {step_names[i-1]}"
+                # Use the original label (already has number icon)
+                display_label = label
 
             button_type = "primary" if is_current else "secondary"
 
@@ -248,6 +258,8 @@ def main():
         render_analysis_page()
     elif current_page == "② Configurar":
         render_configure_page()
+    elif current_page == "②.5 Fuente":
+        render_source_selection_page()
     elif current_page == "③ Generar":
         render_generation_page()
     elif current_page == "④ Exportar":
@@ -262,6 +274,8 @@ def main():
         render_object_extraction_page()
     elif current_page == "🔬 SAM3":
         render_sam3_tool_page()
+    elif current_page == "🤖 Etiquetar Auto":
+        render_labeling_tool_page()
     elif current_page == "🏷️ Etiquetas":
         render_labels_page()
     elif current_page == "📤 Exportar":
@@ -320,6 +334,28 @@ def render_configure_page():
 
     from app.pages.configure import render_configure_page as configure
     configure()
+
+
+# =============================================================================
+# PAGE: Source Selection (Step 2.5)
+# =============================================================================
+
+def render_source_selection_page():
+    """Render source selection page (Step 2.5 of workflow)"""
+    # Check if we have configuration from step 2
+    if not st.session_state.get("generation_config"):
+        alert_box(
+            "Primero debes configurar la generación en el paso anterior.",
+            type="warning",
+            icon="⚠️"
+        )
+        if st.button("← Ir a Configuración", type="primary"):
+            st.session_state.nav_menu = "② Configurar"
+            st.rerun()
+        return
+
+    from app.pages.source_selection import render_source_selection_page as source
+    source()
 
 
 # =============================================================================
@@ -392,6 +428,16 @@ def render_sam3_tool_page():
     """Render SAM3 segmentation tool page"""
     from app.pages.sam3_tool import render_sam3_tool_page as sam3
     sam3()
+
+
+# =============================================================================
+# PAGE: Labeling Tool (Auto Labeling with SAM3)
+# =============================================================================
+
+def render_labeling_tool_page():
+    """Render automatic labeling tool page"""
+    from app.pages.labeling_tool import render_labeling_tool_page as labeling
+    labeling()
 
 
 # =============================================================================
@@ -796,6 +842,9 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
         pending = job.get("images_pending", 0)
         total = job.get("total_items", 0)  # Use total_items from backend
         current_info = job.get("current_category", "")
+        # Per-class progress data
+        targets_per_class = job.get("targets_per_class", {})
+        generated_per_class = job.get("generated_per_class", {})
     elif job_type == "extraction":
         type_icon, type_label = "🎯", "Extraccion de Objetos"
         done = job.get("extracted_objects", 0)
@@ -869,14 +918,14 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Completados", f"{done:,}", help=f"De {total:,} total")
+        st.metric("Objetos generados", f"{done:,}", help=f"De {total:,} total")
     with col2:
         if job_type == "sam3_conversion":
             st.metric("Omitidos", f"{skipped:,}")
         else:
-            st.metric("Pendientes", f"{pending:,}")
+            st.metric("Objetos pendientes", f"{pending:,}")
     with col3:
-        st.metric("Fallidos", f"{failed:,}")
+        st.metric("Rechazados", f"{failed:,}")
     with col4:
         st.metric("Tiempo", elapsed_str)
 
@@ -898,6 +947,74 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
                 for cat_name, cat_count in categories_progress.items():
                     st.write(f"• {cat_name}: {cat_count} objetos")
 
+    # Category breakdown for generation jobs - show pending per class
+    if job_type == "generation":
+        targets_per_class = job.get("targets_per_class", {})
+        generated_per_class = job.get("generated_per_class", {})
+        if targets_per_class:
+            with st.expander("📊 Objetos Pendientes por Clase", expanded=True):
+                # Sort by pending count (most pending first)
+                class_progress = []
+                for cat_name, target in targets_per_class.items():
+                    generated = generated_per_class.get(cat_name, 0)
+                    pending_cls = max(0, target - generated)
+                    class_progress.append((cat_name, generated, target, pending_cls))
+
+                class_progress.sort(key=lambda x: -x[3])  # Sort by pending descending
+
+                for cat_name, generated, target, pending_cls in class_progress:
+                    progress_pct = (generated / target * 100) if target > 0 else 100
+                    if pending_cls == 0:
+                        st.markdown(f"✅ **{cat_name}**: {generated}/{target} objetos")
+                    else:
+                        st.markdown(f"⏳ **{cat_name}**: {generated}/{target} objetos ({pending_cls} pendientes)")
+                        st.progress(progress_pct / 100)
+
+    # Action buttons for active jobs
+    job_id = job.get("job_id", "unknown")
+    job_type = job.get("job_type", "generation")
+
+    col_action1, col_action2, col_action3 = st.columns([1, 1, 2])
+
+    with col_action1:
+        # Cancel button - for all active job types that support it
+        if job_type == "generation":
+            if st.button("⏹️ Cancelar", key=f"monitor_cancel_active_{job_id}", use_container_width=True):
+                result = client.cancel_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... cancelado")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+
+    with col_action2:
+        # Delete button - stops and deletes (for generation jobs)
+        if job_type == "generation":
+            if st.button("🗑️ Detener y Eliminar", key=f"monitor_delete_active_{job_id}",
+                        use_container_width=True, help="Detiene el job y lo elimina de la BD. Las imagenes se preservan."):
+                st.session_state[f"confirm_delete_{job_id}"] = True
+                st.rerun()
+
+    # Delete confirmation dialog
+    if st.session_state.get(f"confirm_delete_{job_id}"):
+        st.warning(f"⚠️ ¿Seguro que quieres eliminar el job `{job_id[:12]}...`?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✓ Si, eliminar", key=f"confirm_yes_{job_id}", type="primary", use_container_width=True):
+                with st.spinner("Deteniendo y eliminando..."):
+                    result = client.delete_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... eliminado")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+        with col_no:
+            if st.button("✗ Cancelar", key=f"confirm_no_{job_id}", use_container_width=True):
+                st.session_state.pop(f"confirm_delete_{job_id}", None)
+                st.rerun()
+
     # Separator
     st.markdown("<hr style='margin: 1rem 0; border: none; border-top: 1px solid #333;'>", unsafe_allow_html=True)
 
@@ -916,8 +1033,8 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         failed = job.get("images_rejected", 0)
         pending = job.get("images_pending", 0)
         total = job.get("total_items", 0)  # Use total_items from backend
-        label1, val1 = "Generadas", done
-        label2, val2 = "Rechazadas", failed
+        label1, val1 = "Objetos gen.", done
+        label2, val2 = "Rechazados", failed
         label3, val3 = "Pendientes", pending
     elif job_type == "extraction":
         type_icon, type_label = "🎯", "Extraccion"
@@ -1026,6 +1143,111 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
                 else:
                     st.error(f"Error: {result.get('error')}")
 
+    # Action buttons for completed jobs (when not active and status is completed)
+    # Note: This is for jobs shown in "Completed" section via _render_job_card directly
+    if not is_active and status == "completed" and job_type == "generation":
+        col_load, col_del, col_empty = st.columns([1, 1, 2])
+
+        # Load dataset button
+        with col_load:
+            if st.button("📥 Cargar", key=f"monitor_load_completed_{job_id}",
+                        use_container_width=True, help="Cargar dataset para usar en workflow/herramientas"):
+                with st.spinner("Cargando dataset..."):
+                    try:
+                        # Load COCO data
+                        result = client.load_dataset_coco(job_id)
+                        if result.get("success") and result.get("data"):
+                            coco_data = result["data"]
+
+                            # Set basic dataset states
+                            st.session_state.active_dataset_id = job_id
+                            st.session_state.generated_dataset = coco_data
+                            st.session_state.current_job_id = job_id
+                            st.session_state[f"dataset_loaded_{job_id}"] = True
+
+                            # Load metadata to populate workflow states
+                            metadata = client.get_dataset_metadata(job_id)
+                            if metadata and not metadata.get("error"):
+                                # Set output directory
+                                images_dir = metadata.get("images_dir", "")
+                                output_dir = images_dir.replace("/images", "").replace("\\images", "")
+                                st.session_state.generated_output_dir = output_dir
+
+                                # Set generation config if available
+                                gen_config = metadata.get("generation_config")
+                                if gen_config:
+                                    st.session_state.generation_config = gen_config
+
+                                    # Extract balancing targets from config
+                                    if gen_config.get("targets_per_class"):
+                                        st.session_state.balancing_targets = gen_config["targets_per_class"]
+
+                                # Build source dataset info from COCO data for analysis step
+                                class_dist = metadata.get("class_distribution", {})
+                                if class_dist:
+                                    st.session_state.source_dataset = coco_data
+                                    st.session_state.analysis_result = {
+                                        "class_distribution": class_dist,
+                                        "total_images": metadata.get("num_images", len(coco_data.get("images", []))),
+                                        "total_annotations": metadata.get("num_annotations", len(coco_data.get("annotations", []))),
+                                        "categories": metadata.get("categories", coco_data.get("categories", [])),
+                                    }
+
+                                # Mark source mode as loaded from existing
+                                st.session_state.generation_source_mode = "loaded_from_monitor"
+
+                            st.toast(f"Dataset cargado: {len(coco_data.get('images', []))} imágenes")
+                            st.rerun()
+                        else:
+                            st.error(f"No se pudo cargar el dataset: {result.get('error', 'Error desconocido')}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+
+        # Delete button
+        with col_del:
+            if st.button("🗑️ Eliminar", key=f"monitor_delete_completed_{job_id}",
+                        use_container_width=True, help="Eliminar de la BD. Las imagenes se preservan."):
+                st.session_state[f"confirm_delete_{job_id}"] = True
+                st.rerun()
+
+        # Show loaded indicator
+        if st.session_state.get(f"dataset_loaded_{job_id}"):
+            st.success("✓ Dataset activo - Puedes usarlo en Export, Combine, o Selección de Fuente")
+            nav_col1, nav_col2, nav_col3 = st.columns(3)
+            with nav_col1:
+                if st.button("→ Ir a Exportar", key=f"goto_export_{job_id}", use_container_width=True):
+                    st.session_state.nav_menu = "④ Exportar"
+                    st.rerun()
+            with nav_col2:
+                if st.button("→ Ir a Combinar", key=f"goto_combine_{job_id}", use_container_width=True):
+                    st.session_state.nav_menu = "⑤ Combinar"
+                    st.rerun()
+            with nav_col3:
+                if st.button("→ Selec. Fuente", key=f"goto_source_{job_id}", use_container_width=True):
+                    st.session_state.nav_menu = "②.5 Fuente"
+                    st.rerun()
+
+        # Delete confirmation dialog
+        if st.session_state.get(f"confirm_delete_{job_id}"):
+            st.warning(f"⚠️ ¿Seguro que quieres eliminar el job `{job_id[:12]}...`?")
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("✓ Si, eliminar", key=f"confirm_yes_completed_{job_id}", type="primary", use_container_width=True):
+                    with st.spinner("Eliminando..."):
+                        result = client.delete_job(job_id)
+                    if result.get("success"):
+                        st.toast(f"Job {job_id[:8]}... eliminado")
+                        st.session_state.pop(f"confirm_delete_{job_id}", None)
+                        st.session_state.pop(f"dataset_loaded_{job_id}", None)
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('error')}")
+                        st.session_state.pop(f"confirm_delete_{job_id}", None)
+            with col_no:
+                if st.button("✗ Cancelar", key=f"confirm_no_completed_{job_id}", use_container_width=True):
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+                    st.rerun()
+
 
 def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
     """Render a job card with resume/retry actions for interrupted/failed jobs"""
@@ -1084,6 +1306,33 @@ def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
         if st.button("📋 Ver Logs", key=f"logs_{job_id}", use_container_width=True):
             st.session_state[f"show_logs_{job_id}"] = True
             st.rerun()
+
+    with col4:
+        # Delete button - for all non-active jobs (failed, cancelled, interrupted)
+        if st.button("🗑️ Eliminar", key=f"monitor_delete_action_{job_id}",
+                    use_container_width=True, help="Eliminar de la BD. Las imagenes se preservan."):
+            st.session_state[f"confirm_delete_{job_id}"] = True
+            st.rerun()
+
+    # Delete confirmation dialog
+    if st.session_state.get(f"confirm_delete_{job_id}"):
+        st.warning(f"⚠️ ¿Seguro que quieres eliminar el job `{job_id[:12]}...`?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✓ Si, eliminar", key=f"confirm_yes_action_{job_id}", type="primary", use_container_width=True):
+                with st.spinner("Eliminando..."):
+                    result = client.delete_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... eliminado")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+        with col_no:
+            if st.button("✗ Cancelar", key=f"confirm_no_action_{job_id}", use_container_width=True):
+                st.session_state.pop(f"confirm_delete_{job_id}", None)
+                st.rerun()
 
     # Show logs if requested
     if st.session_state.get(f"show_logs_{job_id}"):

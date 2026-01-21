@@ -343,7 +343,7 @@ def render_configure_page():
                 border-radius: 0.5rem; padding: 1rem; margin-bottom: 1.5rem;
                 display: flex; justify-content: space-between; align-items: center;">
         <div>
-            <span style="color: {c['text_muted']}; font-size: 0.85rem;">Imágenes a generar:</span>
+            <span style="color: {c['text_muted']}; font-size: 0.85rem;">Objetos a generar:</span>
             <span style="font-weight: 700; font-size: 1.25rem; margin-left: 0.5rem; color: {c['primary']};">
                 {total_images:,}
             </span>
@@ -635,10 +635,118 @@ def render_configure_page():
     with st.expander("📊 Ver Targets por Clase"):
         if targets:
             target_df = pd.DataFrame([
-                {"Clase": cls, "Imágenes a generar": count}
+                {"Clase": cls, "Objetos a generar": count}
                 for cls, count in targets.items() if count > 0
             ])
             st.dataframe(target_df, use_container_width=True, hide_index=True)
+
+    spacer(16)
+
+    # Dataset Metadata Section
+    section_header("Metadatos del Dataset", icon="📋")
+
+    st.markdown(f"""
+    <div style="background: {c['bg_secondary']}; border-radius: 0.5rem; padding: 0.75rem;
+                margin-bottom: 1rem; font-size: 0.85rem; color: {c['text_muted']};">
+        Define la información que se incluirá en el archivo COCO JSON generado.
+        Estos metadatos ayudan a documentar y versionar el dataset.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Dataset name and version
+    meta_col1, meta_col2 = st.columns([2, 1])
+    with meta_col1:
+        dataset_name = st.text_input(
+            "Nombre del Dataset",
+            value=st.session_state.get("dataset_name", "Synthetic Dataset"),
+            key="dataset_name",
+            help="Nombre identificativo del dataset"
+        )
+    with meta_col2:
+        dataset_version = st.text_input(
+            "Versión",
+            value=st.session_state.get("dataset_version", "1.0"),
+            key="dataset_version",
+            help="Versión del dataset (ej: 1.0, 2.1)"
+        )
+
+    # Description
+    dataset_description = st.text_area(
+        "Descripción",
+        value=st.session_state.get("dataset_description", ""),
+        key="dataset_description",
+        placeholder="Descripción breve del propósito y contenido del dataset...",
+        height=80
+    )
+
+    # Contributor and URL
+    meta_col3, meta_col4 = st.columns(2)
+    with meta_col3:
+        dataset_contributor = st.text_input(
+            "Contributor / Autor",
+            value=st.session_state.get("dataset_contributor", ""),
+            key="dataset_contributor",
+            placeholder="Nombre o equipo"
+        )
+    with meta_col4:
+        dataset_url = st.text_input(
+            "URL del Proyecto",
+            value=st.session_state.get("dataset_url", ""),
+            key="dataset_url",
+            placeholder="https://..."
+        )
+
+    # Year and License (collapsible for advanced options)
+    with st.expander("📜 Año y Licencia"):
+        lic_col1, lic_col2 = st.columns(2)
+        with lic_col1:
+            dataset_year = st.number_input(
+                "Año",
+                min_value=2000,
+                max_value=2100,
+                value=st.session_state.get("dataset_year", datetime.now().year),
+                key="dataset_year"
+            )
+        with lic_col2:
+            license_options = [
+                "",
+                "CC BY 4.0",
+                "CC BY-SA 4.0",
+                "CC BY-NC 4.0",
+                "CC BY-NC-SA 4.0",
+                "CC0 1.0 (Public Domain)",
+                "MIT License",
+                "Apache 2.0",
+                "GPL v3",
+                "Uso interno / Propietario",
+                "Otra"
+            ]
+            dataset_license = st.selectbox(
+                "Licencia",
+                options=license_options,
+                index=license_options.index(st.session_state.get("dataset_license", "")) if st.session_state.get("dataset_license", "") in license_options else 0,
+                key="dataset_license"
+            )
+
+        # License URL based on selection
+        license_urls = {
+            "CC BY 4.0": "https://creativecommons.org/licenses/by/4.0/",
+            "CC BY-SA 4.0": "https://creativecommons.org/licenses/by-sa/4.0/",
+            "CC BY-NC 4.0": "https://creativecommons.org/licenses/by-nc/4.0/",
+            "CC BY-NC-SA 4.0": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+            "CC0 1.0 (Public Domain)": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "MIT License": "https://opensource.org/licenses/MIT",
+            "Apache 2.0": "https://www.apache.org/licenses/LICENSE-2.0",
+            "GPL v3": "https://www.gnu.org/licenses/gpl-3.0.html",
+        }
+
+        default_license_url = license_urls.get(dataset_license, "")
+        dataset_license_url = st.text_input(
+            "URL de la Licencia",
+            value=st.session_state.get("dataset_license_url", default_license_url),
+            key="dataset_license_url",
+            placeholder="https://..."
+        )
 
     spacer(24)
 
@@ -668,6 +776,18 @@ def render_configure_page():
         "motion_blur_probability": 0.2,
     }
 
+    # Build dataset metadata
+    dataset_info = {
+        "name": st.session_state.get("dataset_name", "Synthetic Dataset"),
+        "description": st.session_state.get("dataset_description", ""),
+        "version": st.session_state.get("dataset_version", "1.0"),
+        "year": st.session_state.get("dataset_year", datetime.now().year),
+        "contributor": st.session_state.get("dataset_contributor", ""),
+        "url": st.session_state.get("dataset_url", ""),
+        "license_name": st.session_state.get("dataset_license", ""),
+        "license_url": st.session_state.get("dataset_license_url", ""),
+    }
+
     generation_config = {
         "backgrounds_dir": backgrounds_dir,
         "objects_dir": objects_dir,
@@ -682,6 +802,7 @@ def render_configure_page():
         "validate_quality": validate_quality,
         "validate_physics": validate_physics,
         "save_pipeline_debug": save_debug,
+        "dataset_info": dataset_info,
     }
 
     # Configuration summary
@@ -725,15 +846,14 @@ def render_configure_page():
     action = workflow_navigation(
         current_step=2,
         can_go_next=can_proceed,
-        next_label="Iniciar Generación",
-        on_next="③ Generar",
+        next_label="Seleccionar Fuente",
+        on_next="②.5 Fuente",
         on_prev="① Análisis"
     )
 
     if action == "next" and can_proceed:
-        if 2 not in st.session_state.get("workflow_completed", []):
-            st.session_state.workflow_completed = st.session_state.get("workflow_completed", []) + [2]
-        st.session_state.workflow_step = 3
+        # Don't mark step 2 as completed yet - source_selection will do that
+        st.session_state.workflow_step = 2.5
         st.rerun()
     elif action == "prev":
         st.session_state.nav_menu = "① Análisis"

@@ -101,15 +101,34 @@ def render_combine_page():
 
 def _auto_add_workflow_datasets() -> None:
     """Auto-add datasets from the workflow if not already added"""
-    # Check if we already auto-added
+    from app.components.api_client import get_api_client
+
     if st.session_state.get("_combine_auto_added"):
         return
 
     datasets_to_add = []
 
-    # Add generated dataset if available
+    # Check for active dataset (persistent)
+    active_id = st.session_state.get("active_dataset_id")
+    if active_id:
+        client = get_api_client()
+        metadata = client.get_dataset_metadata(active_id)
+
+        if not metadata.get("error"):
+            # Load COCO data
+            result = client.load_dataset_coco(active_id)
+            if result.get("success"):
+                datasets_to_add.append({
+                    "name": metadata.get("dataset_name", "Dataset Activo"),
+                    "data": result["data"],
+                    "source": "active_dataset",
+                    "n_images": metadata.get("num_images", 0),
+                    "n_annotations": metadata.get("num_annotations", 0)
+                })
+
+    # FALLBACK: Try session state (for backward compatibility)
     generated = st.session_state.get("generated_dataset")
-    if generated:
+    if generated and not any(d["source"] == "active_dataset" for d in datasets_to_add):
         datasets_to_add.append({
             "name": "Dataset Sintético Generado",
             "data": generated,
@@ -183,12 +202,69 @@ def _render_add_dataset_section() -> None:
     with st.expander("➕ Añadir otro dataset", expanded=False):
         add_method = st.radio(
             "Método de entrada",
-            ["📤 Subir archivo JSON", "📂 Ruta de archivo"],
+            ["📂 Datasets generados", "📤 Subir archivo JSON", "📁 Ruta de archivo"],
             horizontal=True,
             key="combine_add_method"
         )
 
-        if add_method == "📤 Subir archivo JSON":
+        if add_method == "📂 Datasets generados":
+            from app.components.dataset_browser import render_dataset_browser
+            from app.components.api_client import get_api_client
+
+            def on_dataset_selected(dataset: Dict):
+                client = get_api_client()
+                result = client.load_dataset_coco(dataset["job_id"])
+
+                if result.get("success"):
+                    # Check for duplicates
+                    existing_sources = [d["source"] for d in st.session_state.datasets_to_combine]
+                    if dataset["job_id"] not in existing_sources:
+                        st.session_state.datasets_to_combine.append({
+                            "name": dataset["dataset_name"],
+                            "data": result["data"],
+                            "source": dataset["job_id"],
+                            "n_images": dataset["num_images"],
+                            "n_annotations": dataset["num_annotations"]
+                        })
+                        st.success(f"✅ Dataset '{dataset['dataset_name']}' agregado")
+                        st.rerun()
+                    else:
+                        st.warning("Este dataset ya está en la lista")
+
+            render_dataset_browser(
+                on_select=on_dataset_selected,
+                dataset_type=None,
+                title="Seleccionar Dataset",
+                show_preview=True
+            )
+
+        elif add_method == "📂 Ruta de archivo":
+            # Original file path method - move from else below
+            file_path = st.text_input(
+                "Ruta al archivo COCO JSON",
+                key="combine_file_path"
+            )
+
+            if file_path and st.button("Cargar Dataset", key="load_path"):
+                try:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    n_images = len(data.get("images", []))
+                    n_anns = len(data.get("annotations", []))
+
+                    st.session_state.datasets_to_combine.append({
+                        "name": Path(file_path).name,
+                        "data": data,
+                        "source": "uploaded",
+                        "n_images": n_images,
+                        "n_annotations": n_anns
+                    })
+                    st.success(f"✅ Dataset cargado: {n_images} imágenes")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error cargando dataset: {e}")
+
+        elif add_method == "📤 Subir archivo JSON":
             uploaded = st.file_uploader(
                 "Subir archivo COCO JSON",
                 type=["json"],
