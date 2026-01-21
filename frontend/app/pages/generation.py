@@ -123,12 +123,75 @@ def _save_generation_config(output_dir: str, job_id: str, config: Dict) -> None:
         pass
 
 
+def _render_existing_mode_redirect():
+    """Redirect to Export when using existing dataset (shouldn't normally reach here)"""
+    c = get_colors_dict()
+
+    st.markdown(f"""
+    <div style="background: {c['info_bg']}; border: 1px solid {c['info']};
+                border-radius: 0.5rem; padding: 1.5rem; text-align: center; margin: 2rem 0;">
+        <span style="font-size: 2rem;">📂</span>
+        <div style="font-size: 1.1rem; font-weight: 600; margin-top: 0.5rem; color: {c['text_primary']};">
+            Usando Dataset Existente
+        </div>
+        <div style="font-size: 0.9rem; color: {c['text_secondary']}; margin-top: 0.5rem;">
+            No es necesario generar nuevas imágenes. Redirigiendo a Exportar...
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Auto-redirect to export
+    if st.button("→ Ir a Exportar", type="primary", use_container_width=True):
+        st.session_state.nav_menu = "④ Exportar"
+        st.session_state.workflow_step = 4
+        st.rerun()
+
+
+def _render_hybrid_mode_banner():
+    """Show informative banner for hybrid mode"""
+    c = get_colors_dict()
+
+    existing_coverage = st.session_state.get("existing_coverage", {})
+    hybrid_targets = st.session_state.get("hybrid_targets", {})
+
+    total_existing = sum(existing_coverage.values())
+    total_new = sum(hybrid_targets.values())
+
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, {c['info']}, {c['primary']});
+                border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; color: white;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <span style="font-size: 1.5rem;">🔀</span>
+            <div>
+                <div style="font-weight: 600;">Modo Híbrido Activo</div>
+                <div style="font-size: 0.85rem; opacity: 0.9;">
+                    {total_existing} imágenes del dataset existente +
+                    {total_new} imágenes nuevas a generar
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def render_generation_page():
     """Render the generation monitoring page (Step 3 of workflow)"""
+
+    # Detect source mode (new, existing, hybrid)
+    source_mode = st.session_state.get("generation_source_mode", "new")
+
+    # If mode is "existing", this page shouldn't be shown (redirect to Export)
+    if source_mode == "existing":
+        _render_existing_mode_redirect()
+        return
 
     # Workflow stepper
     completed = st.session_state.get("workflow_completed", [])
     workflow_stepper(current_step=3, completed_steps=completed)
+
+    # Show hybrid mode banner if applicable
+    if source_mode == "hybrid":
+        _render_hybrid_mode_banner()
 
     page_header(
         title="Generación en Progreso",
@@ -291,6 +354,7 @@ def _start_batch_job(config: Dict) -> None:
             validate_quality=config.get("validate_quality", False),
             validate_physics=config.get("validate_physics", False),
             save_pipeline_debug=config.get("save_pipeline_debug", False),
+            dataset_info=config.get("dataset_info"),
         )
 
     if result.get("success"):
@@ -376,7 +440,7 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
     # Progress bar
     if total > 0:
         progress = generated / total
-        st.progress(progress, text=f"{generated:,} / {total:,} imágenes ({progress*100:.1f}%)")
+        st.progress(progress, text=f"{generated:,} / {total:,} objetos ({progress*100:.1f}%)")
 
     spacer(16)
 
@@ -388,7 +452,7 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
         <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
                     border-radius: 0.5rem; padding: 1rem; text-align: center;">
             <div style="font-size: 2rem; font-weight: 700; color: {c['success']};">{generated:,}</div>
-            <div style="font-size: 0.8rem; color: {c['text_muted']};">Generadas</div>
+            <div style="font-size: 0.8rem; color: {c['text_muted']};">Objetos generados</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -397,7 +461,7 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
         <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
                     border-radius: 0.5rem; padding: 1rem; text-align: center;">
             <div style="font-size: 2rem; font-weight: 700; color: {c['error']};">{rejected}</div>
-            <div style="font-size: 0.8rem; color: {c['text_muted']};">Rechazadas</div>
+            <div style="font-size: 0.8rem; color: {c['text_muted']};">Rechazados</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -406,7 +470,7 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
         <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
                     border-radius: 0.5rem; padding: 1rem; text-align: center;">
             <div style="font-size: 2rem; font-weight: 700; color: {c['text_secondary']};">{pending}</div>
-            <div style="font-size: 0.8rem; color: {c['text_muted']};">Pendientes</div>
+            <div style="font-size: 0.8rem; color: {c['text_muted']};">Objetos pendientes</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -427,15 +491,70 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
     if error:
         alert_box(f"Error: {error}", type="error", icon="❌")
 
+    # Action buttons for jobs
+    col_action1, col_action2 = st.columns(2)
+
     # Cancel button for active jobs
-    if status in ["processing", "queued"]:
-        if st.button("⏹️ Cancelar Job", type="secondary", key="cancel_job"):
-            result = client.cancel_job(job_id)
-            if result.get("success"):
-                st.toast("Job cancelado")
+    with col_action1:
+        if status in ["processing", "queued"]:
+            if st.button("⏹️ Cancelar Job", type="secondary", key="cancel_job", use_container_width=True):
+                result = client.cancel_job(job_id)
+                if result.get("success"):
+                    st.toast("Job cancelado")
+                    st.rerun()
+                else:
+                    st.error(f"Error al cancelar: {result.get('error')}")
+
+    # Delete button for all jobs
+    with col_action2:
+        # Determine button label based on status
+        if status in ["processing", "queued"]:
+            delete_label = "🗑️ Detener y Eliminar"
+            delete_help = "Detiene el job y lo elimina de la base de datos. Las imágenes generadas se preservan."
+        else:
+            delete_label = "🗑️ Eliminar Job"
+            delete_help = "Elimina el job de la base de datos. Las imágenes generadas se preservan."
+
+        if st.button(
+            delete_label,
+            key="delete_job",
+            use_container_width=True,
+            help=delete_help
+        ):
+            # Show confirmation dialog using session state
+            st.session_state.confirm_delete_job_id = job_id
+            st.rerun()
+
+    # Confirmation dialog (shown in separate rerun)
+    if st.session_state.get("confirm_delete_job_id") == job_id:
+        spacer(8)
+        st.warning(f"⚠️ ¿Estás seguro de eliminar el job `{job_id}`?")
+
+        col_confirm1, col_confirm2 = st.columns(2)
+        with col_confirm1:
+            if st.button("✓ Sí, eliminar", key="confirm_delete_yes", type="primary", use_container_width=True):
+                with st.spinner("Eliminando job..."):
+                    result = client.delete_job(job_id)
+
+                if result.get("success"):
+                    st.success(f"✅ Job eliminado: {result.get('message', '')}")
+                    # Clear current job and confirmation state
+                    if "current_job_id" in st.session_state:
+                        del st.session_state.current_job_id
+                    if "confirm_delete_job_id" in st.session_state:
+                        del st.session_state.confirm_delete_job_id
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
+                    if "confirm_delete_job_id" in st.session_state:
+                        del st.session_state.confirm_delete_job_id
+
+        with col_confirm2:
+            if st.button("✗ Cancelar", key="confirm_delete_no", use_container_width=True):
+                if "confirm_delete_job_id" in st.session_state:
+                    del st.session_state.confirm_delete_job_id
                 st.rerun()
-            else:
-                st.error(f"Error al cancelar: {result.get('error')}")
 
     # Preview of generated images (for processing or completed)
     if generated > 0 and output_dir:
@@ -458,8 +577,26 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
             if coco_path.exists():
                 try:
                     with open(coco_path) as f:
-                        st.session_state.generated_dataset = json.load(f)
+                        newly_generated = json.load(f)
+
+                    # Check if this is hybrid mode - merge with existing dataset
+                    source_mode = st.session_state.get("generation_source_mode", "new")
+                    if source_mode == "hybrid" and st.session_state.get("hybrid_existing_dataset"):
+                        from app.components.dataset_matcher import DatasetMatcher
+                        matcher = DatasetMatcher()
+                        merged_dataset = matcher.merge_with_generated(
+                            st.session_state.hybrid_existing_dataset,
+                            newly_generated
+                        )
+                        st.session_state.generated_dataset = merged_dataset
+                        st.info(f"Dataset combinado: {len(merged_dataset.get('images', []))} imágenes totales")
+                    else:
+                        st.session_state.generated_dataset = newly_generated
+
                     st.session_state.generated_output_dir = output_dir
+
+                    # Set as active dataset for persistence across sessions
+                    st.session_state.active_dataset_id = job_id
 
                     # Save configuration used for this generation
                     _save_generation_config(output_dir, job_id, config)
@@ -501,7 +638,7 @@ def _render_job_monitor(job_id: str, config: Dict) -> None:
 
 
 def _calculate_eta(generated: int, pending: int, status: str) -> str:
-    """Calculate estimated time remaining"""
+    """Calculate estimated time remaining using rolling average for better accuracy"""
     if status == "completed":
         return "✓"
     if status != "processing":
@@ -509,22 +646,68 @@ def _calculate_eta(generated: int, pending: int, status: str) -> str:
     if generated == 0:
         return "Calculando..."
 
-    start_time = st.session_state.get("job_start_time")
-    if not start_time:
-        return "—"
+    current_time = time.time()
 
-    elapsed = time.time() - start_time
-    rate = generated / elapsed  # images per second
+    # Initialize or update progress history for rolling average
+    if "progress_history" not in st.session_state:
+        st.session_state.progress_history = []
 
-    if rate > 0 and pending > 0:
+    # Add current data point (timestamp, generated count)
+    history = st.session_state.progress_history
+
+    # Add new data point only if generated count changed
+    if not history or history[-1][1] != generated:
+        history.append((current_time, generated))
+
+    # Keep only last 20 data points for rolling average (about 40 seconds of data at 2s refresh)
+    if len(history) > 20:
+        st.session_state.progress_history = history[-20:]
+        history = st.session_state.progress_history
+
+    # Need at least 2 data points to calculate rate
+    if len(history) < 2:
+        # Fallback to simple calculation
+        start_time = st.session_state.get("job_start_time")
+        if not start_time:
+            return "—"
+        elapsed = current_time - start_time
+        if elapsed > 0 and generated > 0:
+            rate = generated / elapsed
+            if rate > 0 and pending > 0:
+                eta_seconds = pending / rate
+                return _format_eta(eta_seconds)
+        return "Calculando..."
+
+    # Calculate rate from rolling window (more accurate as it excludes startup time)
+    oldest = history[0]
+    newest = history[-1]
+    time_diff = newest[0] - oldest[0]
+    count_diff = newest[1] - oldest[1]
+
+    if time_diff > 0 and count_diff > 0:
+        rate = count_diff / time_diff  # objects per second
         eta_seconds = pending / rate
-        if eta_seconds < 60:
-            return f"~{int(eta_seconds)}s"
-        elif eta_seconds < 3600:
-            return f"~{int(eta_seconds / 60)}min"
-        else:
-            return f"~{eta_seconds / 3600:.1f}h"
-    return "—"
+        return _format_eta(eta_seconds)
+
+    return "Calculando..."
+
+
+def _format_eta(eta_seconds: float) -> str:
+    """Format ETA in human-readable format"""
+    if eta_seconds < 60:
+        return f"~{int(eta_seconds)}s"
+    elif eta_seconds < 3600:
+        minutes = int(eta_seconds / 60)
+        seconds = int(eta_seconds % 60)
+        if seconds > 0:
+            return f"~{minutes}m {seconds}s"
+        return f"~{minutes}min"
+    else:
+        hours = int(eta_seconds / 3600)
+        minutes = int((eta_seconds % 3600) / 60)
+        if minutes > 0:
+            return f"~{hours}h {minutes}m"
+        return f"~{hours}h"
 
 
 def _normalize_path(path_str: str) -> Path:

@@ -38,10 +38,25 @@ def render_splits_page():
 
     if not dataset:
         alert_box(
-            "No hay dataset disponible para dividir. Completa los pasos anteriores.",
+            "No hay dataset disponible para dividir. Completa los pasos anteriores o selecciona un dataset existente.",
             type="warning",
             icon="⚠️"
         )
+
+        # Add dataset browser
+        with st.expander("📂 Seleccionar dataset existente", expanded=True):
+            from app.components.dataset_browser import render_dataset_browser
+
+            def on_dataset_selected(dataset: Dict):
+                st.session_state.active_dataset_id = dataset["job_id"]
+                st.rerun()
+
+            render_dataset_browser(
+                on_select=on_dataset_selected,
+                dataset_type=None,
+                title="Datasets Disponibles",
+                show_preview=True
+            )
 
         action = workflow_navigation(
             current_step=6,
@@ -122,13 +137,28 @@ def render_splits_page():
 
 def _get_dataset_to_split() -> Optional[Dict]:
     """Get the best available dataset to split"""
-    # Priority: combined > generated > source
+    from app.components.api_client import get_api_client
+
+    # Priority: combined > active > generated > source
+
+    # Check combined first
     if st.session_state.get("combined_dataset"):
         return st.session_state.combined_dataset
+
+    # Check active dataset (persistent)
+    active_id = st.session_state.get("active_dataset_id")
+    if active_id:
+        client = get_api_client()
+        result = client.load_dataset_coco(active_id)
+        if result.get("success"):
+            return result["data"]
+
+    # FALLBACK: Session state (backward compatibility)
     if st.session_state.get("generated_dataset"):
         return st.session_state.generated_dataset
     if st.session_state.get("source_dataset"):
         return st.session_state.source_dataset
+
     return None
 
 

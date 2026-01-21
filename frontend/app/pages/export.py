@@ -15,6 +15,7 @@ from app.components.ui import (
     page_header, section_header, spacer, alert_box, empty_state,
     workflow_stepper, workflow_navigation
 )
+from app.components.api_client import get_api_client
 from app.utils import ExportManager
 from app.config.theme import get_colors_dict
 
@@ -33,16 +34,83 @@ def render_export_page():
         icon="📤"
     )
 
-    # Check for generated dataset
+    # Check for active dataset - try multiple sources
     generated = st.session_state.get("generated_dataset")
     output_dir = st.session_state.get("generated_output_dir", "")
 
+    # If no dataset in session, try to load from active dataset
+    if not generated:
+        active_dataset_id = st.session_state.get("active_dataset_id")
+
+        # Try loading from last completed job if no active dataset set
+        if not active_dataset_id:
+            current_job = st.session_state.get("current_job_id")
+            if current_job:
+                active_dataset_id = current_job
+
+        if active_dataset_id:
+            client = get_api_client()
+
+            with st.spinner(f"Cargando dataset {active_dataset_id[-8:]}..."):
+                result = client.load_dataset_coco(active_dataset_id)
+
+                if result.get("success"):
+                    generated = result["data"]
+                    st.session_state.generated_dataset = generated
+
+                    # Get metadata for output_dir
+                    metadata = client.get_dataset_metadata(active_dataset_id)
+                    if not metadata.get("error"):
+                        output_dir = metadata.get("images_dir", "").replace("/images", "")
+                        st.session_state.generated_output_dir = output_dir
+
+                    st.success("✅ Dataset cargado desde la base de datos")
+                    st.rerun()
+
+    # If still no dataset, offer to browse all available datasets
     if not generated:
         alert_box(
-            "No hay dataset generado. Completa el paso anterior para generar imágenes.",
-            type="warning",
-            icon="⚠️"
+            "No hay dataset activo. Selecciona uno de los datasets disponibles abajo.",
+            type="info",
+            icon="ℹ️"
         )
+
+        # Show all available datasets with better UI
+        section_header("Datasets Disponibles", icon="📂")
+
+        # Get API client
+        client = get_api_client()
+
+        # Fetch all datasets
+        all_datasets_response = client.list_datasets()
+        all_datasets = all_datasets_response.get("datasets", [])
+
+        if not all_datasets:
+            st.info("No hay datasets generados. Ve a ③ Generar para crear uno.")
+        else:
+            # Filter and categorize datasets
+            # Note: database returns 'dataset_type', not 'type' or 'job_type'
+            gen_datasets = [d for d in all_datasets if d.get("dataset_type") == "generation" or d.get("type") == "generation" or d.get("job_type") == "generation"]
+            other_datasets = [d for d in all_datasets if d not in gen_datasets]
+
+            st.markdown(f"**{len(all_datasets)} datasets encontrados** ({len(gen_datasets)} de generación)")
+
+            # Tabs for different dataset types
+            tab_gen, tab_all = st.tabs(["🎨 Generados", "📦 Todos"])
+
+            with tab_gen:
+                if gen_datasets:
+                    for ds in sorted(gen_datasets, key=lambda x: x.get("created_at", ""), reverse=True):
+                        _render_dataset_selection_card(ds, client, c)
+                else:
+                    st.info("No hay datasets de generación. Crea uno en ③ Generar.")
+
+            with tab_all:
+                if all_datasets:
+                    for ds in sorted(all_datasets, key=lambda x: x.get("created_at", ""), reverse=True):
+                        _render_dataset_selection_card(ds, client, c)
+                else:
+                    st.info("No hay datasets disponibles.")
 
         action = workflow_navigation(
             current_step=4,
@@ -304,3 +372,103 @@ def _render_export_results(results: Dict) -> None:
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+
+def _render_dataset_selection_card(dataset: Dict, client, c: Dict) -> None:
+    """Render a dataset card with selection button for export page."""
+    from datetime import datetime
+
+    job_id = dataset.get("job_id", "unknown")
+    # Handle different field naming conventions
+    job_type = dataset.get("dataset_type", dataset.get("type", dataset.get("job_type", "unknown")))
+    num_images = dataset.get("num_images", dataset.get("images_count", 0))
+    num_annotations = dataset.get("num_annotations", dataset.get("annotations_count", 0))
+    created_at = dataset.get("created_at", "")
+    status = dataset.get("status", "completed")
+
+    # Type icon and label
+    type_icons = {
+        "generation": ("🎨", "Generación"),
+        "extraction": ("🎯", "Extracción"),
+        "sam3_conversion": ("🔬", "SAM3"),
+    }
+    type_icon, type_label = type_icons.get(job_type, ("📦", job_type.title()))
+
+    # Format timestamp
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        time_str = dt.strftime("%Y-%m-%d %H:%M")
+    except:
+        time_str = created_at[:16] if created_at else "Desconocido"
+
+    # Status color
+    if status == "completed":
+        status_color = c['success']
+    elif status in ["processing", "queued"]:
+        status_color = c['warning']
+    else:
+        status_color = c['error']
+
+    st.markdown(f"""
+    <div style="background: {c['bg_card']}; border: 1px solid {c['border']};
+                border-radius: 0.5rem; padding: 1rem; margin-bottom: 0.75rem;
+                border-left: 3px solid {status_color};">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <span style="font-size: 1.5rem;">{type_icon}</span>
+                <div>
+                    <div style="font-weight: 600; color: {c['text_primary']};">
+                        {type_label}
+                    </div>
+                    <div style="font-size: 0.75rem; color: {c['text_muted']}; font-family: monospace;">
+                        {job_id[:16]}...
+                    </div>
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 0.9rem; font-weight: 600; color: {c['primary']};">
+                    {num_images:,} imgs
+                </div>
+                <div style="font-size: 0.75rem; color: {c['text_muted']};">
+                    📅 {time_str}
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Action buttons
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        if st.button(
+            "✅ Usar este dataset",
+            key=f"export_select_{job_id}",
+            type="primary",
+            use_container_width=True
+        ):
+            st.session_state.active_dataset_id = job_id
+            st.rerun()
+
+    with col2:
+        if st.button(
+            "👁️ Ver",
+            key=f"export_view_{job_id}",
+            use_container_width=True
+        ):
+            # Show dataset details in expander
+            st.session_state[f"show_details_{job_id}"] = True
+            st.rerun()
+
+    # Show details if requested
+    if st.session_state.get(f"show_details_{job_id}"):
+        with st.expander("📋 Detalles del Dataset", expanded=True):
+            metadata = client.get_dataset_metadata(job_id)
+            if not metadata.get("error"):
+                st.json(metadata)
+            else:
+                st.warning(f"No se pudieron cargar los detalles: {metadata.get('error')}")
+
+            if st.button("Cerrar", key=f"close_details_{job_id}"):
+                st.session_state.pop(f"show_details_{job_id}", None)
+                st.rerun()

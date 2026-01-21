@@ -114,27 +114,34 @@ class APIClient:
         validate_quality: bool = False,
         validate_physics: bool = False,
         save_pipeline_debug: bool = False,
+        dataset_info: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Start a batch composition job"""
         try:
+            request_data = {
+                "backgrounds_dir": backgrounds_dir,
+                "objects_dir": objects_dir,
+                "output_dir": output_dir,
+                "num_images": num_images,
+                "targets_per_class": targets_per_class,
+                "max_objects_per_image": max_objects_per_image,
+                "overlap_threshold": overlap_threshold,
+                "effects": effects or ["color_correction", "blur_matching", "caustics"],
+                "effects_config": effects_config or {},
+                "depth_aware": depth_aware,
+                "validate_quality": validate_quality,
+                "validate_physics": validate_physics,
+                "reject_invalid": True,
+                "save_pipeline_debug": save_pipeline_debug,
+            }
+
+            # Add dataset_info if provided
+            if dataset_info:
+                request_data["dataset_info"] = dataset_info
+
             response = httpx.post(
                 f"{self.base_url}/augment/compose-batch",
-                json={
-                    "backgrounds_dir": backgrounds_dir,
-                    "objects_dir": objects_dir,
-                    "output_dir": output_dir,
-                    "num_images": num_images,
-                    "targets_per_class": targets_per_class,
-                    "max_objects_per_image": max_objects_per_image,
-                    "overlap_threshold": overlap_threshold,
-                    "effects": effects or ["color_correction", "blur_matching", "caustics"],
-                    "effects_config": effects_config or {},
-                    "depth_aware": depth_aware,
-                    "validate_quality": validate_quality,
-                    "validate_physics": validate_physics,
-                    "reject_invalid": True,
-                    "save_pipeline_debug": save_pipeline_debug,
-                },
+                json=request_data,
                 timeout=self.timeout,
             )
             if response.status_code == 200:
@@ -182,6 +189,45 @@ class APIClient:
                 return response.json()
             else:
                 return {"success": False, "error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Permanently delete a job from the database.
+
+        If the job is active, it will be stopped first before deletion.
+        Generated images are preserved on disk.
+
+        Args:
+            job_id: The job ID to delete
+
+        Returns:
+            Dict with success status, message, and details
+        """
+        try:
+            response = httpx.post(
+                f"{self.base_url}/augment/jobs/{job_id}/delete",
+                json={},
+                timeout=30.0,  # Longer timeout to allow graceful stop
+            )
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                return {
+                    "success": False,
+                    "error": "Job not found (may have been already deleted)"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Status {response.status_code}: {response.text}"
+                }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "error": "Request timeout - job may still be deleting"
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -781,6 +827,136 @@ class APIClient:
             response = httpx.delete(
                 f"{GATEWAY_URL}/config/object-sizes/{class_name}",
                 timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Labeling Tool Endpoints (Segmentation Service)
+    # =========================================================================
+
+    def start_labeling_job(
+        self,
+        request: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Start a labeling job for new images.
+
+        Args:
+            request: Dictionary containing:
+                - image_directories: List of directories to search for images
+                - classes: List of class names to detect
+                - output_dir: Output directory for results
+                - output_formats: List of formats (coco, yolo, voc)
+                - task_type: segmentation, detection, or both
+                - min_confidence: Minimum detection confidence
+                - min_area: Minimum object area
+                - max_instances_per_image: Max detections per image
+                - simplify_polygons: Whether to simplify segmentation polygons
+                - save_visualizations: Whether to save annotated images
+
+        Returns:
+            Response with job_id and status
+        """
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/labeling/start",
+                json=request,
+                timeout=60.0,  # Should return quickly since it's async
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando etiquetado en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def start_relabeling_job(
+        self,
+        request: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Start a relabeling job for an existing dataset.
+
+        Args:
+            request: Dictionary containing:
+                - coco_data: Optional COCO dataset to relabel
+                - image_directories: List of directories to search for images
+                - new_classes: List of new class names to detect
+                - relabel_mode: 'add', 'replace', or 'improve_segmentation'
+                - output_dir: Output directory for results
+                - output_formats: List of formats (coco, yolo, voc)
+
+        Returns:
+            Response with job_id and status
+        """
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/labeling/relabel",
+                json=request,
+                timeout=60.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": f"Timeout iniciando re-etiquetado en {SEGMENTATION_URL}"}
+        except httpx.ConnectError:
+            return {"success": False, "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_labeling_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get status of a labeling job"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_labeling_jobs(self) -> Dict[str, Any]:
+        """List all labeling jobs from segmentation service"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/labeling/jobs",
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"jobs": [], "total": 0, "error": response.text}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
+
+    def load_labeling_result(self, job_id: str) -> Dict[str, Any]:
+        """Load the result of a completed labeling job"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}/result",
+                timeout=120.0,  # May take time for large datasets
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def resume_labeling_job(self, job_id: str) -> Dict[str, Any]:
+        """Resume a failed or interrupted labeling job from checkpoint"""
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}/resume",
+                timeout=30.0,
             )
             if response.status_code == 200:
                 return response.json()
