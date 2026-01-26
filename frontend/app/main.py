@@ -657,13 +657,17 @@ def render_monitor_tool_page():
     sam3_jobs_response = client.list_sam3_jobs()
     sam3_jobs = sam3_jobs_response.get("jobs", [])
 
+    # Labeling/Relabeling jobs (from segmentation)
+    labeling_jobs_response = client.list_labeling_jobs()
+    labeling_jobs = labeling_jobs_response.get("jobs", [])
+
     # Combine all jobs
-    jobs = gen_jobs + extract_jobs + sam3_jobs
+    jobs = gen_jobs + extract_jobs + sam3_jobs + labeling_jobs
 
     if not jobs:
         empty_state(
             title="No hay trabajos",
-            message="No hay trabajos en el sistema. Inicia una generacion, extraccion o conversion SAM3.",
+            message="No hay trabajos en el sistema. Inicia una generacion, extraccion, conversion SAM3 o etiquetado.",
             icon="📭"
         )
         return
@@ -678,6 +682,7 @@ def render_monitor_tool_page():
     gen_count = len([j for j in jobs if j.get("job_type") == "generation"])
     extract_count = len([j for j in jobs if j.get("job_type") == "extraction"])
     sam3_count = len([j for j in jobs if j.get("job_type") == "sam3_conversion"])
+    labeling_count = len([j for j in jobs if j.get("job_type") in ["labeling", "relabeling"]])
 
     # Auto-refresh indicator for active jobs
     if active_jobs:
@@ -750,7 +755,7 @@ def render_monitor_tool_page():
 
     # Summary cards - row 2: by type
     spacer(8)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.markdown(f"""
@@ -779,6 +784,15 @@ def render_monitor_tool_page():
         </div>
         """, unsafe_allow_html=True)
 
+    with col4:
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                    border-radius: 0.5rem; padding: 0.75rem; text-align: center;">
+            <div style="font-size: 1.25rem; font-weight: 600;">🏷️ {labeling_count}</div>
+            <div style="font-size: 0.75rem; color: {c['text_muted']};">Etiquetado</div>
+        </div>
+        """, unsafe_allow_html=True)
+
     spacer(24)
 
     # Active jobs section - DETAILED VIEW
@@ -795,7 +809,11 @@ def render_monitor_tool_page():
         section_header("Jobs Completados", icon="✅")
 
         for job in completed_jobs[:10]:  # Limit to 10 most recent
-            _render_job_card(job, c, client, is_active=False)
+            # Use card with actions for generation jobs (allows regenerate dataset)
+            if job.get("job_type") == "generation":
+                _render_job_card_with_actions(job, c, client)
+            else:
+                _render_job_card(job, c, client, is_active=False)
 
         if len(completed_jobs) > 10:
             st.caption(f"Mostrando 10 de {len(completed_jobs)} jobs completados")
@@ -860,6 +878,17 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
         total = job.get("total_annotations", 0)
         pending = max(0, total - done - skipped - failed)
         current_info = job.get("current_image", "")
+    elif job_type in ["labeling", "relabeling"]:
+        type_icon = "🏷️" if job_type == "labeling" else "🔄"
+        type_label = "Etiquetado" if job_type == "labeling" else "Re-etiquetado"
+        done = job.get("processed_images", 0)
+        total = job.get("total_images", 0)
+        failed = 0  # Labeling doesn't track failed images the same way
+        pending = max(0, total - done)
+        current_info = job.get("current_image", "")
+        # Additional labeling-specific data
+        total_objects_found = job.get("total_objects_found", 0)
+        objects_by_class = job.get("objects_by_class", {})
     else:
         type_icon, type_label = "❔", "Desconocido"
         done, failed, pending, total = 0, 0, 0, 0
@@ -918,14 +947,22 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Objetos generados", f"{done:,}", help=f"De {total:,} total")
+        if job_type in ["labeling", "relabeling"]:
+            st.metric("Imagenes procesadas", f"{done:,}", help=f"De {total:,} total")
+        else:
+            st.metric("Objetos generados", f"{done:,}", help=f"De {total:,} total")
     with col2:
         if job_type == "sam3_conversion":
             st.metric("Omitidos", f"{skipped:,}")
+        elif job_type in ["labeling", "relabeling"]:
+            st.metric("Objetos encontrados", f"{total_objects_found:,}")
         else:
             st.metric("Objetos pendientes", f"{pending:,}")
     with col3:
-        st.metric("Rechazados", f"{failed:,}")
+        if job_type in ["labeling", "relabeling"]:
+            st.metric("Imagenes pendientes", f"{pending:,}")
+        else:
+            st.metric("Rechazados", f"{failed:,}")
     with col4:
         st.metric("Tiempo", elapsed_str)
 
@@ -970,6 +1007,17 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
                         st.markdown(f"⏳ **{cat_name}**: {generated}/{target} objetos ({pending_cls} pendientes)")
                         st.progress(progress_pct / 100)
 
+    # Category breakdown for labeling/relabeling jobs
+    if job_type in ["labeling", "relabeling"]:
+        objects_by_class = job.get("objects_by_class", {})
+        if objects_by_class:
+            with st.expander("📊 Objetos Encontrados por Clase", expanded=True):
+                # Sort by count (most objects first)
+                sorted_classes = sorted(objects_by_class.items(), key=lambda x: -x[1])
+                for cat_name, count in sorted_classes:
+                    if count > 0:
+                        st.markdown(f"🏷️ **{cat_name}**: {count:,} objetos")
+
     # Action buttons for active jobs
     job_id = job.get("job_id", "unknown")
     job_type = job.get("job_type", "generation")
@@ -986,12 +1034,25 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
+        elif job_type in ["labeling", "relabeling"]:
+            if st.button("⏹️ Cancelar", key=f"monitor_cancel_labeling_{job_id}", use_container_width=True):
+                result = client.cancel_labeling_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... cancelado")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
 
     with col_action2:
-        # Delete button - stops and deletes (for generation jobs)
+        # Delete button - stops and deletes
         if job_type == "generation":
             if st.button("🗑️ Detener y Eliminar", key=f"monitor_delete_active_{job_id}",
                         use_container_width=True, help="Detiene el job y lo elimina de la BD. Las imagenes se preservan."):
+                st.session_state[f"confirm_delete_{job_id}"] = True
+                st.rerun()
+        elif job_type in ["labeling", "relabeling"]:
+            if st.button("🗑️ Detener y Eliminar", key=f"monitor_delete_labeling_{job_id}",
+                        use_container_width=True, help="Detiene el job y lo elimina de la BD. Las anotaciones se preservan."):
                 st.session_state[f"confirm_delete_{job_id}"] = True
                 st.rerun()
 
@@ -1002,7 +1063,10 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
         with col_yes:
             if st.button("✓ Si, eliminar", key=f"confirm_yes_{job_id}", type="primary", use_container_width=True):
                 with st.spinner("Deteniendo y eliminando..."):
-                    result = client.delete_job(job_id)
+                    if job_type in ["labeling", "relabeling"]:
+                        result = client.delete_labeling_job(job_id)
+                    else:
+                        result = client.delete_job(job_id)
                 if result.get("success"):
                     st.toast(f"Job {job_id[:8]}... eliminado")
                     st.session_state.pop(f"confirm_delete_{job_id}", None)
@@ -1057,6 +1121,17 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         label1, val1 = "Convertidos", done
         label2, val2 = "Omitidos", skipped
         label3, val3 = "Fallidos", failed
+    elif job_type in ["labeling", "relabeling"]:
+        type_icon = "🏷️" if job_type == "labeling" else "🔄"
+        type_label = "Etiquetado" if job_type == "labeling" else "Re-etiquetado"
+        # Labeling job fields
+        done = job.get("processed_images", 0)
+        total = job.get("total_images", 0)
+        total_objects = job.get("total_objects_found", 0)
+        pending = max(0, total - done)
+        label1, val1 = "Imagenes", done
+        label2, val2 = "Objetos", total_objects
+        label3, val3 = "Pendientes", pending
     else:
         type_icon, type_label = "❔", "Desconocido"
         done, failed, pending, total = 0, 0, 0, 0
@@ -1126,7 +1201,7 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
     if is_active and total > 0:
         st.progress(progress)
 
-    # Action buttons for active jobs (only for generation jobs that support cancellation)
+    # Action buttons for active jobs
     if is_active and job_type == "generation":
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
@@ -1142,6 +1217,36 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
+    elif is_active and job_type in ["labeling", "relabeling"]:
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("👁️ Ver Previews", key=f"view_labeling_{job_id}", use_container_width=True):
+                st.session_state[f"show_previews_{job_id}"] = True
+                st.rerun()
+        with col2:
+            if st.button("⏹️ Cancelar", key=f"cancel_labeling_{job_id}", use_container_width=True):
+                result = client.cancel_labeling_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... cancelado")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+
+        # Show previews if requested
+        if st.session_state.get(f"show_previews_{job_id}"):
+            with st.expander(f"🖼️ Previews del Job {job_id[:12]}...", expanded=True):
+                previews_response = client.get_labeling_previews(job_id, limit=6)
+                previews = previews_response.get("previews", [])
+                if previews:
+                    cols = st.columns(3)
+                    for i, preview in enumerate(previews):
+                        with cols[i % 3]:
+                            st.image(preview.get("data"), caption=preview.get("filename", ""), use_container_width=True)
+                else:
+                    st.caption("No hay previews disponibles aún")
+                if st.button("Cerrar Previews", key=f"close_previews_{job_id}"):
+                    st.session_state.pop(f"show_previews_{job_id}", None)
+                    st.rerun()
 
     # Action buttons for completed jobs (when not active and status is completed)
     # Note: This is for jobs shown in "Completed" section via _render_job_card directly
@@ -1227,31 +1332,100 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
                     st.session_state.nav_menu = "②.5 Fuente"
                     st.rerun()
 
-        # Delete confirmation dialog
-        if st.session_state.get(f"confirm_delete_{job_id}"):
-            st.warning(f"⚠️ ¿Seguro que quieres eliminar el job `{job_id[:12]}...`?")
-            col_yes, col_no = st.columns(2)
-            with col_yes:
-                if st.button("✓ Si, eliminar", key=f"confirm_yes_completed_{job_id}", type="primary", use_container_width=True):
-                    with st.spinner("Eliminando..."):
-                        result = client.delete_job(job_id)
-                    if result.get("success"):
-                        st.toast(f"Job {job_id[:8]}... eliminado")
-                        st.session_state.pop(f"confirm_delete_{job_id}", None)
-                        st.session_state.pop(f"dataset_loaded_{job_id}", None)
-                        st.rerun()
-                    else:
-                        st.error(f"Error: {result.get('error')}")
-                        st.session_state.pop(f"confirm_delete_{job_id}", None)
-            with col_no:
-                if st.button("✗ Cancelar", key=f"confirm_no_completed_{job_id}", use_container_width=True):
-                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+    # Action buttons for completed labeling jobs
+    elif not is_active and status == "completed" and job_type in ["labeling", "relabeling"]:
+        col_load, col_prev, col_del = st.columns([1, 1, 1])
+
+        # Load labeling result button
+        with col_load:
+            if st.button("📥 Cargar Resultado", key=f"monitor_load_labeling_{job_id}",
+                        use_container_width=True, help="Cargar resultado del etiquetado"):
+                with st.spinner("Cargando resultado..."):
+                    try:
+                        result = client.load_labeling_result(job_id)
+                        if result.get("success") and result.get("data"):
+                            coco_data = result["data"]
+                            st.session_state.generated_dataset = coco_data
+                            st.session_state[f"dataset_loaded_{job_id}"] = True
+                            st.toast(f"Etiquetado cargado: {len(coco_data.get('images', []))} imágenes, {len(coco_data.get('annotations', []))} anotaciones")
+                            st.rerun()
+                        else:
+                            st.error(f"No se pudo cargar: {result.get('error', 'Error desconocido')}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+
+        # View previews button
+        with col_prev:
+            if st.button("🖼️ Ver Previews", key=f"monitor_previews_labeling_{job_id}",
+                        use_container_width=True, help="Ver imágenes con anotaciones"):
+                st.session_state[f"show_previews_{job_id}"] = True
+                st.rerun()
+
+        # Delete button
+        with col_del:
+            if st.button("🗑️ Eliminar", key=f"monitor_delete_labeling_completed_{job_id}",
+                        use_container_width=True, help="Eliminar de la BD. Las anotaciones se preservan."):
+                st.session_state[f"confirm_delete_{job_id}"] = True
+                st.rerun()
+
+        # Show previews if requested
+        if st.session_state.get(f"show_previews_{job_id}"):
+            with st.expander(f"🖼️ Previews del Job {job_id[:12]}...", expanded=True):
+                previews_response = client.get_labeling_previews(job_id, limit=9)
+                previews = previews_response.get("previews", [])
+                if previews:
+                    cols = st.columns(3)
+                    for i, preview in enumerate(previews):
+                        with cols[i % 3]:
+                            st.image(preview.get("data"), caption=preview.get("filename", ""), use_container_width=True)
+                else:
+                    st.caption("No hay previews disponibles")
+                if st.button("Cerrar Previews", key=f"close_previews_completed_{job_id}"):
+                    st.session_state.pop(f"show_previews_{job_id}", None)
                     st.rerun()
+
+        # Show loaded indicator
+        if st.session_state.get(f"dataset_loaded_{job_id}"):
+            st.success("✓ Dataset de etiquetado activo - Puedes usarlo en Export o Combine")
+            nav_col1, nav_col2 = st.columns(2)
+            with nav_col1:
+                if st.button("→ Ir a Exportar", key=f"goto_export_labeling_{job_id}", use_container_width=True):
+                    st.session_state.nav_menu = "④ Exportar"
+                    st.rerun()
+            with nav_col2:
+                if st.button("→ Ir a Combinar", key=f"goto_combine_labeling_{job_id}", use_container_width=True):
+                    st.session_state.nav_menu = "⑤ Combinar"
+                    st.rerun()
+
+    # Delete confirmation dialog (shared for both generation and labeling jobs)
+    if st.session_state.get(f"confirm_delete_{job_id}"):
+        st.warning(f"⚠️ ¿Seguro que quieres eliminar el job `{job_id[:12]}...`?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✓ Si, eliminar", key=f"confirm_yes_completed_{job_id}", type="primary", use_container_width=True):
+                with st.spinner("Eliminando..."):
+                    if job_type in ["labeling", "relabeling"]:
+                        result = client.delete_labeling_job(job_id)
+                    else:
+                        result = client.delete_job(job_id)
+                if result.get("success"):
+                    st.toast(f"Job {job_id[:8]}... eliminado")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+                    st.session_state.pop(f"dataset_loaded_{job_id}", None)
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+                    st.session_state.pop(f"confirm_delete_{job_id}", None)
+        with col_no:
+            if st.button("✗ Cancelar", key=f"confirm_no_completed_{job_id}", use_container_width=True):
+                st.session_state.pop(f"confirm_delete_{job_id}", None)
+                st.rerun()
 
 
 def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
     """Render a job card with resume/retry actions for interrupted/failed jobs"""
     from app.config.theme import get_colors_dict
+    import time
 
     job_id = job.get("job_id", "unknown")
     status = job.get("status", "unknown")
@@ -1260,59 +1434,105 @@ def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
     # First render the base card
     _render_job_card(job, c, client, is_active=False)
 
-    # Only show actions for generation jobs (others don't support resume yet)
-    if job_type != "generation":
-        return
+    # Action buttons - compact icons in a single row
+    can_resume = job.get("can_resume", False)
+    show_resume = status == "interrupted" or (status in ["failed", "cancelled"] and can_resume)
+    show_retry = job_type == "generation" and status in ["failed", "cancelled", "interrupted"]
+    show_regenerate = job_type == "generation"
 
-    # Action buttons based on status
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    # All buttons in one row with small fixed-width columns
+    btn_cols = st.columns([1, 1, 1, 1, 1, 4])  # Last column as spacer
 
-    with col1:
-        # Resume button - only for interrupted jobs or failed jobs with checkpoint
-        if status == "interrupted":
-            if st.button("▶️ Reanudar", key=f"resume_{job_id}", use_container_width=True):
-                result = client.resume_job(job_id)
-                if result.get("success"):
-                    st.toast(f"Job {job_id[:8]}... reanudado desde checkpoint")
-                    st.rerun()
-                else:
-                    st.error(f"Error: {result.get('error', 'No se pudo reanudar')}")
+    col_idx = 0
 
-    with col2:
-        # Retry button - for failed/cancelled jobs
-        if status in ["failed", "cancelled"]:
-            if st.button("🔄 Reintentar", key=f"retry_{job_id}", use_container_width=True):
+    # Resume button
+    if show_resume:
+        with btn_cols[col_idx]:
+            if job_type == "generation":
+                if st.button("▶️", key=f"resume_{job_id}", help="Reanudar desde checkpoint"):
+                    result = client.resume_job(job_id)
+                    if result.get("success"):
+                        st.toast(f"Job reanudado")
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('error')}")
+            elif job_type in ["labeling", "relabeling"]:
+                if st.button("▶️", key=f"resume_{job_id}", help="Reanudar"):
+                    result = client.resume_labeling_job(job_id)
+                    if result.get("success"):
+                        st.toast(f"Job reanudado")
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('error')}")
+        col_idx += 1
+
+    # Retry button
+    if show_retry:
+        with btn_cols[col_idx]:
+            if st.button("🔄", key=f"retry_{job_id}", help="Reintentar desde cero"):
                 result = client.retry_job(job_id)
                 if result.get("success"):
-                    new_job_id = result.get("job_id", "")
-                    st.toast(f"Nuevo job creado: {new_job_id[:8]}...")
-                    st.rerun()
-                else:
-                    st.error(f"Error: {result.get('error', 'No se pudo reintentar')}")
-        elif status == "interrupted":
-            # For interrupted, also offer retry (start fresh)
-            if st.button("🔄 Reiniciar", key=f"retry_{job_id}", use_container_width=True,
-                        help="Iniciar desde cero (ignora progreso)"):
-                result = client.retry_job(job_id)
-                if result.get("success"):
-                    new_job_id = result.get("job_id", "")
-                    st.toast(f"Nuevo job creado: {new_job_id[:8]}...")
+                    st.toast(f"Nuevo job: {result.get('job_id', '')[:8]}...")
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
+        col_idx += 1
 
-    with col3:
-        # View logs button
-        if st.button("📋 Ver Logs", key=f"logs_{job_id}", use_container_width=True):
+    # Logs button
+    with btn_cols[col_idx]:
+        if st.button("📋", key=f"logs_{job_id}", help="Ver Logs"):
             st.session_state[f"show_logs_{job_id}"] = True
             st.rerun()
+    col_idx += 1
 
-    with col4:
-        # Delete button - for all non-active jobs (failed, cancelled, interrupted)
-        if st.button("🗑️ Eliminar", key=f"monitor_delete_action_{job_id}",
-                    use_container_width=True, help="Eliminar de la BD. Las imagenes se preservan."):
+    # Delete button
+    with btn_cols[col_idx]:
+        if st.button("🗑️", key=f"monitor_delete_action_{job_id}", help="Eliminar job"):
             st.session_state[f"confirm_delete_{job_id}"] = True
             st.rerun()
+    col_idx += 1
+
+    # Regenerate dataset button
+    if show_regenerate:
+        with btn_cols[col_idx]:
+            if st.button("📦", key=f"regenerate_{job_id}", help="Regenerar Dataset COCO"):
+                st.session_state[f"confirm_regenerate_{job_id}"] = True
+                st.rerun()
+
+    # Regenerate confirmation dialog
+    if st.session_state.get(f"confirm_regenerate_{job_id}"):
+        st.info(f"🔄 ¿Regenerar el dataset COCO para el job `{job_id[:12]}...`?")
+        st.caption("Esto escaneará las imágenes y anotaciones existentes para crear un nuevo synthetic_dataset.json")
+        col_regen_yes, col_regen_no = st.columns(2)
+        with col_regen_yes:
+            if st.button("✓ Regenerar", key=f"confirm_regen_yes_{job_id}", type="primary", use_container_width=True):
+                # Show progress bar with status messages
+                progress_bar = st.progress(0, text="Iniciando regeneración...")
+                status_text = st.empty()
+
+                # Simulate progress phases while waiting for the response
+                progress_bar.progress(10, text="Escaneando directorio de imágenes...")
+                status_text.caption("Buscando archivos de anotaciones...")
+
+                progress_bar.progress(20, text="Leyendo anotaciones individuales...")
+                result = client.regenerate_dataset(job_id, force=True)
+
+                progress_bar.progress(90, text="Finalizando...")
+
+                if result.get("success"):
+                    progress_bar.progress(100, text="✅ Completado")
+                    status_text.success(f"Dataset regenerado: {result.get('num_images', 0)} imágenes, {result.get('num_annotations', 0)} anotaciones")
+                    st.session_state.pop(f"confirm_regenerate_{job_id}", None)
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    progress_bar.empty()
+                    status_text.error(f"Error: {result.get('error', 'No se pudo regenerar')}")
+                    st.session_state.pop(f"confirm_regenerate_{job_id}", None)
+        with col_regen_no:
+            if st.button("✗ Cancelar", key=f"confirm_regen_no_{job_id}", use_container_width=True):
+                st.session_state.pop(f"confirm_regenerate_{job_id}", None)
+                st.rerun()
 
     # Delete confirmation dialog
     if st.session_state.get(f"confirm_delete_{job_id}"):
@@ -1321,7 +1541,10 @@ def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
         with col_yes:
             if st.button("✓ Si, eliminar", key=f"confirm_yes_action_{job_id}", type="primary", use_container_width=True):
                 with st.spinner("Eliminando..."):
-                    result = client.delete_job(job_id)
+                    if job_type in ["labeling", "relabeling"]:
+                        result = client.delete_labeling_job(job_id)
+                    else:
+                        result = client.delete_job(job_id)
                 if result.get("success"):
                     st.toast(f"Job {job_id[:8]}... eliminado")
                     st.session_state.pop(f"confirm_delete_{job_id}", None)
@@ -1334,11 +1557,20 @@ def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
                 st.session_state.pop(f"confirm_delete_{job_id}", None)
                 st.rerun()
 
-    # Show logs if requested
+    # Show logs if requested (for generation jobs) or details (for labeling jobs)
     if st.session_state.get(f"show_logs_{job_id}"):
-        with st.expander(f"📋 Logs del Job {job_id[:12]}...", expanded=True):
-            logs_response = client.get_job_logs(job_id, limit=50)
-            logs = logs_response.get("logs", [])
+        with st.expander(f"📋 {'Logs' if job_type == 'generation' else 'Detalles'} del Job {job_id[:12]}...", expanded=True):
+            if job_type in ["labeling", "relabeling"]:
+                # For labeling jobs, show job details instead of logs
+                job_status = client.get_labeling_job_status(job_id)
+                if job_status and not job_status.get("error"):
+                    st.json(job_status)
+                else:
+                    st.warning("No se pudieron obtener los detalles del job")
+                logs = []
+            else:
+                logs_response = client.get_job_logs(job_id, limit=50)
+                logs = logs_response.get("logs", [])
 
             if logs:
                 for log in logs:
