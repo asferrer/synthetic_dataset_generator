@@ -435,14 +435,19 @@ async def get_job_status(job_id: str):
     total_items = job.get("total_items", 0)
     processed = job.get("processed_items", 0)
 
+    # Use effective total_target if available (considers per-class targets)
+    effective_total = progress.get("total_target") or total_items
+    # Use pending from progress if available (already calculated correctly)
+    effective_pending = progress.get("pending") if progress.get("pending") is not None else max(0, effective_total - processed)
+
     return ComposeBatchResponse(
         success=job["error_message"] is None,
         job_id=job_id,
         status=job["status"],
         images_generated=processed,
         images_rejected=job.get("failed_items", 0),
-        images_pending=max(0, total_items - processed),
-        total_items=total_items,
+        images_pending=effective_pending,
+        total_items=effective_total,
         synthetic_counts=progress.get("synthetic_counts", {}),
         output_coco_path=result.get("output_coco_path"),
         output_dir=job.get("output_path"),
@@ -473,6 +478,11 @@ async def list_jobs():
         total_items = job.get("total_items", 0)
         processed = job.get("processed_items", 0)
 
+        # Use effective total_target if available (considers per-class targets)
+        effective_total = progress.get("total_target") or total_items
+        # Use pending from progress if available (already calculated correctly)
+        effective_pending = progress.get("pending") if progress.get("pending") is not None else max(0, effective_total - processed)
+
         # Get per-class data for monitoring
         synthetic_counts = progress.get("synthetic_counts", {})
         targets_per_class = request_params.get("targets_per_class", {})
@@ -482,8 +492,8 @@ async def list_jobs():
             "status": job["status"],
             "images_generated": processed,
             "images_rejected": job.get("failed_items", 0),
-            "images_pending": max(0, total_items - processed),
-            "total_items": total_items,
+            "images_pending": effective_pending,
+            "total_items": effective_total,
             "synthetic_counts": synthetic_counts,
             "targets_per_class": targets_per_class,
             "generated_per_class": synthetic_counts,  # Alias for frontend
@@ -777,6 +787,235 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
         "original_job_id": job_id,
         "message": "New job created as retry of original",
         "status": "queued",
+    }
+
+
+@app.post("/jobs/{job_id}/regenerate-dataset", tags=["Composition"])
+async def regenerate_dataset(job_id: str, force: bool = False):
+    """
+    Regenerate the synthetic_dataset.json (COCO format) from individual annotation files.
+
+    This is useful for:
+    - Jobs that were cancelled/failed before COCO JSON was generated
+    - Jobs where the COCO JSON was corrupted or deleted
+    - Manual regeneration when desired
+
+    The function scans the job's images directory for annotation files (*_annotations.json)
+    and reconstructs the complete COCO JSON from them.
+
+    ## Parameters
+    - **job_id**: The job ID to regenerate dataset for
+    - **force**: If True, regenerate even if synthetic_dataset.json already exists
+
+    ## Returns
+    - Success status and path to generated COCO JSON
+    - Statistics about images and annotations found
+    """
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    job = state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    output_dir = job.get("output_path")
+    if not output_dir:
+        raise HTTPException(status_code=400, detail="Job has no output directory")
+
+    images_dir = os.path.join(output_dir, "images")
+    if not os.path.exists(images_dir):
+        raise HTTPException(status_code=400, detail=f"Images directory not found: {images_dir}")
+
+    coco_path = os.path.join(output_dir, "synthetic_dataset.json")
+
+    # Check if COCO already exists
+    if os.path.exists(coco_path) and not force:
+        return {
+            "success": False,
+            "job_id": job_id,
+            "message": "synthetic_dataset.json already exists. Use force=true to regenerate.",
+            "coco_path": coco_path,
+        }
+
+    # Regenerate COCO from individual annotations
+    try:
+        result = _regenerate_coco_from_annotations(images_dir, coco_path)
+
+        # Update job result_summary with new COCO path
+        current_result = job.get("result_summary") or {}
+        current_result["output_coco_path"] = coco_path
+        state.db.complete_job(
+            job_id,
+            job["status"],  # Keep current status
+            result_summary=current_result,
+            processing_time_ms=job.get("processing_time_ms", 0)
+        )
+
+        # Also update/create dataset metadata
+        if result["num_images"] > 0:
+            try:
+                request_params = job.get("request_params") or {}
+                request = ComposeBatchRequest(**request_params) if request_params else None
+                metadata = _extract_dataset_metadata(
+                    job_id=job_id,
+                    output_dir=output_dir,
+                    coco_path=coco_path,
+                    request=request
+                )
+                # Try to update existing or create new
+                existing_metadata = state.db.get_dataset_metadata(job_id)
+                if existing_metadata:
+                    # Delete and recreate (simpler than update)
+                    state.db.delete_dataset_metadata(job_id)
+                state.db.create_dataset_metadata(**metadata)
+                logger.info(f"Dataset metadata updated for job {job_id}")
+            except Exception as e:
+                logger.warning(f"Failed to update dataset metadata: {e}")
+
+        logger.info(f"Regenerated COCO JSON for job {job_id}: {result['num_images']} images, {result['num_annotations']} annotations")
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "message": "COCO JSON regenerated successfully",
+            "coco_path": coco_path,
+            "num_images": result["num_images"],
+            "num_annotations": result["num_annotations"],
+            "num_categories": result["num_categories"],
+            "categories": result["categories"],
+        }
+
+    except Exception as e:
+        logger.exception(f"Failed to regenerate COCO for job {job_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to regenerate COCO JSON: {str(e)}"
+        )
+
+
+def _regenerate_coco_from_annotations(images_dir: str, output_coco_path: str) -> dict:
+    """
+    Regenerate COCO JSON from individual annotation files.
+
+    Scans the images directory for image files and their corresponding annotation files,
+    then constructs a complete COCO format JSON.
+
+    Args:
+        images_dir: Directory containing images and *_annotations.json files
+        output_coco_path: Path where to save the regenerated COCO JSON
+
+    Returns:
+        Dictionary with statistics about regeneration
+    """
+    import json
+    import glob
+    from datetime import datetime
+    from PIL import Image
+
+    # Find all image files
+    image_extensions = ['*.jpg', '*.jpeg', '*.png']
+    image_files = []
+    for ext in image_extensions:
+        image_files.extend(glob.glob(os.path.join(images_dir, ext)))
+
+    # Sort by name for consistent ordering
+    image_files.sort()
+
+    # Collect all annotations and categories
+    categories_set = set()
+    images_list = []
+    annotations_list = []
+    annotation_id = 1
+
+    for img_idx, img_path in enumerate(image_files):
+        img_filename = os.path.basename(img_path)
+        base_name = os.path.splitext(img_filename)[0]
+        ann_path = os.path.join(images_dir, f"{base_name}_annotations.json")
+
+        # Get image dimensions
+        try:
+            with Image.open(img_path) as img:
+                width, height = img.size
+        except Exception as e:
+            logger.warning(f"Could not read image {img_path}: {e}")
+            continue
+
+        # Add image entry
+        images_list.append({
+            "id": img_idx,
+            "file_name": img_filename,
+            "width": width,
+            "height": height
+        })
+
+        # Load annotations if they exist
+        if os.path.exists(ann_path):
+            try:
+                with open(ann_path, 'r') as f:
+                    annotations = json.load(f)
+
+                for ann in annotations:
+                    class_name = ann.get("class_name", "Unknown")
+                    categories_set.add(class_name)
+
+                    # Convert to COCO format
+                    x = ann.get("x", 0)
+                    y = ann.get("y", 0)
+                    w = ann.get("width", 0)
+                    h = ann.get("height", 0)
+                    area = ann.get("area", w * h)
+
+                    annotations_list.append({
+                        "id": annotation_id,
+                        "image_id": img_idx,
+                        "category_name": class_name,  # Temporary, will be replaced with ID
+                        "bbox": [x, y, w, h],
+                        "area": area,
+                        "segmentation": [],
+                        "iscrowd": 0
+                    })
+                    annotation_id += 1
+            except Exception as e:
+                logger.warning(f"Could not read annotations {ann_path}: {e}")
+
+    # Create category list with IDs
+    categories_list = sorted(list(categories_set))
+    category_to_id = {name: idx for idx, name in enumerate(categories_list)}
+
+    categories_coco = [
+        {"id": idx, "name": name, "supercategory": "object"}
+        for idx, name in enumerate(categories_list)
+    ]
+
+    # Update annotations with category IDs
+    for ann in annotations_list:
+        cat_name = ann.pop("category_name")
+        ann["category_id"] = category_to_id.get(cat_name, 0)
+
+    # Create COCO structure
+    coco_data = {
+        "info": {
+            "description": "Synthetic Dataset (Regenerated)",
+            "version": "1.0",
+            "year": datetime.now().year,
+            "contributor": "",
+            "date_created": datetime.now().isoformat()
+        },
+        "licenses": [],
+        "images": images_list,
+        "annotations": annotations_list,
+        "categories": categories_coco
+    }
+
+    # Save COCO JSON
+    with open(output_coco_path, 'w') as f:
+        json.dump(coco_data, f, indent=2)
+
+    return {
+        "num_images": len(images_list),
+        "num_annotations": len(annotations_list),
+        "num_categories": len(categories_coco),
+        "categories": categories_list
     }
 
 
@@ -1142,7 +1381,8 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
         processing_time = (time.time() - start_time) * 1000
 
         # Check if job was cancelled
-        if check_cancelled():
+        was_cancelled = check_cancelled()
+        if was_cancelled:
             state.db.complete_job(
                 job_id,
                 "cancelled",
@@ -1167,8 +1407,14 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
                 },
                 processing_time_ms=processing_time
             )
+            job_logger.complete("Batch composition completed", {
+                "images_generated": result.images_generated,
+                "images_rejected": result.images_rejected,
+            })
 
-            # Extract and save dataset metadata
+        # Extract and save dataset metadata for BOTH completed and cancelled jobs
+        # This ensures partial datasets from cancelled jobs are also usable
+        if result.images_generated > 0 and result.output_coco_path:
             try:
                 metadata = _extract_dataset_metadata(
                     job_id=job_id,
@@ -1177,15 +1423,11 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
                     request=request
                 )
                 state.db.create_dataset_metadata(**metadata)
-                job_logger.info(f"Dataset metadata saved: {metadata['num_images']} images, {metadata['num_annotations']} annotations")
+                status_note = " (partial - job was cancelled)" if was_cancelled else ""
+                job_logger.info(f"Dataset metadata saved: {metadata['num_images']} images, {metadata['num_annotations']} annotations{status_note}")
             except Exception as e:
                 job_logger.warning(f"Failed to save dataset metadata: {e}")
                 # Don't fail the job if metadata save fails
-
-            job_logger.complete("Batch composition completed", {
-                "images_generated": result.images_generated,
-                "images_rejected": result.images_rejected,
-            })
 
         # Update final progress in DB
         state.db.update_job_progress(
@@ -1218,15 +1460,24 @@ def update_job_progress(job_id: str, progress: dict, output_dir: str = None, req
     rejected = progress.get("rejected", 0)
     pending = progress.get("pending", 0)
     synthetic_counts = progress.get("counts", {})
+    total_target = progress.get("total_target")  # Effective target based on per-class targets
 
     # Update database
     if state.db:
+        progress_details = {
+            "synthetic_counts": synthetic_counts,
+            "pending": pending
+        }
+        # Include total_target if provided (for correct progress calculation)
+        if total_target is not None:
+            progress_details["total_target"] = total_target
+
         state.db.update_job_progress(
             job_id,
             processed_items=generated,
             failed_items=rejected,
             current_item=progress.get("current_class", ""),
-            progress_details={"synthetic_counts": synthetic_counts, "pending": pending}
+            progress_details=progress_details
         )
 
     # Save checkpoint every 10 images
