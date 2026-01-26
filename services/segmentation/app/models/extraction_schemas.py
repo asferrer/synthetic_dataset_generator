@@ -514,7 +514,7 @@ class StartLabelingRequest(BaseModel):
         description="Polygon simplification tolerance"
     )
     save_visualizations: bool = Field(
-        default=False,
+        default=True,
         description="Whether to save images with annotations overlaid"
     )
     padding: int = Field(

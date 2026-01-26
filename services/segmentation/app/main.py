@@ -106,6 +106,15 @@ except ImportError:
     VRAM_MONITOR_AVAILABLE = False
     VRAMMonitor = None
 
+# Job database for persistence
+try:
+    from shared.job_database import JobDatabase, get_job_db
+    JOB_DATABASE_AVAILABLE = True
+except ImportError:
+    JOB_DATABASE_AVAILABLE = False
+    JobDatabase = None
+    get_job_db = None
+
 
 def encode_region_map_base64(region_map: np.ndarray) -> str:
     """Encode region map as base64 PNG string.
@@ -139,6 +148,7 @@ class ServiceState:
     sam3_available: bool = False
     gpu_available: bool = False
     object_extractor: Optional[ObjectExtractor] = None
+    db: Optional["JobDatabase"] = None  # Database for job persistence
 
 
 state = ServiceState()
@@ -152,7 +162,10 @@ labeling_jobs: Dict[str, Dict[str, Any]] = {}
 thread_pool = ThreadPoolExecutor(max_workers=2)
 
 # Concurrency control for labeling jobs
-MAX_CONCURRENT_LABELING_JOBS = 2
+# Note: SAM3 uses ~4-6GB VRAM per job. Adjust based on available GPU memory.
+# Conservative settings to prevent GPU overheating and leave memory headroom.
+# 32GB VRAM -> 4 concurrent jobs (~24GB used, 8GB reserved)
+MAX_CONCURRENT_LABELING_JOBS = 4
 MAX_CONCURRENT_IMAGES_PER_JOB = 4
 labeling_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LABELING_JOBS)
 
@@ -244,6 +257,28 @@ def init_sam3():
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic"""
     logger.info("Starting Segmentation Service...")
+
+    # Initialize database for job persistence
+    if JOB_DATABASE_AVAILABLE and get_job_db is not None:
+        try:
+            state.db = get_job_db()
+            logger.info("Job database initialized for persistence")
+
+            # Restore any interrupted labeling jobs from database
+            interrupted_jobs = state.db.list_jobs(
+                service="segmentation",
+                job_type="labeling"
+            )
+            for db_job in interrupted_jobs:
+                if db_job["status"] in ["queued", "processing"]:
+                    # Mark as interrupted since we're restarting
+                    state.db.update_job_status(db_job["id"], "interrupted")
+                    logger.info(f"Marked job {db_job['id']} as interrupted (service restarted)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize job database: {e}")
+            state.db = None
+    else:
+        logger.warning("Job database not available - jobs will not persist across restarts")
 
     # Initialize models
     init_sam3()
@@ -1771,6 +1806,27 @@ async def start_labeling_job(request: StartLabelingRequest):
             "_padding": request.padding,  # Pixels of padding around bboxes
         }
 
+        # Persist job to database for durability
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="labeling",
+                    service="segmentation",
+                    request_params={
+                        "classes": request.classes,
+                        "class_mapping": request.class_mapping,
+                        "output_formats": request.output_formats,
+                        "task_type": request.task_type,
+                        "min_confidence": request.min_confidence,
+                    },
+                    total_items=total_images,
+                    output_path=request.output_dir
+                )
+                logger.info(f"Labeling job {job_id} persisted to database")
+            except Exception as e:
+                logger.warning(f"Failed to persist job to database: {e}")
+
         # Start background task with concurrency control
         async def run_labeling():
             async with labeling_job_semaphore:
@@ -1778,13 +1834,49 @@ async def start_labeling_job(request: StartLabelingRequest):
                 labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
                 labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
+                # Update database status to processing
+                if state.db:
+                    try:
+                        state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+                    except Exception as e:
+                        logger.warning(f"Failed to update job status in database: {e}")
+
                 try:
                     await _process_labeling_job(job_id)
                     labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
+
+                    # Update database with completion
+                    if state.db:
+                        try:
+                            job = labeling_jobs[job_id]
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="completed",
+                                result_summary={
+                                    "total_objects_found": job.get("total_objects_found", 0),
+                                    "objects_by_class": job.get("objects_by_class", {}),
+                                },
+                                processing_time_ms=job.get("processing_time_ms", 0)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update job completion in database: {e}")
+
                 except Exception as e:
                     logger.exception(f"Labeling job {job_id} failed: {e}")
                     labeling_jobs[job_id]["status"] = JobStatus.FAILED
                     labeling_jobs[job_id]["errors"].append(str(e))
+
+                    # Update database with failure
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="failed",
+                                error_message=str(e)
+                            )
+                        except Exception as db_err:
+                            logger.warning(f"Failed to update job failure in database: {db_err}")
+
                 finally:
                     labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
                     logger.info(f"Labeling job {job_id} released semaphore")
@@ -1942,8 +2034,11 @@ async def start_relabeling_job(request: StartRelabelingRequest):
 
 @app.get("/labeling/jobs", tags=["Labeling Tool"])
 async def list_labeling_jobs():
-    """List all labeling jobs."""
+    """List all labeling jobs (from memory and database)."""
     jobs = []
+    seen_job_ids = set()
+
+    # First, get jobs from memory (these are the most up-to-date)
     for job_id, job in labeling_jobs.items():
         status = job.get("status", "unknown")
         status_str = status.value if hasattr(status, 'value') else str(status)
@@ -1971,6 +2066,44 @@ async def list_labeling_jobs():
             "processing_time_ms": job.get("processing_time_ms", 0),
             "can_resume": can_resume,
         })
+        seen_job_ids.add(job_id)
+
+    # Then, add jobs from database that are not in memory (e.g., interrupted jobs from previous runs)
+    if state.db:
+        try:
+            db_jobs = state.db.list_jobs(service="segmentation", job_type="labeling", limit=50)
+            for db_job in db_jobs:
+                job_id = db_job.get("id")
+                if job_id and job_id not in seen_job_ids:
+                    # This job exists in DB but not in memory - likely from a previous run
+                    output_path = db_job.get("output_path", "")
+                    can_resume = False
+                    if db_job.get("status") in ["interrupted", "failed"]:
+                        checkpoint_path = Path(output_path) / "checkpoint.json"
+                        can_resume = checkpoint_path.exists()
+
+                    # Parse result_summary if available
+                    result_summary = db_job.get("result_summary", {}) or {}
+
+                    jobs.append({
+                        "job_id": job_id,
+                        "job_type": "labeling",
+                        "status": db_job.get("status", "unknown"),
+                        "total_images": db_job.get("total_items", 0),
+                        "processed_images": db_job.get("processed_items", 0),
+                        "total_objects_found": result_summary.get("total_objects_found", 0),
+                        "objects_by_class": result_summary.get("objects_by_class", {}),
+                        "output_dir": output_path,
+                        "current_image": db_job.get("current_item", ""),
+                        "errors": [],
+                        "started_at": db_job.get("started_at"),
+                        "completed_at": db_job.get("completed_at"),
+                        "processing_time_ms": db_job.get("processing_time_ms", 0),
+                        "can_resume": can_resume,
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to fetch jobs from database: {e}")
+
     return {"jobs": jobs, "total": len(jobs)}
 
 
@@ -2066,28 +2199,160 @@ async def get_labeling_result(job_id: str):
         )
 
 
+@app.get("/labeling/jobs/{job_id}/previews", tags=["Labeling Tool"])
+async def get_labeling_job_previews(job_id: str, limit: int = 10):
+    """
+    Get preview images for a labeling job.
+
+    Returns base64-encoded preview images showing the annotations in progress.
+    Useful for monitoring the quality of auto-labeling in real-time.
+    """
+    import base64
+
+    # First check memory
+    job = labeling_jobs.get(job_id)
+    output_dir = None
+
+    if job:
+        output_dir = Path(job.get("output_dir", ""))
+    elif state.db:
+        db_job = state.db.get_job(job_id)
+        if db_job and db_job.get("job_type") == "labeling":
+            output_dir = Path(db_job.get("output_path", ""))
+
+    if output_dir is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    previews_dir = output_dir / "previews"
+    if not previews_dir.exists():
+        return {
+            "job_id": job_id,
+            "previews": [],
+            "total": 0,
+            "message": "No preview images available yet"
+        }
+
+    # Get preview files sorted by modification time (most recent first)
+    preview_files = sorted(
+        previews_dir.glob("preview_*.jpg"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )[:limit]
+
+    previews = []
+    for preview_file in preview_files:
+        try:
+            with open(preview_file, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode("utf-8")
+            previews.append({
+                "filename": preview_file.name,
+                "path": str(preview_file),
+                "data": f"data:image/jpeg;base64,{img_data}",
+                "size_kb": preview_file.stat().st_size / 1024,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to read preview {preview_file}: {e}")
+
+    return {
+        "job_id": job_id,
+        "previews": previews,
+        "total": len(preview_files),
+        "output_dir": str(output_dir),
+    }
+
+
 @app.post("/labeling/jobs/{job_id}/resume", response_model=LabelingJobResponse, tags=["Labeling Tool"])
 async def resume_labeling_job(job_id: str):
     """
     Resume a failed or interrupted labeling job.
 
     Loads the checkpoint and continues from the last processed image.
+    Can resume jobs from database even after service restart.
     """
-    if job_id not in labeling_jobs:
+    job = None
+    output_dir = None
+
+    # First check memory
+    if job_id in labeling_jobs:
+        job = labeling_jobs[job_id]
+        output_dir = Path(job.get("output_dir", ""))
+    # If not in memory, try to load from database
+    elif state.db:
+        db_job = state.db.get_job(job_id)
+        if db_job and db_job.get("job_type") == "labeling":
+            output_dir = Path(db_job.get("output_path", ""))
+            # Check if checkpoint exists before trying to reconstruct
+            checkpoint_path = output_dir / "checkpoint.json"
+            if not checkpoint_path.exists():
+                return LabelingJobResponse(
+                    success=False,
+                    error="No checkpoint found. Job must be restarted from the beginning."
+                )
+
+            # Load checkpoint to get full job state
+            try:
+                with open(checkpoint_path, 'r') as f:
+                    checkpoint = json.load(f)
+
+                # Reconstruct job in memory from database and checkpoint
+                request_params = db_job.get("request_params", {}) or {}
+                labeling_jobs[job_id] = {
+                    "job_id": job_id,
+                    "job_type": "labeling",
+                    "status": JobStatus.FAILED,  # Will be updated to PROCESSING
+                    "total_images": db_job.get("total_items", 0),
+                    "processed_images": checkpoint.get("last_processed_idx", 0),
+                    "total_objects_found": sum(checkpoint.get("objects_by_class", {}).values()),
+                    "objects_by_class": checkpoint.get("objects_by_class", {}),
+                    "current_image": "",
+                    "output_dir": str(output_dir),
+                    "output_formats": request_params.get("output_formats", ["coco"]),
+                    "errors": [],
+                    "processing_time_ms": 0.0,
+                    "started_at": None,
+                    "completed_at": None,
+                    # Reconstruct processing params from checkpoint/database
+                    "_image_paths": _get_image_paths_from_output_dir(output_dir),
+                    "_classes": request_params.get("classes", []),
+                    "_task_type": request_params.get("task_type", "segmentation"),
+                    "_min_confidence": request_params.get("min_confidence", 0.5),
+                    "_min_area": 100,
+                    "_max_instances": 100,
+                    "_simplify_polygons": True,
+                    "_simplify_tolerance": 2.0,
+                    "_save_visualizations": True,  # Enable for resumed jobs
+                    "_class_mapping": request_params.get("class_mapping"),
+                    "_padding": 0,
+                }
+                job = labeling_jobs[job_id]
+                logger.info(f"Reconstructed job {job_id} from database and checkpoint")
+            except Exception as e:
+                logger.error(f"Failed to reconstruct job from checkpoint: {e}")
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"Failed to reconstruct job: {str(e)}"
+                )
+
+    if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    job = labeling_jobs[job_id]
+    # Only allow resuming failed/cancelled/interrupted jobs
+    status = job.get("status")
+    if hasattr(status, 'value'):
+        status_str = status.value
+    else:
+        status_str = str(status)
 
-    # Only allow resuming failed jobs
-    if job.get("status") not in [JobStatus.FAILED, JobStatus.CANCELLED]:
+    if status_str not in ["failed", "cancelled", "interrupted"]:
         return LabelingJobResponse(
             success=False,
-            error=f"Job cannot be resumed. Current status: {job.get('status')}. "
-                  f"Only failed or cancelled jobs can be resumed."
+            error=f"Job cannot be resumed. Current status: {status_str}. "
+                  f"Only failed, cancelled, or interrupted jobs can be resumed."
         )
 
     # Check if checkpoint exists
-    output_dir = Path(job.get("output_dir", ""))
+    if output_dir is None:
+        output_dir = Path(job.get("output_dir", ""))
     checkpoint_path = output_dir / "checkpoint.json"
 
     if not checkpoint_path.exists():
@@ -2136,6 +2401,289 @@ async def resume_labeling_job(job_id: str):
         message=f"Job resumed from image {resume_from + 1} of {job.get('total_images', 0)}",
         total_images=job.get("total_images", 0)
     )
+
+
+@app.delete("/labeling/jobs/{job_id}", tags=["Labeling Tool"])
+async def cancel_labeling_job(job_id: str):
+    """
+    Cancel a running labeling job.
+
+    Sets the job status to CANCELLED and allows it to be resumed later
+    from the checkpoint.
+    """
+    # Check memory first
+    if job_id in labeling_jobs:
+        job = labeling_jobs[job_id]
+        status = job.get("status")
+
+        # Can only cancel running/processing/queued jobs
+        if status in [JobStatus.PROCESSING, JobStatus.QUEUED]:
+            job["status"] = JobStatus.CANCELLED
+            job["completed_at"] = datetime.now().isoformat()
+
+            # Update database if available
+            if state.db:
+                try:
+                    state.db.update_job_status(job_id, "cancelled")
+                except Exception as e:
+                    logger.warning(f"Failed to update job status in database: {e}")
+
+            logger.info(f"Cancelled labeling job {job_id}")
+            return {
+                "success": True,
+                "job_id": job_id,
+                "message": "Job cancelled successfully. Can be resumed from checkpoint.",
+                "processed_images": job.get("processed_images", 0),
+                "total_images": job.get("total_images", 0),
+            }
+        else:
+            status_str = status.value if hasattr(status, 'value') else str(status)
+            return {
+                "success": False,
+                "error": f"Job cannot be cancelled. Current status: {status_str}"
+            }
+
+    # Check database
+    if state.db:
+        db_job = state.db.get_job(job_id)
+        if db_job and db_job.get("job_type") == "labeling":
+            if db_job.get("status") in ["processing", "queued"]:
+                state.db.update_job_status(job_id, "cancelled")
+                return {
+                    "success": True,
+                    "job_id": job_id,
+                    "message": "Job cancelled in database."
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Job cannot be cancelled. Current status: {db_job.get('status')}"
+                }
+
+    raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+
+@app.post("/labeling/jobs/{job_id}/delete", tags=["Labeling Tool"])
+async def delete_labeling_job(job_id: str, delete_files: bool = False):
+    """
+    Delete a labeling job from memory and database.
+
+    Args:
+        job_id: The job ID to delete
+        delete_files: If True, also delete output files (default: False)
+
+    Note: If the job is running, it will be cancelled first.
+    """
+    output_dir = None
+    was_cancelled = False
+
+    # First, try to cancel if running
+    if job_id in labeling_jobs:
+        job = labeling_jobs[job_id]
+        output_dir = job.get("output_dir")
+
+        if job.get("status") in [JobStatus.PROCESSING, JobStatus.QUEUED]:
+            job["status"] = JobStatus.CANCELLED
+            job["completed_at"] = datetime.now().isoformat()
+            was_cancelled = True
+            logger.info(f"Cancelled running labeling job {job_id} before deletion")
+
+        # Remove from memory
+        del labeling_jobs[job_id]
+        logger.info(f"Removed labeling job {job_id} from memory")
+
+    # Remove from database
+    db_deleted = False
+    if state.db:
+        try:
+            db_job = state.db.get_job(job_id)
+            if db_job:
+                if output_dir is None:
+                    output_dir = db_job.get("output_path")
+                state.db.delete_job(job_id)
+                db_deleted = True
+                logger.info(f"Removed labeling job {job_id} from database")
+        except Exception as e:
+            logger.warning(f"Failed to delete job from database: {e}")
+
+    # Delete files if requested
+    files_deleted = False
+    if delete_files and output_dir:
+        try:
+            output_path = Path(output_dir)
+            if output_path.exists():
+                import shutil
+                shutil.rmtree(output_path)
+                files_deleted = True
+                logger.info(f"Deleted output directory: {output_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to delete output files: {e}")
+
+    if job_id not in labeling_jobs and not db_deleted:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": "Job deleted successfully",
+        "details": {
+            "was_cancelled": was_cancelled,
+            "removed_from_memory": True,
+            "removed_from_database": db_deleted,
+            "files_deleted": files_deleted,
+        }
+    }
+
+
+def _draw_annotations_on_image(
+    image: np.ndarray,
+    annotations: List[Dict],
+    category_map: Dict[int, str],
+    draw_masks: bool = True,
+    draw_boxes: bool = True,
+    draw_labels: bool = True
+) -> np.ndarray:
+    """Draw annotations (bboxes, masks, labels) on an image for visualization.
+
+    Args:
+        image: BGR image array
+        annotations: List of COCO-format annotations for this image
+        category_map: Dict mapping category_id to category name
+        draw_masks: Whether to draw segmentation masks
+        draw_boxes: Whether to draw bounding boxes
+        draw_labels: Whether to draw class labels
+
+    Returns:
+        Annotated image (BGR)
+    """
+    vis_image = image.copy()
+    h, w = vis_image.shape[:2]
+
+    # Generate distinct colors for each category
+    np.random.seed(42)  # For consistent colors
+    colors = {}
+    for cat_id in category_map.keys():
+        colors[cat_id] = tuple(int(c) for c in np.random.randint(50, 255, 3))
+
+    for ann in annotations:
+        cat_id = ann.get("category_id", 1)
+        cat_name = category_map.get(cat_id, f"class_{cat_id}")
+        color = colors.get(cat_id, (0, 255, 0))
+
+        # Draw mask if available
+        if draw_masks and "segmentation" in ann and ann["segmentation"]:
+            overlay = vis_image.copy()
+            for seg in ann["segmentation"]:
+                if isinstance(seg, list) and len(seg) >= 6:
+                    pts = np.array(seg).reshape(-1, 2).astype(np.int32)
+                    cv2.fillPoly(overlay, [pts], color)
+            cv2.addWeighted(overlay, 0.3, vis_image, 0.7, 0, vis_image)
+
+        # Draw bounding box
+        if draw_boxes and "bbox" in ann:
+            x, y, bw, bh = [int(v) for v in ann["bbox"]]
+            cv2.rectangle(vis_image, (x, y), (x + bw, y + bh), color, 2)
+
+        # Draw label
+        if draw_labels and "bbox" in ann:
+            x, y, bw, bh = [int(v) for v in ann["bbox"]]
+            label = f"{cat_name}"
+            if "score" in ann:
+                label += f" {ann['score']:.2f}"
+
+            # Background for text
+            (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(vis_image, (x, y - text_h - 4), (x + text_w + 4, y), color, -1)
+            cv2.putText(vis_image, label, (x + 2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    return vis_image
+
+
+def _save_preview_image(
+    output_dir: Path,
+    image: np.ndarray,
+    image_name: str,
+    annotations: List[Dict],
+    category_map: Dict[int, str],
+    preview_idx: int
+) -> Optional[str]:
+    """Save a preview image with annotations drawn.
+
+    Returns the relative path to the saved preview, or None if failed.
+    """
+    try:
+        previews_dir = output_dir / "previews"
+        previews_dir.mkdir(exist_ok=True)
+
+        # Draw annotations
+        vis_image = _draw_annotations_on_image(
+            image, annotations, category_map,
+            draw_masks=True, draw_boxes=True, draw_labels=True
+        )
+
+        # Save with a consistent naming scheme
+        preview_name = f"preview_{preview_idx:04d}_{Path(image_name).stem}.jpg"
+        preview_path = previews_dir / preview_name
+
+        # Resize if too large (max 1024px on longest side) for faster loading
+        h, w = vis_image.shape[:2]
+        max_size = 1024
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            vis_image = cv2.resize(vis_image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        cv2.imwrite(str(preview_path), vis_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return str(preview_path)
+    except Exception as e:
+        logger.warning(f"Failed to save preview image: {e}")
+        return None
+
+
+def _get_image_paths_from_output_dir(output_dir: Path) -> List[str]:
+    """Reconstruct image paths from checkpoint/coco file in output directory.
+
+    This is used when resuming a job after service restart.
+    """
+    image_paths = []
+    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+    # Try to load from annotations.json or checkpoint
+    coco_path = output_dir / "annotations.json"
+    checkpoint_path = output_dir / "checkpoint.json"
+
+    coco_data = None
+    if checkpoint_path.exists():
+        try:
+            with open(checkpoint_path, 'r') as f:
+                checkpoint = json.load(f)
+            coco_data = checkpoint.get("coco_data")
+        except Exception:
+            pass
+
+    if coco_data is None and coco_path.exists():
+        try:
+            with open(coco_path, 'r') as f:
+                coco_data = json.load(f)
+        except Exception:
+            pass
+
+    if coco_data and "images" in coco_data:
+        # Get image directory from first image path or use output_dir parent
+        images_dir = output_dir.parent / "images"
+        if not images_dir.exists():
+            images_dir = output_dir.parent
+
+        for img_info in coco_data["images"]:
+            file_name = img_info.get("file_name", "")
+            # Try to find the image file
+            for search_dir in [images_dir, output_dir.parent, output_dir]:
+                potential_path = search_dir / file_name
+                if potential_path.exists():
+                    image_paths.append(str(potential_path))
+                    break
+
+    return image_paths
 
 
 def _apply_padding_to_bbox(bbox: List[float], padding: int, img_width: int, img_height: int) -> List[float]:
@@ -2187,11 +2735,21 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     simplify_tolerance = job["_simplify_tolerance"]
     task_type = job["_task_type"]
     padding = job.get("_padding", 0)  # Pixels of padding around bboxes
+    save_visualizations = job.get("_save_visualizations", True)  # Save preview images
     output_dir = Path(job["output_dir"])
     checkpoint_path = output_dir / "checkpoint.json"
     checkpoint_interval = 10  # Save checkpoint every N images
+    max_previews = 50  # Maximum number of preview images to keep
+    # Calculate dynamic preview interval based on total images (aim for ~30-50 previews)
+    total_images = len(image_paths)
+    preview_interval = max(1, total_images // max_previews) if total_images > max_previews else 1
     gc_interval = 5  # Run garbage collection every N images
     yield_interval = 1  # Yield to event loop every N images
+
+    # Initialize preview tracking
+    preview_paths = job.get("_preview_paths", [])
+    preview_count = len(preview_paths)
+    images_with_detections = 0
 
     # Initialize VRAM monitor if available
     vram_monitor = None
@@ -2378,13 +2936,51 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
                     job["total_objects_found"] += 1
 
-            # Save checkpoint periodically
+            # Save preview image if this image had detections
+            if save_visualizations and instances_added > 0:
+                images_with_detections += 1
+                # Save preview periodically (every N images with detections, up to max_previews)
+                if images_with_detections % preview_interval == 0 and preview_count < max_previews:
+                    # Get annotations for this image
+                    image_annotations = [
+                        ann for ann in coco_result["annotations"]
+                        if ann.get("image_id") == image_id
+                    ]
+                    # Create reverse category map (id -> name)
+                    category_id_to_name = {i + 1: cls for i, cls in enumerate(final_classes)}
+
+                    preview_path = _save_preview_image(
+                        output_dir, image, Path(img_path).name,
+                        image_annotations, category_id_to_name, preview_count
+                    )
+                    if preview_path:
+                        preview_paths.append(preview_path)
+                        preview_count += 1
+                        job["_preview_paths"] = preview_paths
+                        logger.debug(f"Saved preview {preview_count}/{max_previews} at image {img_idx + 1}")
+
+            # Save checkpoint periodically and update database
             if (img_idx + 1) % checkpoint_interval == 0:
                 _save_labeling_checkpoint(
                     checkpoint_path, coco_result, annotation_id,
                     img_idx + 1, job["objects_by_class"]
                 )
                 logger.debug(f"Saved checkpoint at image {img_idx + 1}")
+
+                # Update progress in database
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=img_idx + 1,
+                            current_item=Path(img_path).name,
+                            progress_details={
+                                "total_objects_found": job["total_objects_found"],
+                                "objects_by_class": job["objects_by_class"],
+                            }
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to update progress in database: {e}")
 
             # Garbage collection - use VRAMMonitor if available, otherwise periodic
             should_cleanup = False
