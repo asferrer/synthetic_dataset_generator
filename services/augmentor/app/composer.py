@@ -897,6 +897,9 @@ class ImageComposer:
             required = {cls: per_class for cls in available_classes}
 
         total_required = sum(required.values())
+        # Calculate effective target: use minimum of num_images and total targets
+        effective_target = min(num_images, total_required) if targets_per_class else num_images
+        logger.info(f"Effective target: {effective_target} images (num_images={num_images}, total_required={total_required})")
         all_annotations = []
 
         # Load existing COCO if resuming
@@ -935,7 +938,9 @@ class ImageComposer:
                 logger.info(f"Batch composition cancelled after {generated} images")
                 break
 
-            if generated >= num_images:
+            # Check if effective target reached (considers both num_images and per-class targets)
+            if generated >= effective_target:
+                logger.info(f"Effective target reached: {generated}/{effective_target} images")
                 break
 
             # Check if any class still needs instances
@@ -944,6 +949,7 @@ class ImageComposer:
             available = [cls for cls, cnt in remaining.items() if cnt > 0 and objects_by_class.get(cls)]
 
             if not available:
+                logger.info(f"All per-class targets satisfied after {generated} images")
                 break
 
             # Select background
@@ -1021,13 +1027,16 @@ class ImageComposer:
                     del objects
                 continue
 
-            # Progress callback
+            # Progress callback with effective pending calculation
             if progress_callback:
+                # Calculate pending based on effective target (considers per-class targets)
+                effective_pending = max(0, effective_target - generated)
                 progress_callback({
                     'generated': generated,
                     'rejected': rejected,
-                    'pending': num_images - generated,
+                    'pending': effective_pending,
                     'counts': result.synthetic_counts,
+                    'total_target': effective_target,
                 })
 
             # Limpieza de memoria al final de cada iteración exitosa
@@ -1319,6 +1328,11 @@ class ImageComposer:
                 f"Available: {available_classes}"
             )
 
+        # Calculate effective target: use minimum of num_images and total per-class targets
+        total_required = sum(required.values())
+        effective_target = min(num_images, total_required) if targets_per_class else num_images
+        logger.info(f"Parallel mode - Effective target: {effective_target} images (num_images={num_images}, total_required={total_required})")
+
         # Resume support - load existing COCO if resuming
         existing_coco = None
         if resume_from_index > 0:
@@ -1333,7 +1347,7 @@ class ImageComposer:
             'generated': 0,
             'rejected': 0,
             'image_index': resume_from_index,
-            'target': num_images,
+            'target': effective_target,  # Use effective target (considers per-class targets)
             'counts': defaultdict(int),
         }
         counters_lock = asyncio.Lock()
@@ -1350,12 +1364,13 @@ class ImageComposer:
         all_annotations = []  # Procesar anotaciones incrementalmente para liberar memoria
         results_batch_size = 50  # Procesar cada 50 resultados para evitar memory leaks
 
-        max_iterations = num_images * 5  # Safety limit
+        max_iterations = effective_target * 5  # Safety limit based on effective target
 
         for iteration in range(max_iterations):
-            # Check if target reached
+            # Check if effective target reached (considers per-class targets)
             async with counters_lock:
-                if counters['generated'] >= num_images:
+                if counters['generated'] >= effective_target:
+                    logger.info(f"Effective target reached: {counters['generated']}/{effective_target} images")
                     break
 
             # Create worker task
@@ -1407,14 +1422,16 @@ class ImageComposer:
                         torch.cuda.empty_cache()
                     logger.debug(f"Processed {results_batch_size} results incrementally, freed memory")
 
-                # Progress callback
+                # Progress callback with effective pending calculation
                 if progress_callback:
                     async with counters_lock:
+                        effective_pending = max(0, effective_target - counters['generated'])
                         progress_callback({
                             'generated': counters['generated'],
                             'rejected': counters['rejected'],
-                            'pending': num_images - counters['generated'],
+                            'pending': effective_pending,
                             'counts': dict(counters['counts']),
+                            'total_target': effective_target,
                         })
 
         # Wait for remaining tasks

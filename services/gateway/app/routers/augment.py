@@ -533,6 +533,38 @@ async def retry_job(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/jobs/{job_id}/regenerate-dataset")
+async def regenerate_dataset(job_id: str, force: bool = False):
+    """
+    Regenerate the synthetic_dataset.json (COCO format) from individual annotation files.
+
+    This is useful for:
+    - Jobs that were cancelled/failed before COCO JSON was generated
+    - Jobs where the COCO JSON was corrupted or deleted
+    - Manual regeneration when desired
+
+    Args:
+        job_id: The job ID to regenerate dataset for
+        force: If True, regenerate even if synthetic_dataset.json already exists
+    """
+    logger.info(f"Regenerate dataset request for job: {job_id}, force={force}")
+
+    try:
+        registry = get_service_registry()
+        # Pass force parameter in the URL query string
+        force_param = "true" if force else "false"
+        result = await registry.augmentor.post(
+            f"/jobs/{job_id}/regenerate-dataset?force={force_param}",
+            {}
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Regenerate dataset failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str, level: Optional[str] = None, limit: int = 100):
     """

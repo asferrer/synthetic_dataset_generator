@@ -467,6 +467,12 @@ class JobDatabase:
 
             return result
 
+    def delete_dataset_metadata(self, job_id: str) -> bool:
+        """Delete dataset metadata for a job. Returns True if deleted, False if not found."""
+        with self._cursor() as cursor:
+            cursor.execute("DELETE FROM dataset_metadata WHERE job_id = ?", (job_id,))
+            return cursor.rowcount > 0
+
     def list_datasets(
         self,
         dataset_type: Optional[str] = None,
