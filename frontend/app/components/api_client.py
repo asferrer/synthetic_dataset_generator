@@ -6,10 +6,14 @@ Centralized HTTP client for all Gateway API calls.
 
 import os
 import json
+import logging
 import httpx
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
+
+# Configure logging for API client
+logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
 SEGMENTATION_URL = os.environ.get("SEGMENTATION_SERVICE_URL", "http://localhost:8002")
@@ -258,6 +262,38 @@ class APIClient:
                 return response.json()
             else:
                 return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def regenerate_dataset(self, job_id: str, force: bool = False) -> Dict[str, Any]:
+        """
+        Regenerate the synthetic_dataset.json (COCO format) from individual annotation files.
+
+        This is useful for jobs that don't have a COCO JSON or need regeneration.
+
+        Args:
+            job_id: The job ID to regenerate dataset for
+            force: If True, regenerate even if synthetic_dataset.json already exists
+
+        Returns:
+            Dict with success status, coco_path, and statistics
+        """
+        try:
+            response = httpx.post(
+                f"{self.base_url}/augment/jobs/{job_id}/regenerate-dataset",
+                json={},
+                params={"force": str(force).lower()},
+                timeout=600.0,  # 10 minutes for very large datasets
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"success": False, "error": response.text}
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "error": "Request timeout - regeneration may still be in progress"
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -928,14 +964,25 @@ class APIClient:
     def list_labeling_jobs(self) -> Dict[str, Any]:
         """List all labeling jobs from segmentation service"""
         try:
+            logger.debug(f"Fetching labeling jobs from {SEGMENTATION_URL}/labeling/jobs")
             response = httpx.get(
                 f"{SEGMENTATION_URL}/labeling/jobs",
                 timeout=10.0
             )
             if response.status_code == 200:
-                return response.json()
-            return {"jobs": [], "total": 0, "error": response.text}
+                result = response.json()
+                logger.debug(f"Successfully fetched {result.get('total', 0)} labeling jobs")
+                return result
+            logger.warning(f"Failed to fetch labeling jobs: HTTP {response.status_code} - {response.text[:200]}")
+            return {"jobs": [], "total": 0, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        except httpx.ConnectError as e:
+            logger.error(f"Connection error fetching labeling jobs from {SEGMENTATION_URL}: {e}")
+            return {"jobs": [], "total": 0, "error": f"No se puede conectar a {SEGMENTATION_URL}. Verifica que el servicio de segmentacion este corriendo."}
+        except httpx.TimeoutException as e:
+            logger.error(f"Timeout fetching labeling jobs from {SEGMENTATION_URL}: {e}")
+            return {"jobs": [], "total": 0, "error": f"Timeout conectando a {SEGMENTATION_URL}"}
         except Exception as e:
+            logger.error(f"Unexpected error fetching labeling jobs: {e}")
             return {"jobs": [], "total": 0, "error": str(e)}
 
     def load_labeling_result(self, job_id: str) -> Dict[str, Any]:
@@ -961,6 +1008,113 @@ class APIClient:
             if response.status_code == 200:
                 return response.json()
             return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_labeling_previews(self, job_id: str, limit: int = 10) -> Dict[str, Any]:
+        """Get preview images for a labeling job to monitor annotation quality"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}/previews",
+                params={"limit": limit},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"previews": [], "error": response.text}
+        except httpx.ConnectError:
+            return {"previews": [], "error": f"No se puede conectar a {SEGMENTATION_URL}"}
+        except Exception as e:
+            return {"previews": [], "error": str(e)}
+
+    def get_labeling_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get detailed status of a specific labeling job"""
+        try:
+            response = httpx.get(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def cancel_labeling_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Cancel a running labeling job.
+
+        Sets the job status to CANCELLED. The job can be resumed later
+        from its checkpoint.
+
+        Args:
+            job_id: The job ID to cancel
+
+        Returns:
+            Dict with success status and message
+        """
+        try:
+            response = httpx.delete(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}",
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                return {
+                    "success": False,
+                    "error": "Job not found"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Status {response.status_code}: {response.text}"
+                }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "error": "Request timeout - job may still be cancelling"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_labeling_job(self, job_id: str, delete_files: bool = False) -> Dict[str, Any]:
+        """
+        Permanently delete a labeling job from memory and database.
+
+        If the job is active, it will be cancelled first before deletion.
+        Output files are preserved unless delete_files=True.
+
+        Args:
+            job_id: The job ID to delete
+            delete_files: If True, also delete output files (default: False)
+
+        Returns:
+            Dict with success status, message, and details
+        """
+        try:
+            response = httpx.post(
+                f"{SEGMENTATION_URL}/labeling/jobs/{job_id}/delete",
+                params={"delete_files": delete_files},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                return {
+                    "success": False,
+                    "error": "Job not found (may have been already deleted)"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Status {response.status_code}: {response.text}"
+                }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "error": "Request timeout - job may still be deleting"
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
