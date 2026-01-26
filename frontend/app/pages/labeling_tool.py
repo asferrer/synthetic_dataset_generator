@@ -617,8 +617,8 @@ def _render_new_labeling_tab(c: Dict, client) -> None:
 
             save_visualizations = st.checkbox(
                 "Guardar visualizaciones",
-                value=False,
-                help="Guarda imagenes con las anotaciones superpuestas",
+                value=True,
+                help="Guarda imagenes con las anotaciones superpuestas para previsualizar el etiquetado",
                 key="labeling_save_viz"
             )
 
@@ -1005,6 +1005,17 @@ def _render_labeling_jobs_tab(c: Dict, client) -> None:
 
     # Fetch labeling jobs
     jobs_response = client.list_labeling_jobs()
+
+    # Check for connection errors BEFORE processing jobs
+    if jobs_response.get("error"):
+        alert_box(
+            f"Error de conexion con el servicio de segmentacion: {jobs_response.get('error')}",
+            type="error",
+            icon="⚠️"
+        )
+        st.info("Verifica que el servicio de segmentacion este corriendo y accesible.")
+        return
+
     jobs = jobs_response.get("jobs", [])
 
     if not jobs:
@@ -1167,6 +1178,25 @@ def _render_labeling_job_card(job: Dict, c: Dict, client, active: bool = False) 
                     if count > 0:
                         st.markdown(f"• **{cls_name}**: {count} objetos")
 
+        # Show preview images for active jobs
+        with st.expander("🖼️ Previsualizacion en tiempo real", expanded=False):
+            previews_response = client.get_labeling_previews(job_id, limit=6)
+            previews = previews_response.get("previews", [])
+
+            if previews:
+                st.caption(f"Mostrando {len(previews)} de las ultimas previsualizaciones")
+                # Display previews in a grid
+                cols = st.columns(3)
+                for idx, preview in enumerate(previews[:6]):
+                    with cols[idx % 3]:
+                        st.image(
+                            preview.get("data", ""),
+                            caption=preview.get("filename", ""),
+                            use_container_width=True
+                        )
+            else:
+                st.info("Las previsualizaciones apareceran cuando se detecten objetos...")
+
     # Download results for completed jobs
     if status == "completed":
         output_dir = job.get("output_dir", "")
@@ -1184,6 +1214,25 @@ def _render_labeling_job_card(job: Dict, c: Dict, client, active: bool = False) 
                 for cls_name, count in sorted_classes:
                     if count > 0:
                         st.markdown(f"• **{cls_name}**: {count} objetos")
+
+        # Show preview images for completed jobs
+        with st.expander("🖼️ Ver ejemplos de anotaciones", expanded=False):
+            previews_response = client.get_labeling_previews(job_id, limit=9)
+            previews = previews_response.get("previews", [])
+
+            if previews:
+                st.caption(f"Mostrando {len(previews)} ejemplos del dataset anotado")
+                # Display previews in a grid
+                cols = st.columns(3)
+                for idx, preview in enumerate(previews[:9]):
+                    with cols[idx % 3]:
+                        st.image(
+                            preview.get("data", ""),
+                            caption=preview.get("filename", ""),
+                            use_container_width=True
+                        )
+            else:
+                st.info("No hay previsualizaciones disponibles para este job")
 
         col1, col2, col3 = st.columns(3)
 
