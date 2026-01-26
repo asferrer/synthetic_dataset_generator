@@ -233,6 +233,9 @@ def render_generation_page():
     else:
         _render_start_generation(config)
 
+    # Show active labeling jobs from segmentation service (if any)
+    _render_labeling_jobs_section()
+
 
 def _render_config_summary(config: Dict) -> None:
     """Show configuration summary from Step 2"""
@@ -1295,3 +1298,63 @@ def _render_studio_objects() -> None:
                     st.json(result["annotations"])
     else:
         st.caption("Genera una imagen para ver métricas")
+
+
+def _render_labeling_jobs_section() -> None:
+    """Render a section showing active labeling jobs from the segmentation service."""
+    c = get_colors_dict()
+    client = get_api_client()
+
+    # Fetch labeling jobs
+    jobs_response = client.list_labeling_jobs()
+
+    if jobs_response.get("error"):
+        return  # Don't show section if service is unavailable
+
+    jobs = jobs_response.get("jobs", [])
+    if not jobs:
+        return  # No jobs to show
+
+    # Filter to only active jobs (processing, queued)
+    active_jobs = [j for j in jobs if j.get("status") in ["processing", "queued"]]
+
+    if not active_jobs:
+        return  # No active jobs
+
+    spacer(24)
+    section_header("Jobs de Etiquetado Activos", icon="🤖")
+
+    for job in active_jobs[:3]:  # Show max 3 active jobs
+        job_id = job.get("job_id", "")[:8]
+        status = job.get("status", "unknown")
+        total = job.get("total_images", 0)
+        processed = job.get("processed_images", 0)
+        total_objects = job.get("total_objects_found", 0)
+
+        # Status indicator
+        if status == "processing":
+            status_icon = "⏳"
+            status_color = c['warning']
+        else:
+            status_icon = "📋"
+            status_color = c['info']
+
+        # Progress
+        progress = processed / total if total > 0 else 0
+
+        st.markdown(f"""
+        <div style="background: {c['bg_secondary']}; border: 1px solid {c['border']};
+                    border-radius: 0.5rem; padding: 0.75rem; margin-bottom: 0.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: {status_color};">{status_icon} {job_id}...</span>
+                <span style="color: {c['text_muted']}; font-size: 0.8rem;">
+                    {processed}/{total} imgs | {total_objects} objetos
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.progress(progress)
+
+    # Link to labeling tool
+    st.caption("Ver detalles en 🤖 Etiquetar Auto")
