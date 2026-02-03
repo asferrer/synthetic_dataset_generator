@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/fs", tags=["Filesystem"])
+router = APIRouter(prefix="/filesystem", tags=["Filesystem"])
 
 # Base paths for data (can be configured via environment)
 DATA_BASE_PATH = os.environ.get("DATA_BASE_PATH", "/data")
