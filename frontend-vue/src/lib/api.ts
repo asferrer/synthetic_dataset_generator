@@ -299,24 +299,27 @@ export async function deleteCategory(
 // FILE SYSTEM
 // ===========================================
 
-export async function listDirectories(path: string): Promise<string[]> {
+export async function listDirectories(path = '/data'): Promise<string[]> {
   const response = await api.get('/filesystem/directories', { params: { path } })
   return response.data.directories || []
 }
 
-export async function listFiles(path: string, extensions?: string[]): Promise<string[]> {
+export async function listFiles(path: string, extensions?: string | string[]): Promise<string[]> {
   const params: Record<string, any> = { path }
-  if (extensions) params.extensions = extensions.join(',')
+  if (extensions) {
+    // Accept both string and array formats
+    params.extensions = Array.isArray(extensions) ? extensions.join(',') : extensions
+  }
   const response = await api.get('/filesystem/files', { params })
   return response.data.files || []
 }
 
-export async function checkPathExists(path: string): Promise<boolean> {
+export async function checkPathExists(path: string): Promise<{ exists: boolean }> {
   try {
     const response = await api.get('/filesystem/exists', { params: { path } })
-    return response.data.exists
+    return { exists: response.data.exists ?? false }
   } catch {
-    return false
+    return { exists: false }
   }
 }
 
