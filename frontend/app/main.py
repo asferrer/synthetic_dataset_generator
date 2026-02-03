@@ -5,6 +5,7 @@ Professional UI for synthetic dataset generation with microservices.
 """
 
 import os
+import time
 import streamlit as st
 from pathlib import Path
 
