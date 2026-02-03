@@ -48,13 +48,13 @@ async function fetchData() {
 }
 
 function getHealthyServices(): number {
-  if (!health.value) return 0
-  return Object.values(health.value).filter(s => s.status === 'healthy').length
+  if (!health.value || !health.value.services) return 0
+  return health.value.services.filter(s => s.status === 'healthy').length
 }
 
 function getTotalServices(): number {
-  if (!health.value) return 5
-  return Object.keys(health.value).length
+  if (!health.value || !health.value.services) return 5
+  return health.value.services.length
 }
 
 function getJobStatusIcon(status: string) {
