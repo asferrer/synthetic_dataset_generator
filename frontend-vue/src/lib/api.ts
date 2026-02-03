@@ -324,7 +324,7 @@ export async function checkPathExists(path: string): Promise<{ exists: boolean }
 }
 
 export function getImageUrl(imagePath: string): string {
-  return `${API_BASE_URL}/filesystem/image?path=${encodeURIComponent(imagePath)}`
+  return `${API_BASE_URL}/filesystem/images?path=${encodeURIComponent(imagePath)}`
 }
 
 // ===========================================
