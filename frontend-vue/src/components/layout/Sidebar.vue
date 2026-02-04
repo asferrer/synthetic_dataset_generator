@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
 import {
   LayoutDashboard,
+  Globe,
   BarChart3,
   Settings,
   FolderInput,
@@ -91,6 +92,20 @@ const sidebarClasses = computed(() => [
         >
           <LayoutDashboard class="h-5 w-5 flex-shrink-0" />
           <span v-if="!uiStore.sidebarCollapsed">Dashboard</span>
+        </router-link>
+      </div>
+
+      <!-- Domain Manager -->
+      <div class="mb-6">
+        <router-link
+          to="/domains"
+          :class="[
+            'flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors',
+            route.path.startsWith('/domains') ? 'bg-primary text-white' : 'text-gray-400 hover:bg-gray-700/50 hover:text-white',
+          ]"
+        >
+          <Globe class="h-5 w-5 flex-shrink-0" />
+          <span v-if="!uiStore.sidebarCollapsed">Domains</span>
         </router-link>
       </div>
 

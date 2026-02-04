@@ -2,9 +2,11 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getHealthStatus, getJobs, listDatasets } from '@/lib/api'
+import { useDomainStore } from '@/stores/domain'
 import MetricCard from '@/components/common/MetricCard.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+import DomainSelector from '@/components/domain/DomainSelector.vue'
 import {
   Database,
   Image,
@@ -15,10 +17,12 @@ import {
   CheckCircle,
   Clock,
   AlertCircle,
+  Globe,
 } from 'lucide-vue-next'
 import type { HealthStatus, Job, DatasetInfo } from '@/types/api'
 
 const router = useRouter()
+const domainStore = useDomainStore()
 
 const loading = ref(true)
 const health = ref<HealthStatus | null>(null)
@@ -91,7 +95,10 @@ const workflowSteps = [
   { name: 'Export', description: 'Export in various formats', path: '/export' },
 ]
 
-onMounted(fetchData)
+onMounted(() => {
+  fetchData()
+  domainStore.fetchDomains()
+})
 </script>
 
 <template>
@@ -150,6 +157,23 @@ onMounted(fetchData)
           :icon="Server"
           :variant="getHealthyServices() === getTotalServices() ? 'success' : 'warning'"
         />
+      </div>
+
+      <!-- Active Domain -->
+      <div class="card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-white">Active Domain</h2>
+          <button
+            @click="router.push('/domains')"
+            class="text-sm text-primary hover:text-primary-hover"
+          >
+            Manage Domains
+          </button>
+        </div>
+        <DomainSelector :show-manage-link="false" />
+        <p class="mt-3 text-sm text-gray-500">
+          The active domain determines which regions, effects, and physics rules are used during generation.
+        </p>
       </div>
 
       <!-- Quick Start Workflow -->

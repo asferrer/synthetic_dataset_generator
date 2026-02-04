@@ -50,6 +50,25 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/workflow/SplitsView.vue'),
     meta: { title: 'Dataset Splits', step: 7 },
   },
+  // Domain routes
+  {
+    path: '/domains',
+    name: 'domains',
+    component: () => import('@/views/domain/DomainManagerView.vue'),
+    meta: { title: 'Domain Manager' },
+  },
+  {
+    path: '/domains/:id',
+    name: 'domain-detail',
+    component: () => import('@/views/domain/DomainDetailView.vue'),
+    meta: { title: 'Domain Details' },
+  },
+  {
+    path: '/domains/:id/edit',
+    name: 'domain-edit',
+    component: () => import('@/views/domain/DomainEditorView.vue'),
+    meta: { title: 'Edit Domain' },
+  },
   // Tools routes
   {
     path: '/tools/job-monitor',

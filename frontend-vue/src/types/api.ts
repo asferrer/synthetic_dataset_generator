@@ -484,6 +484,135 @@ export interface SegmentationResult {
 }
 
 // ============================================
+// DOMAIN CONFIGURATION TYPES
+// ============================================
+
+export interface DomainRegion {
+  id: string
+  name: string
+  display_name: string
+  color_rgb: [number, number, number]
+  sam3_prompt: string | null
+  detection_heuristics?: Record<string, unknown>
+}
+
+export interface DomainObject {
+  class_name: string
+  display_name: string
+  real_world_size_meters: number
+  keywords: string[]
+  physics_properties: {
+    density_relative: number
+    behavior?: string
+  }
+}
+
+export interface DomainEffectsConfig {
+  domain_specific: Array<{
+    effect_id: string
+    enabled_by_default: boolean
+    parameters: Record<string, unknown>
+  }>
+  disabled: string[]
+  universal_overrides: Record<string, Record<string, unknown>>
+}
+
+export interface DomainPhysicsConfig {
+  physics_type: 'buoyancy' | 'aerial' | 'gravity' | 'neutral'
+  medium_density: number
+  float_threshold: number | null
+  sink_threshold: number | null
+  surface_zone: number | null
+  bottom_zone: number | null
+  gravity_direction: 'down' | 'up'
+}
+
+export interface DomainPreset {
+  id: string
+  name: string
+  description: string
+  icon: string
+  config: Record<string, unknown>
+}
+
+export interface DomainLabelingTemplate {
+  id: string
+  name: string
+  description: string
+  icon: string
+  classes: string[]
+}
+
+export interface Domain {
+  domain_id: string
+  name: string
+  description: string
+  version: string
+  icon: string
+  is_builtin: boolean
+  regions: DomainRegion[]
+  objects: DomainObject[]
+  compatibility_matrix: Record<string, Record<string, number>>
+  effects: DomainEffectsConfig
+  physics: DomainPhysicsConfig
+  presets: DomainPreset[]
+  labeling_templates: DomainLabelingTemplate[]
+}
+
+export interface DomainSummary {
+  domain_id: string
+  name: string
+  description: string
+  icon: string
+  version: string
+  is_builtin: boolean
+  region_count: number
+  object_count: number
+}
+
+export interface DomainCreateRequest {
+  domain_id: string
+  name: string
+  description?: string
+  version?: string
+  icon?: string
+  regions: Omit<DomainRegion, 'value'>[]
+  objects?: DomainObject[]
+  compatibility_matrix?: Record<string, Record<string, number>>
+  effects?: Partial<DomainEffectsConfig>
+  physics?: Partial<DomainPhysicsConfig>
+  presets?: DomainPreset[]
+  labeling_templates?: DomainLabelingTemplate[]
+}
+
+export interface DomainUpdateRequest {
+  name?: string
+  description?: string
+  version?: string
+  icon?: string
+  regions?: Omit<DomainRegion, 'value'>[]
+  objects?: DomainObject[]
+  compatibility_matrix?: Record<string, Record<string, number>>
+  effects?: Partial<DomainEffectsConfig>
+  physics?: Partial<DomainPhysicsConfig>
+  presets?: DomainPreset[]
+  labeling_templates?: DomainLabelingTemplate[]
+}
+
+export interface CompatibilityCheckRequest {
+  object_class: string
+  region_id: string
+  domain_id?: string
+}
+
+export interface CompatibilityCheckResponse {
+  object_class: string
+  region_id: string
+  domain_id: string
+  score: number
+}
+
+// ============================================
 // API RESPONSE WRAPPER
 // ============================================
 
