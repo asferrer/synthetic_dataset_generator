@@ -24,12 +24,17 @@ services:
       - DATA_DIR=/app/datasets
       - DATASETS_DIR=/app/datasets
       - UPLOADS_DIR=/app/datasets/uploads
+      # Domain configuration paths
+      - DOMAINS_PATH=/app/config/domains
+      - USER_DOMAINS_PATH=/shared/domains
     volumes:
       - shared_data:/shared
       - jobs_db:/shared/db
       # Dataset con Backgrounds_filtered/ y Objects/
       # Configura DATASET_PATH en .env.microservices
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+      # Domain configurations (built-in)
+      - ./config/domains:/app/config/domains:ro
     # Límites de recursos - hardware potente (96GB RAM, Core Ultra 9 - 24 cores)
     mem_limit: 4G
     memswap_limit: 4G
