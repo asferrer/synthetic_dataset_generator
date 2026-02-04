@@ -1,0 +1,105 @@
+{
+  "$comment": "Template for creating custom domains. Copy this file and modify to create your own domain.",
+  "domain_id": "my_custom_domain",
+  "name": "My Custom Domain",
+  "description": "Description of what this domain is for",
+  "version": "1.0.0",
+  "icon": "Box",
+  "is_builtin": false,
+  "regions": [
+    {
+      "id": "region_1",
+      "name": "region_1",
+      "display_name": "Region 1",
+      "color_rgb": [255, 100, 100],
+      "sam3_prompt": "text prompt for SAM3 segmentation",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 0], "max": [180, 255, 255]}
+        ],
+        "position_zone": {"y_min": 0.0, "y_max": 0.5}
+      }
+    },
+    {
+      "id": "region_2",
+      "name": "region_2",
+      "display_name": "Region 2",
+      "color_rgb": [100, 255, 100],
+      "sam3_prompt": "another text prompt"
+    },
+    {
+      "id": "unknown",
+      "name": "unknown",
+      "display_name": "Unknown",
+      "color_rgb": [128, 128, 128],
+      "sam3_prompt": null
+    }
+  ],
+  "objects": [
+    {
+      "class_name": "object_type_1",
+      "display_name": "Object Type 1",
+      "real_world_size_meters": 1.0,
+      "keywords": ["alias1", "alias2"],
+      "physics_properties": {
+        "density_relative": 1.0,
+        "behavior": "hover"
+      }
+    },
+    {
+      "class_name": "object_type_2",
+      "display_name": "Object Type 2",
+      "real_world_size_meters": 0.5,
+      "keywords": [],
+      "physics_properties": {
+        "density_relative": 0.5,
+        "behavior": "float"
+      }
+    }
+  ],
+  "compatibility_matrix": {
+    "object_type_1": {
+      "region_1": 1.0,
+      "region_2": 0.5
+    },
+    "object_type_2": {
+      "region_1": 0.3,
+      "region_2": 1.0
+    }
+  },
+  "effects": {
+    "domain_specific": [],
+    "disabled": ["underwater", "caustics"],
+    "universal_overrides": {
+      "color_correction": {"color_intensity": 0.1},
+      "lighting": {"lighting_type": "ambient", "lighting_intensity": 0.5}
+    }
+  },
+  "physics": {
+    "physics_type": "neutral",
+    "medium_density": 1.0,
+    "float_threshold": null,
+    "sink_threshold": null,
+    "surface_zone": null,
+    "bottom_zone": null,
+    "gravity_direction": "down"
+  },
+  "presets": [
+    {
+      "id": "default",
+      "name": "Default",
+      "description": "Default settings for this domain",
+      "icon": "Settings",
+      "config": {}
+    }
+  ],
+  "labeling_templates": [
+    {
+      "id": "all_objects",
+      "name": "All Objects",
+      "description": "All object classes in this domain",
+      "icon": "Box",
+      "classes": ["object_type_1", "object_type_2"]
+    }
+  ]
+}

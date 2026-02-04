@@ -28,7 +28,8 @@ from app.models.schemas import (
     ServiceStatus,
     AnnotationBox
 )
-from app.routers import augment, segmentation, datasets, filesystem
+from app.routers import augment, segmentation, datasets, filesystem, domains
+from app.services.domain_registry import get_domain_registry
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +47,12 @@ async def lifespan(app: FastAPI):
     # Initialize service registry
     registry = get_service_registry()
     logger.info("Service registry initialized")
+
+    # Initialize domain registry
+    domain_registry = get_domain_registry()
+    domain_registry.load_all_domains()
+    logger.info(f"Domain registry initialized with {len(domain_registry.list_domains())} domains")
+    logger.info(f"Active domain: {domain_registry.get_active_domain_id()}")
 
     # Check initial health of services
     try:
@@ -85,6 +92,7 @@ app.include_router(augment.router)
 app.include_router(segmentation.router)
 app.include_router(datasets.router)
 app.include_router(filesystem.router)
+app.include_router(domains.router)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -179,6 +187,10 @@ async def service_info():
             "/augment/validate",
             "/augment/lighting",
             "/augment/jobs/{job_id}",
+            "/domains",
+            "/domains/{domain_id}",
+            "/domains/{domain_id}/activate",
+            "/domains/active",
             "/services/depth",
             "/services/effects",
             "/services/augmentor"
@@ -399,13 +411,17 @@ async def delete_object_size(class_name: str):
 @app.get("/")
 async def root():
     """Root endpoint."""
+    domain_registry = get_domain_registry()
     return {
         "service": "Synthetic Data Generation Gateway",
-        "version": "1.0.0",
-        "description": "API Gateway for orchestrating synthetic dataset generation",
+        "version": "2.0.0",
+        "description": "Multi-domain API Gateway for orchestrating synthetic dataset generation",
+        "active_domain": domain_registry.get_active_domain_id(),
         "endpoints": {
             "health": "/health",
             "info": "/info",
+            "domains": "/domains",
+            "active_domain": "/domains/active",
             "generate_image": "/generate/image",
             "generate_batch": "/generate/batch",
             "augment_compose": "/augment/compose",

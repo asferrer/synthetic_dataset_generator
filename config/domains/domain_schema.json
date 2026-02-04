@@ -1,0 +1,314 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://synthetic-dataset-generator/domain-schema.json",
+  "title": "Domain Configuration Schema",
+  "description": "Schema for defining custom domains in the Synthetic Dataset Generator",
+  "type": "object",
+  "required": ["domain_id", "name", "version", "regions", "objects", "compatibility_matrix", "effects", "physics"],
+  "properties": {
+    "domain_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Unique identifier for the domain (lowercase, underscores allowed)"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "Human-readable name for the domain"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Brief description of the domain's purpose"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the domain configuration"
+    },
+    "icon": {
+      "type": "string",
+      "description": "Lucide icon name for UI display"
+    },
+    "is_builtin": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this is a built-in domain (cannot be deleted)"
+    },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/RegionDefinition"
+      },
+      "description": "Scene regions for this domain"
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ObjectDefinition"
+      },
+      "description": "Object types that can be placed in this domain"
+    },
+    "compatibility_matrix": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "description": "Compatibility scores between objects and regions (0-1)"
+    },
+    "effects": {
+      "$ref": "#/definitions/DomainEffectsConfig"
+    },
+    "physics": {
+      "$ref": "#/definitions/PhysicsConfig"
+    },
+    "presets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EffectsPreset"
+      },
+      "description": "Pre-configured effect presets for this domain"
+    },
+    "labeling_templates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/LabelingTemplate"
+      },
+      "description": "Predefined labeling templates for auto-labeling"
+    }
+  },
+  "definitions": {
+    "RegionDefinition": {
+      "type": "object",
+      "required": ["id", "name", "display_name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Unique identifier for the region"
+        },
+        "name": {
+          "type": "string",
+          "description": "Internal name for the region"
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name for UI display"
+        },
+        "color_rgb": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0, "maximum": 255},
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "RGB color for visualization [R, G, B]"
+        },
+        "sam3_prompt": {
+          "type": "string",
+          "description": "Text prompt for SAM3 segmentation"
+        },
+        "detection_heuristics": {
+          "type": "object",
+          "properties": {
+            "color_ranges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "color_space": {"type": "string", "enum": ["hsv", "rgb", "lab"]},
+                  "min": {"type": "array", "items": {"type": "number"}},
+                  "max": {"type": "array", "items": {"type": "number"}}
+                }
+              }
+            },
+            "position_zone": {
+              "type": "object",
+              "properties": {
+                "y_min": {"type": "number", "minimum": 0, "maximum": 1},
+                "y_max": {"type": "number", "minimum": 0, "maximum": 1}
+              }
+            },
+            "brightness_range": {
+              "type": "object",
+              "properties": {
+                "min": {"type": "number", "minimum": 0, "maximum": 1},
+                "max": {"type": "number", "minimum": 0, "maximum": 1}
+              }
+            }
+          },
+          "description": "Fallback heuristics when SAM3 is unavailable"
+        }
+      }
+    },
+    "ObjectDefinition": {
+      "type": "object",
+      "required": ["class_name", "real_world_size_meters"],
+      "properties": {
+        "class_name": {
+          "type": "string",
+          "description": "Object class name"
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name for UI"
+        },
+        "real_world_size_meters": {
+          "type": "number",
+          "minimum": 0.001,
+          "description": "Real-world size in meters for depth-aware scaling"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Alternative names/keywords for class matching"
+        },
+        "physics_properties": {
+          "type": "object",
+          "properties": {
+            "density_relative": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Density relative to medium (water=1.0, air=0.001)"
+            },
+            "behavior": {
+              "type": "string",
+              "enum": ["float", "sink", "fly", "hover", "rise", "fall", "static"],
+              "description": "Physical behavior of the object"
+            }
+          }
+        }
+      }
+    },
+    "DomainEffectsConfig": {
+      "type": "object",
+      "properties": {
+        "domain_specific": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["effect_id"],
+            "properties": {
+              "effect_id": {
+                "type": "string",
+                "description": "Unique effect identifier"
+              },
+              "enabled_by_default": {
+                "type": "boolean",
+                "default": true
+              },
+              "parameters": {
+                "type": "object",
+                "description": "Effect-specific parameters"
+              }
+            }
+          },
+          "description": "Domain-specific effects to enable"
+        },
+        "disabled": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Effects to disable for this domain"
+        },
+        "universal_overrides": {
+          "type": "object",
+          "description": "Override default values for universal effects"
+        }
+      }
+    },
+    "PhysicsConfig": {
+      "type": "object",
+      "required": ["physics_type"],
+      "properties": {
+        "physics_type": {
+          "type": "string",
+          "enum": ["buoyancy", "gravity", "aerial", "neutral"],
+          "description": "Type of physics simulation"
+        },
+        "medium_density": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Density of the medium (water=1.0, air=0.001)"
+        },
+        "float_threshold": {
+          "type": ["number", "null"],
+          "description": "Density threshold below which objects float/rise"
+        },
+        "sink_threshold": {
+          "type": ["number", "null"],
+          "description": "Density threshold above which objects sink/fall"
+        },
+        "surface_zone": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized Y position defining surface zone (0=top)"
+        },
+        "bottom_zone": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized Y position defining bottom zone (1=bottom)"
+        },
+        "gravity_direction": {
+          "type": "string",
+          "enum": ["down", "up", "none"],
+          "default": "down"
+        }
+      }
+    },
+    "EffectsPreset": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique preset identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name"
+        },
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string",
+          "description": "Lucide icon name"
+        },
+        "config": {
+          "type": "object",
+          "description": "Partial EffectsConfig to apply"
+        }
+      }
+    },
+    "LabelingTemplate": {
+      "type": "object",
+      "required": ["id", "name", "classes"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "classes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of class names for auto-labeling"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,249 @@
+{
+  "domain_id": "fire_smoke",
+  "name": "Fire & Smoke Detection",
+  "description": "Wildfire and smoke detection in natural environments. Optimized for forest fires, smoke plumes, and emergency response scenarios.",
+  "version": "1.0.0",
+  "icon": "Flame",
+  "is_builtin": true,
+  "regions": [
+    {
+      "id": "sky",
+      "name": "sky",
+      "display_name": "Sky",
+      "color_rgb": [135, 206, 235],
+      "sam3_prompt": "sky",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.0, "y_max": 0.4},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [90, 20, 150], "max": [130, 255, 255]}
+        ]
+      }
+    },
+    {
+      "id": "forest",
+      "name": "forest",
+      "display_name": "Forest / Trees",
+      "color_rgb": [34, 139, 34],
+      "sam3_prompt": "trees forest vegetation",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [35, 40, 30], "max": [85, 255, 200]}
+        ]
+      }
+    },
+    {
+      "id": "ground",
+      "name": "ground",
+      "display_name": "Ground",
+      "color_rgb": [139, 90, 43],
+      "sam3_prompt": "ground dirt earth soil",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.6, "y_max": 1.0},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [10, 30, 30], "max": [30, 180, 180]}
+        ]
+      }
+    },
+    {
+      "id": "burning",
+      "name": "burning",
+      "display_name": "Burning Area",
+      "color_rgb": [255, 69, 0],
+      "sam3_prompt": "fire flames burning",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 150, 150], "max": [25, 255, 255]},
+          {"color_space": "hsv", "min": [160, 150, 150], "max": [180, 255, 255]}
+        ],
+        "brightness_range": {"min": 0.7, "max": 1.0}
+      }
+    },
+    {
+      "id": "smoke_area",
+      "name": "smoke_area",
+      "display_name": "Smoke Area",
+      "color_rgb": [128, 128, 128],
+      "sam3_prompt": "smoke",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 80], "max": [180, 50, 200]}
+        ]
+      }
+    },
+    {
+      "id": "buildings",
+      "name": "buildings",
+      "display_name": "Buildings / Structures",
+      "color_rgb": [169, 169, 169],
+      "sam3_prompt": "building house structure",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 50], "max": [180, 30, 180]}
+        ]
+      }
+    },
+    {
+      "id": "road",
+      "name": "road",
+      "display_name": "Road / Path",
+      "color_rgb": [105, 105, 105],
+      "sam3_prompt": "road path",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 30], "max": [180, 40, 120]}
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "unknown",
+      "display_name": "Unknown",
+      "color_rgb": [200, 200, 200],
+      "sam3_prompt": null
+    }
+  ],
+  "objects": [
+    {"class_name": "flame", "display_name": "Flame", "real_world_size_meters": 1.5, "keywords": ["fire", "flame", "blaze", "llama", "fuego"], "physics_properties": {"density_relative": 0.01, "behavior": "rise"}},
+    {"class_name": "flame_small", "display_name": "Small Flame", "real_world_size_meters": 0.5, "keywords": ["small_fire", "small_flame"], "physics_properties": {"density_relative": 0.01, "behavior": "rise"}},
+    {"class_name": "flame_large", "display_name": "Large Flame", "real_world_size_meters": 5.0, "keywords": ["large_fire", "wildfire", "inferno"], "physics_properties": {"density_relative": 0.01, "behavior": "rise"}},
+    {"class_name": "smoke_plume", "display_name": "Smoke Plume", "real_world_size_meters": 10.0, "keywords": ["smoke", "plume", "humo"], "physics_properties": {"density_relative": 0.05, "behavior": "rise"}},
+    {"class_name": "smoke_column", "display_name": "Smoke Column", "real_world_size_meters": 30.0, "keywords": ["smoke_column", "columna_humo"], "physics_properties": {"density_relative": 0.03, "behavior": "rise"}},
+    {"class_name": "smoke_wisp", "display_name": "Smoke Wisp", "real_world_size_meters": 2.0, "keywords": ["wisp", "thin_smoke"], "physics_properties": {"density_relative": 0.02, "behavior": "rise"}},
+    {"class_name": "ember", "display_name": "Ember / Spark", "real_world_size_meters": 0.02, "keywords": ["ember", "spark", "brasa", "chispa"], "physics_properties": {"density_relative": 0.3, "behavior": "rise"}},
+    {"class_name": "ash", "display_name": "Ash / Falling Debris", "real_world_size_meters": 0.05, "keywords": ["ash", "ceniza", "falling_debris"], "physics_properties": {"density_relative": 0.8, "behavior": "fall"}},
+    {"class_name": "firefighter", "display_name": "Firefighter", "real_world_size_meters": 1.8, "keywords": ["firefighter", "bombero", "fireman"], "physics_properties": {"density_relative": 1.0, "behavior": "fall"}},
+    {"class_name": "fire_truck", "display_name": "Fire Truck", "real_world_size_meters": 8.0, "keywords": ["fire_truck", "firetruck", "camion_bomberos"], "physics_properties": {"density_relative": 1.5, "behavior": "fall"}},
+    {"class_name": "helicopter", "display_name": "Helicopter", "real_world_size_meters": 15.0, "keywords": ["helicopter", "helicoptero", "chopper"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "water_drop", "display_name": "Water Drop (Aerial)", "real_world_size_meters": 5.0, "keywords": ["water_drop", "water_bomb"], "physics_properties": {"density_relative": 1.0, "behavior": "fall"}},
+    {"class_name": "burned_tree", "display_name": "Burned Tree", "real_world_size_meters": 8.0, "keywords": ["burned_tree", "charred_tree"], "physics_properties": {"density_relative": 1.2, "behavior": "static"}},
+    {"class_name": "burned_area", "display_name": "Burned Ground", "real_world_size_meters": 10.0, "keywords": ["burned_ground", "scorched_earth"], "physics_properties": {"density_relative": 1.5, "behavior": "static"}}
+  ],
+  "compatibility_matrix": {
+    "flame": {"burning": 1.0, "forest": 0.9, "ground": 0.7, "buildings": 0.8, "sky": 0.2, "road": 0.3},
+    "flame_small": {"burning": 1.0, "forest": 0.95, "ground": 0.8, "buildings": 0.85, "sky": 0.1},
+    "flame_large": {"burning": 1.0, "forest": 0.85, "ground": 0.6, "buildings": 0.7, "sky": 0.4},
+    "smoke_plume": {"sky": 1.0, "burning": 0.9, "forest": 0.6, "smoke_area": 1.0, "buildings": 0.5},
+    "smoke_column": {"sky": 1.0, "burning": 0.8, "smoke_area": 1.0},
+    "smoke_wisp": {"sky": 1.0, "burning": 0.7, "forest": 0.5, "smoke_area": 0.9},
+    "ember": {"sky": 1.0, "burning": 0.9, "smoke_area": 0.8, "forest": 0.6},
+    "ash": {"sky": 0.9, "ground": 0.8, "burning": 0.7, "forest": 0.6, "smoke_area": 0.8},
+    "firefighter": {"ground": 1.0, "road": 1.0, "forest": 0.6, "buildings": 0.5, "burning": 0.3},
+    "fire_truck": {"road": 1.0, "ground": 0.8, "buildings": 0.4},
+    "helicopter": {"sky": 1.0, "smoke_area": 0.7},
+    "water_drop": {"sky": 0.9, "burning": 0.8, "forest": 0.7, "smoke_area": 0.6},
+    "burned_tree": {"burning": 0.9, "forest": 0.8, "ground": 0.7},
+    "burned_area": {"ground": 1.0, "burning": 0.9, "forest": 0.6}
+  },
+  "effects": {
+    "domain_specific": [
+      {
+        "effect_id": "heat_distortion",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.15,
+          "wave_frequency": 0.02,
+          "apply_near_fire": true
+        }
+      },
+      {
+        "effect_id": "smoke_haze",
+        "enabled_by_default": true,
+        "parameters": {
+          "density": 0.15,
+          "color_rgb": [180, 170, 160],
+          "depth_based": true
+        }
+      },
+      {
+        "effect_id": "fire_glow",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.6,
+          "radius": 1.5,
+          "color_rgb": [255, 100, 0]
+        }
+      },
+      {
+        "effect_id": "ember_glow",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.8,
+          "color_rgb": [255, 140, 0]
+        }
+      }
+    ],
+    "disabled": ["underwater", "caustics", "water_attenuation"],
+    "universal_overrides": {
+      "color_correction": {"color_intensity": 0.08},
+      "lighting": {"lighting_type": "gradient", "lighting_intensity": 0.7},
+      "shadows": {"shadow_opacity": 0.15}
+    }
+  },
+  "physics": {
+    "physics_type": "aerial",
+    "medium_density": 0.001,
+    "float_threshold": 0.1,
+    "sink_threshold": 0.5,
+    "surface_zone": null,
+    "bottom_zone": 0.85,
+    "gravity_direction": "down"
+  },
+  "presets": [
+    {
+      "id": "wildfire",
+      "name": "Wildfire Detection",
+      "description": "Optimized for detecting wildfires in forest environments",
+      "icon": "TreePine",
+      "config": {
+        "heat_distortion": {"intensity": 0.2},
+        "smoke_haze": {"density": 0.2},
+        "fire_glow": {"intensity": 0.7}
+      }
+    },
+    {
+      "id": "urban_fire",
+      "name": "Urban Fire",
+      "description": "Building and structural fires in urban areas",
+      "icon": "Building2",
+      "config": {
+        "heat_distortion": {"intensity": 0.15},
+        "smoke_haze": {"density": 0.25, "color_rgb": [100, 100, 100]},
+        "fire_glow": {"intensity": 0.5}
+      }
+    },
+    {
+      "id": "smoke_only",
+      "name": "Smoke Detection Only",
+      "description": "Focus on smoke plumes without visible flames",
+      "icon": "Cloud",
+      "config": {
+        "heat_distortion": {"enabled": false},
+        "smoke_haze": {"density": 0.3},
+        "fire_glow": {"enabled": false}
+      }
+    }
+  ],
+  "labeling_templates": [
+    {
+      "id": "fire_detection",
+      "name": "Fire Detection",
+      "description": "Flames and burning areas",
+      "icon": "Flame",
+      "classes": ["flame", "flame_small", "flame_large", "ember", "burned_tree", "burned_area"]
+    },
+    {
+      "id": "smoke_detection",
+      "name": "Smoke Detection",
+      "description": "Smoke plumes and haze",
+      "icon": "Cloud",
+      "classes": ["smoke_plume", "smoke_column", "smoke_wisp", "ash"]
+    },
+    {
+      "id": "emergency_response",
+      "name": "Emergency Response",
+      "description": "Firefighters, vehicles, and equipment",
+      "icon": "Siren",
+      "classes": ["firefighter", "fire_truck", "helicopter", "water_drop"]
+    }
+  ]
+}
