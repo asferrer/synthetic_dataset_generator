@@ -24,6 +24,12 @@ import type {
   SegmentationRequest,
   SegmentationResult,
   ObjectSizeConfig,
+  Domain,
+  DomainSummary,
+  DomainCreateRequest,
+  DomainUpdateRequest,
+  CompatibilityCheckRequest,
+  CompatibilityCheckResponse,
 } from '@/types/api'
 
 // API Base URL - uses Gateway service
@@ -71,7 +77,7 @@ export async function getAllJobs(status?: string, limit = 100): Promise<Job[]> {
   // Fetch from all sources and combine
   const [augmentJobs, extractionJobs, sam3Jobs, labelingJobs] = await Promise.all([
     api.get('/augment/jobs', { params: { status, limit } }).then(r => r.data.jobs || []).catch(() => []),
-    segmentationApi.get('/extraction/jobs').then(r => r.data.jobs || []).catch(() => []),
+    segmentationApi.get('/extract/jobs').then(r => r.data.jobs || []).catch(() => []),
     segmentationApi.get('/sam3/jobs').then(r => r.data.jobs || []).catch(() => []),
     segmentationApi.get('/labeling/jobs').then(r => r.data.jobs || []).catch(() => []),
   ])
@@ -154,7 +160,7 @@ export async function listDatasets(type?: string, limit = 50): Promise<DatasetIn
 }
 
 export async function analyzeDataset(path: string): Promise<DatasetAnalysis> {
-  const response = await api.post('/augment/analyze', { path })
+  const response = await api.post('/datasets/analyze', { path })
   return response.data
 }
 
@@ -162,7 +168,7 @@ export async function uploadDataset(file: File, name?: string): Promise<{ succes
   const formData = new FormData()
   formData.append('file', file)
   if (name) formData.append('name', name)
-  const response = await api.post('/augment/datasets/upload', formData, {
+  const response = await api.post('/datasets/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 300000, // 5 minutes for large files
   })
@@ -183,7 +189,7 @@ export async function startGeneration(request: GenerationRequest): Promise<Gener
 // ===========================================
 
 export async function exportDataset(request: ExportRequest): Promise<ExportResult> {
-  const response = await api.post('/augment/export', request)
+  const response = await api.post('/datasets/export', request)
   return response.data
 }
 
@@ -205,7 +211,7 @@ export async function combineDatasets(
   mergeCategories = true,
   deduplicate = false
 ): Promise<CombineResult> {
-  const response = await api.post('/augment/combine', {
+  const response = await api.post('/datasets/combine', {
     dataset_paths: datasetPaths,
     output_dir: outputDir,
     merge_categories: mergeCategories,
@@ -231,7 +237,7 @@ export async function splitDataset(
   stratified = true,
   randomSeed?: number
 ): Promise<SplitResult> {
-  const response = await api.post('/augment/split', {
+  const response = await api.post('/datasets/split', {
     dataset_path: datasetPath,
     output_dir: outputDir,
     train_ratio: trainRatio,
@@ -257,7 +263,7 @@ export async function kFoldSplit(
   stratified = true,
   randomSeed?: number
 ): Promise<KFoldResult> {
-  const response = await api.post('/augment/kfold', {
+  const response = await api.post('/datasets/kfold', {
     dataset_path: datasetPath,
     output_dir: outputDir,
     num_folds: numFolds,
@@ -276,7 +282,7 @@ export async function renameCategory(
   oldName: string,
   newName: string
 ): Promise<{ success: boolean; renamed_count: number }> {
-  const response = await api.post('/augment/categories/rename', {
+  const response = await api.put('/datasets/categories/rename', {
     dataset_path: datasetPath,
     old_name: oldName,
     new_name: newName,
@@ -288,9 +294,11 @@ export async function deleteCategory(
   datasetPath: string,
   categoryName: string
 ): Promise<{ success: boolean; deleted_count: number }> {
-  const response = await api.post('/augment/categories/delete', {
-    dataset_path: datasetPath,
-    category_name: categoryName,
+  const response = await api.delete('/datasets/categories/delete', {
+    data: {
+      dataset_path: datasetPath,
+      category_name: categoryName,
+    },
   })
   return response.data
 }
@@ -372,17 +380,17 @@ export async function getLabelingPreviews(jobId: string, limit = 10): Promise<{ 
 // ===========================================
 
 export async function startExtraction(request: ExtractionRequest): Promise<ExtractionResult> {
-  const response = await segmentationApi.post('/extraction/start', request)
+  const response = await segmentationApi.post('/extract/objects', request)
   return response.data
 }
 
 export async function getExtractionStatus(jobId: string): Promise<ExtractionResult> {
-  const response = await segmentationApi.get(`/extraction/jobs/${jobId}`)
+  const response = await segmentationApi.get(`/extract/jobs/${jobId}`)
   return response.data
 }
 
 export async function cancelExtractionJob(jobId: string): Promise<{ success: boolean; message?: string }> {
-  const response = await segmentationApi.delete(`/extraction/jobs/${jobId}`)
+  const response = await segmentationApi.delete(`/extract/jobs/${jobId}`)
   return response.data
 }
 
@@ -391,7 +399,7 @@ export async function cancelExtractionJob(jobId: string): Promise<{ success: boo
 // ===========================================
 
 export async function startSamSegmentation(request: SegmentationRequest): Promise<{ job_id: string }> {
-  const response = await segmentationApi.post('/sam3/segment', request)
+  const response = await segmentationApi.post('/sam3/segment-image', request)
   return response.data
 }
 
@@ -410,22 +418,22 @@ export async function cancelSam3Job(jobId: string): Promise<{ success: boolean; 
 // ===========================================
 
 export async function getObjectSizes(): Promise<ObjectSizeConfig[]> {
-  const response = await api.get('/augment/object-sizes')
+  const response = await api.get('/config/object-sizes')
   return response.data.sizes || []
 }
 
-export async function updateObjectSize(config: ObjectSizeConfig): Promise<{ success: boolean }> {
-  const response = await api.post('/augment/object-sizes', config)
+export async function updateObjectSize(className: string, size: number): Promise<{ success: boolean }> {
+  const response = await api.put(`/config/object-sizes/${encodeURIComponent(className)}`, { size })
   return response.data
 }
 
 export async function deleteObjectSize(className: string): Promise<{ success: boolean }> {
-  const response = await api.delete(`/augment/object-sizes/${encodeURIComponent(className)}`)
+  const response = await api.delete(`/config/object-sizes/${encodeURIComponent(className)}`)
   return response.data
 }
 
-export async function updateMultipleObjectSizes(configs: ObjectSizeConfig[]): Promise<{ success: boolean; updated_count: number }> {
-  const response = await api.post('/augment/object-sizes/batch', { sizes: configs })
+export async function updateMultipleObjectSizes(sizes: Record<string, number>): Promise<{ success: boolean; updated_count: number }> {
+  const response = await api.post('/config/object-sizes/batch', { sizes })
   return response.data
 }
 
@@ -446,7 +454,7 @@ export async function sam3ConvertDataset(
   imagesDir: string,
   outputDir: string
 ): Promise<{ job_id: string }> {
-  const response = await segmentationApi.post('/sam3/convert', {
+  const response = await segmentationApi.post('/sam3/convert-dataset', {
     coco_json_path: cocoJsonPath,
     images_dir: imagesDir,
     output_dir: outputDir,
@@ -456,5 +464,89 @@ export async function sam3ConvertDataset(
 
 export async function getSam3JobStatus(jobId: string): Promise<Job> {
   const response = await segmentationApi.get(`/sam3/jobs/${jobId}`)
+  return response.data
+}
+
+// ===========================================
+// DOMAINS
+// ===========================================
+
+export async function listDomains(): Promise<DomainSummary[]> {
+  const response = await api.get('/domains')
+  return response.data
+}
+
+export async function getDomain(domainId: string): Promise<Domain> {
+  const response = await api.get(`/domains/${domainId}`)
+  return response.data
+}
+
+export async function getActiveDomain(): Promise<{ active_domain_id: string; domain: Domain }> {
+  const response = await api.get('/domains/active')
+  return response.data
+}
+
+export async function activateDomain(domainId: string): Promise<{ success: boolean; active_domain_id: string; message: string }> {
+  const response = await api.post(`/domains/${domainId}/activate`)
+  return response.data
+}
+
+export async function createDomain(request: DomainCreateRequest): Promise<Domain> {
+  const response = await api.post('/domains', request)
+  return response.data
+}
+
+export async function updateDomain(domainId: string, request: DomainUpdateRequest): Promise<Domain> {
+  const response = await api.put(`/domains/${domainId}`, request)
+  return response.data
+}
+
+export async function deleteDomain(domainId: string): Promise<{ success: boolean; message: string }> {
+  const response = await api.delete(`/domains/${domainId}`)
+  return response.data
+}
+
+export async function exportDomain(domainId: string): Promise<Domain> {
+  const response = await api.get(`/domains/${domainId}/export`)
+  return response.data
+}
+
+export async function importDomain(domainData: Domain, overwrite = false): Promise<Domain> {
+  const response = await api.post('/domains/import', domainData, { params: { overwrite } })
+  return response.data
+}
+
+export async function checkCompatibility(request: CompatibilityCheckRequest): Promise<CompatibilityCheckResponse> {
+  const response = await api.post('/domains/compatibility', request)
+  return response.data
+}
+
+export async function getDomainRegions(domainId: string): Promise<{ domain_id: string; regions: Domain['regions'] }> {
+  const response = await api.get(`/domains/${domainId}/regions`)
+  return response.data
+}
+
+export async function getDomainObjects(domainId: string): Promise<{ domain_id: string; objects: Domain['objects'] }> {
+  const response = await api.get(`/domains/${domainId}/objects`)
+  return response.data
+}
+
+export async function getDomainEffects(domainId: string): Promise<{ domain_id: string } & Domain['effects']> {
+  const response = await api.get(`/domains/${domainId}/effects`)
+  return response.data
+}
+
+export async function getDomainPresets(domainId: string): Promise<{ domain_id: string; presets: Domain['presets'] }> {
+  const response = await api.get(`/domains/${domainId}/presets`)
+  return response.data
+}
+
+export async function getDomainSam3Prompts(domainId: string): Promise<{ domain_id: string; prompts: Array<{ text: string; region_id: string }> }> {
+  const response = await api.get(`/domains/${domainId}/sam3-prompts`)
+  return response.data
+}
+
+export async function getDomainLabelingTemplates(domainId: string): Promise<{ domain_id: string; labeling_templates: Domain['labeling_templates'] }> {
+  const response = await api.get(`/domains/${domainId}/labeling-templates`)
   return response.data
 }
