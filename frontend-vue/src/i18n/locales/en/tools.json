@@ -1,0 +1,301 @@
+{
+  "jobMonitor": {
+    "title": "Job Monitor",
+    "subtitle": "Monitor and manage all running jobs",
+    "filters": {
+      "status": "Status",
+      "type": "Type"
+    },
+    "types": {
+      "generation": "Generation",
+      "labeling": "Labeling",
+      "extraction": "Extraction",
+      "sam3": "SAM3"
+    },
+    "columns": {
+      "jobId": "Job ID",
+      "type": "Type",
+      "status": "Status",
+      "progress": "Progress",
+      "created": "Created",
+      "actions": "Actions"
+    },
+    "actions": {
+      "viewLogs": "View Logs",
+      "cancel": "Cancel",
+      "retry": "Retry",
+      "delete": "Delete",
+      "regenerate": "Regenerate"
+    },
+    "confirmDelete": "Are you sure you want to delete this job? This action cannot be undone.",
+    "notifications": {
+      "cancelled": "Job Cancelled",
+      "cancelFailed": "Cancel Failed",
+      "resumed": "Job Resumed",
+      "resumeFailed": "Resume Failed",
+      "retried": "Job Retried",
+      "retryFailed": "Retry Failed",
+      "deleted": "Job Deleted",
+      "deleteFailed": "Delete Failed",
+      "regenerated": "Dataset Regenerated",
+      "regenerateFailed": "Regeneration Failed"
+    }
+  },
+  "serviceStatus": {
+    "title": "Service Status",
+    "subtitle": "Monitor the health of backend services",
+    "services": {
+      "gateway": "Gateway",
+      "depth": "Depth Service",
+      "segmentation": "Segmentation Service",
+      "effects": "Effects Service",
+      "augmentor": "Augmentor Service"
+    },
+    "status": {
+      "healthy": "Healthy",
+      "unhealthy": "Unhealthy",
+      "unknown": "Unknown"
+    },
+    "details": {
+      "uptime": "Uptime",
+      "version": "Version",
+      "gpuAvailable": "GPU Available",
+      "gpuMemory": "GPU Memory"
+    }
+  },
+  "objectExtraction": {
+    "title": "Object Extraction",
+    "subtitle": "Extract objects from images using segmentation",
+    "inputImage": "Input Image",
+    "inputImagePath": "Image Path",
+    "outputDirectory": "Output Directory",
+    "extractionMethod": "Extraction Method",
+    "methods": {
+      "sam3": "SAM3 Segmentation",
+      "contour": "Contour Detection",
+      "grabcut": "GrabCut"
+    },
+    "options": {
+      "minArea": "Minimum Area",
+      "padding": "Padding",
+      "saveOriginal": "Save Original Crop"
+    },
+    "actions": {
+      "extract": "Extract Objects",
+      "extractAll": "Extract All"
+    },
+    "notifications": {
+      "started": "Extraction Started",
+      "completed": "Extraction Complete",
+      "completedMsg": "Extracted {count} objects",
+      "failed": "Extraction Failed"
+    }
+  },
+  "labeling": {
+    "title": "Auto Labeling",
+    "subtitle": "Automatically label images using AI models (SAM3 - Segment Anything Model 3)",
+    "mode": {
+      "new": "New Labeling",
+      "relabel": "Relabeling"
+    },
+    "templates": {
+      "title": "Quick Templates",
+      "description": "Select a predefined template or configure manually",
+      "marineLife": "Marine Life",
+      "marineLifeDesc": "Fish, coral, sea creatures",
+      "vehicles": "Vehicles",
+      "vehiclesDesc": "Cars, trucks, motorcycles",
+      "people": "People & Poses",
+      "peopleDesc": "Person detection and poses",
+      "urban": "Urban Scene",
+      "urbanDesc": "Buildings, streets, signs",
+      "nature": "Nature & Wildlife",
+      "natureDesc": "Animals, plants, landscapes",
+      "food": "Food & Kitchen",
+      "foodDesc": "Food items and kitchenware",
+      "fashion": "Fashion & Clothing",
+      "fashionDesc": "Clothes and accessories"
+    },
+    "input": {
+      "imageDirectories": "Image Directories",
+      "classesToDetect": "Classes to Detect",
+      "classPlaceholder": "e.g., person, car, dog",
+      "addDirectory": "Add Directory",
+      "addClass": "Add Class"
+    },
+    "output": {
+      "title": "Output Settings",
+      "outputDirectory": "Output Directory",
+      "taskType": "Task Type",
+      "taskTypes": {
+        "detection": "Detection (Bounding Boxes)",
+        "segmentation": "Segmentation (Masks)",
+        "both": "Both Detection & Segmentation"
+      },
+      "minConfidence": "Min Confidence",
+      "useSam3": "Use SAM3 for Segmentation",
+      "useSam3Desc": "Generate precise segmentation masks"
+    },
+    "relabeling": {
+      "mode": "Relabel Mode",
+      "modes": {
+        "add": "Add - Keep existing, add new classes",
+        "replace": "Replace - Remove all, relabel everything",
+        "improve": "Improve - Enhance segmentation quality"
+      },
+      "existingAnnotations": "Existing Annotations Path (optional)"
+    },
+    "progress": {
+      "title": "Current Job Progress",
+      "processing": "Processing...",
+      "imagesProcessed": "{processed}/{total} images",
+      "annotationsCreated": "{count} annotations"
+    },
+    "metrics": {
+      "avgConfidence": "Avg Confidence",
+      "withDetections": "With Detections",
+      "noDetections": "No Detections",
+      "lowConfidence": "Low Confidence"
+    },
+    "warnings": {
+      "title": "Warnings"
+    },
+    "previews": {
+      "title": "Recent Detections"
+    },
+    "actions": {
+      "startLabeling": "Start Labeling",
+      "startRelabeling": "Start Relabeling"
+    },
+    "notifications": {
+      "templateApplied": "Template Applied",
+      "templateAppliedMsg": "Loaded {name} template with {count} classes",
+      "started": "Job Started",
+      "startedMsg": "Labeling job {id} started",
+      "completed": "Labeling Complete",
+      "completedMsg": "Processed {count} images",
+      "failed": "Labeling Failed",
+      "missingInput": "Missing Input",
+      "missingDirectories": "Please specify at least one image directory",
+      "missingClasses": "Please specify at least one class to detect"
+    },
+    "activeJobs": "Active Jobs",
+    "activeJobsMsg": "{count} labeling job(s) are currently running."
+  },
+  "samSegmentation": {
+    "title": "SAM3 Segmentation",
+    "subtitle": "Interactive segmentation and dataset conversion using Segment Anything Model 3.",
+    "modes": {
+      "text": "Text Segmentation",
+      "convert": "Dataset Conversion"
+    },
+    "textMode": {
+      "title": "Input",
+      "imagePath": "Image Path",
+      "textPrompt": "Text Prompt",
+      "textPromptPlaceholder": "e.g., car, person, dog",
+      "textPromptHint": "Describe the objects you want to segment",
+      "runSegmentation": "Run Segmentation",
+      "results": "Results",
+      "objectsFound": "Objects Found",
+      "object": "Object"
+    },
+    "convertMode": {
+      "sourceTitle": "Source Dataset",
+      "sourceDescription": "Convert bounding box annotations to precise segmentation masks using SAM3.",
+      "cocoJsonPath": "COCO JSON Path",
+      "imagesDirectory": "Images Directory",
+      "outputTitle": "Output Settings",
+      "outputDirectory": "Output Directory",
+      "minArea": "Minimum Area",
+      "minAreaUnit": "px²",
+      "minAreaHint": "Minimum mask area to keep",
+      "confidenceThreshold": "Confidence Threshold",
+      "confidenceHint": "Minimum confidence for mask predictions"
+    },
+    "progress": {
+      "title": "Conversion Progress",
+      "converting": "Converting...",
+      "jobId": "Job ID: {id}"
+    },
+    "actions": {
+      "startConversion": "Start Conversion"
+    },
+    "notifications": {
+      "segmentationComplete": "Segmentation Complete",
+      "segmentationCompleteMsg": "Found {count} objects",
+      "segmentationFailed": "Segmentation Failed",
+      "conversionStarted": "Conversion Started",
+      "conversionStartedMsg": "Job {id} started",
+      "conversionComplete": "Conversion Complete",
+      "conversionCompleteMsg": "Dataset has been converted with SAM3 masks",
+      "conversionFailed": "Conversion Failed",
+      "missingInput": "Missing Input",
+      "missingInputMsg": "Please fill in all required fields"
+    }
+  },
+  "labelManager": {
+    "title": "Label Manager",
+    "subtitle": "Manage and edit category labels in your datasets",
+    "selectDataset": "Select Dataset",
+    "categories": "Categories",
+    "categoryCount": "{count} categories",
+    "actions": {
+      "rename": "Rename",
+      "delete": "Delete",
+      "merge": "Merge"
+    },
+    "rename": {
+      "title": "Rename Category",
+      "currentName": "Current Name",
+      "newName": "New Name"
+    },
+    "notifications": {
+      "renamed": "Category Renamed",
+      "renamedMsg": "Renamed to \"{name}\"",
+      "deleted": "Category Deleted",
+      "failed": "Operation Failed"
+    }
+  },
+  "objectSizes": {
+    "title": "Object Sizes",
+    "subtitle": "Analyze and configure object size distributions",
+    "selectDataset": "Select Dataset",
+    "sizeDistribution": "Size Distribution",
+    "statistics": {
+      "min": "Min",
+      "max": "Max",
+      "avg": "Average",
+      "median": "Median"
+    },
+    "constraints": {
+      "title": "Size Constraints",
+      "minSize": "Minimum Size",
+      "maxSize": "Maximum Size"
+    }
+  },
+  "postProcessing": {
+    "title": "Post-Processing",
+    "subtitle": "Apply post-processing effects to generated images",
+    "selectDataset": "Select Dataset",
+    "effects": {
+      "title": "Effects",
+      "blur": "Blur",
+      "sharpen": "Sharpen",
+      "noise": "Add Noise",
+      "brightness": "Brightness",
+      "contrast": "Contrast",
+      "saturation": "Saturation"
+    },
+    "preview": "Preview",
+    "actions": {
+      "apply": "Apply Effects",
+      "reset": "Reset"
+    },
+    "notifications": {
+      "applied": "Effects Applied",
+      "appliedMsg": "Post-processing complete",
+      "failed": "Processing Failed"
+    }
+  }
+}
