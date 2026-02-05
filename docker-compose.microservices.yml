@@ -21,9 +21,11 @@ services:
       # Job database path
       - JOBS_DB_PATH=/shared/db/jobs.db
       # Filesystem endpoints configuration
+      - DATA_BASE_PATH=/app/datasets
       - DATA_DIR=/app/datasets
       - DATASETS_DIR=/app/datasets
       - UPLOADS_DIR=/app/datasets/uploads
+      - OUTPUT_PATH=/app/output
       # Domain configuration paths
       - DOMAINS_PATH=/app/config/domains
       - USER_DOMAINS_PATH=/shared/domains
@@ -135,11 +137,13 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
+      # Service uses lazy loading - health check passes immediately
+      # SAM3 model loads in background (check /model-status endpoint)
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
       interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 30s  # Fast startup with lazy SAM3 loading
     networks:
       - synth-network
     restart: unless-stopped
