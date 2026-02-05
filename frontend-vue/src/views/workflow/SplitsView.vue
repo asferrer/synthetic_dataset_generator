@@ -6,6 +6,7 @@ import { splitDataset, kFoldSplit, listDatasets, type SplitResult, type KFoldRes
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
+import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
@@ -186,10 +187,11 @@ loadDatasets()
             placeholder="Choose a dataset to split..."
           />
 
-          <BaseInput
+          <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
             placeholder="/data/splits"
+            path-mode="output"
             class="mt-4"
           />
         </div>

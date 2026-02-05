@@ -142,11 +142,13 @@ loadDatasets()
             placeholder="/data/dataset/annotations.json"
             :show-files="true"
             file-pattern="*.json"
+            path-mode="input"
           />
           <DirectoryBrowser
             v-model="imagesDir"
             label="Images Directory"
             placeholder="/data/dataset/images"
+            path-mode="input"
           />
         </div>
       </div>
@@ -160,6 +162,7 @@ loadDatasets()
             v-model="outputDir"
             label="Output Directory"
             placeholder="/data/extracted"
+            path-mode="output"
           />
 
           <div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import {
   segmentWithText,
@@ -21,6 +22,7 @@ import {
 import type { SegmentationResult, Job } from '@/types/api'
 
 const uiStore = useUiStore()
+const { t } = useI18n()
 
 // Mode
 const mode = ref<'text' | 'convert'>('text')
@@ -45,7 +47,7 @@ const error = ref<string | null>(null)
 
 async function runTextSegmentation() {
   if (!imagePath.value || !textPrompt.value) {
-    uiStore.showError('Missing Input', 'Please specify an image path and text prompt')
+    uiStore.showError(t('tools.samSegmentation.notifications.missingInput'), t('tools.samSegmentation.notifications.missingInputMsg'))
     return
   }
 
@@ -55,10 +57,10 @@ async function runTextSegmentation() {
 
   try {
     textResult.value = await segmentWithText(imagePath.value, textPrompt.value)
-    uiStore.showSuccess('Segmentation Complete', `Found ${textResult.value.masks.length} objects`)
+    uiStore.showSuccess(t('tools.samSegmentation.notifications.segmentationComplete'), t('tools.samSegmentation.notifications.segmentationCompleteMsg', { count: textResult.value.masks.length }))
   } catch (e: any) {
-    error.value = e.message || 'Segmentation failed'
-    uiStore.showError('Segmentation Failed', error.value)
+    error.value = e.message || t('tools.samSegmentation.notifications.segmentationFailed')
+    uiStore.showError(t('tools.samSegmentation.notifications.segmentationFailed'), error.value)
   } finally {
     textLoading.value = false
   }
@@ -66,7 +68,7 @@ async function runTextSegmentation() {
 
 async function startConversion() {
   if (!cocoJsonPath.value || !imagesDir.value || !outputDir.value) {
-    uiStore.showError('Missing Input', 'Please fill in all required fields')
+    uiStore.showError(t('tools.samSegmentation.notifications.missingInput'), t('tools.samSegmentation.notifications.missingInputMsg'))
     return
   }
 
@@ -82,11 +84,11 @@ async function startConversion() {
       { minArea: minArea.value, confidenceThreshold: confidenceThreshold.value }
     )
 
-    uiStore.showSuccess('Conversion Started', `Job ${response.job_id.slice(0, 8)} started`)
+    uiStore.showSuccess(t('tools.samSegmentation.notifications.conversionStarted'), t('tools.samSegmentation.notifications.conversionStartedMsg', { id: response.job_id.slice(0, 8) }))
     startPolling(response.job_id)
   } catch (e: any) {
-    error.value = e.message || 'Failed to start conversion'
-    uiStore.showError('Conversion Failed', error.value)
+    error.value = e.message || t('tools.samSegmentation.notifications.conversionFailed')
+    uiStore.showError(t('tools.samSegmentation.notifications.conversionFailed'), error.value)
     convertLoading.value = false
   }
 }
@@ -99,12 +101,12 @@ async function pollJobStatus(jobId: string) {
     if (job.status === 'completed') {
       stopPolling()
       convertLoading.value = false
-      uiStore.showSuccess('Conversion Complete', 'Dataset has been converted with SAM3 masks')
+      uiStore.showSuccess(t('tools.samSegmentation.notifications.conversionComplete'), t('tools.samSegmentation.notifications.conversionCompleteMsg'))
     } else if (job.status === 'failed') {
       stopPolling()
       convertLoading.value = false
-      error.value = job.error || 'Conversion failed'
-      uiStore.showError('Conversion Failed', error.value)
+      error.value = job.error || t('tools.samSegmentation.notifications.conversionFailed')
+      uiStore.showError(t('tools.samSegmentation.notifications.conversionFailed'), error.value)
     }
   } catch (e) {
     // Ignore polling errors
@@ -131,9 +133,9 @@ onUnmounted(() => {
   <div class="space-y-6">
     <!-- Header -->
     <div>
-      <h2 class="text-2xl font-bold text-white">SAM3 Segmentation</h2>
+      <h2 class="text-2xl font-bold text-white">{{ t('tools.samSegmentation.title') }}</h2>
       <p class="mt-1 text-gray-400">
-        Interactive segmentation and dataset conversion using Segment Anything Model 3.
+        {{ t('tools.samSegmentation.subtitle') }}
       </p>
     </div>
 
@@ -147,14 +149,14 @@ onUnmounted(() => {
         @click="mode = 'text'"
       >
         <Wand2 class="h-5 w-5" />
-        Text Segmentation
+        {{ t('tools.samSegmentation.modes.text') }}
       </BaseButton>
       <BaseButton
         :variant="mode === 'convert' ? 'primary' : 'outline'"
         @click="mode = 'convert'"
       >
         <Database class="h-5 w-5" />
-        Dataset Conversion
+        {{ t('tools.samSegmentation.modes.convert') }}
       </BaseButton>
     </div>
 
@@ -162,21 +164,22 @@ onUnmounted(() => {
     <div v-if="mode === 'text'" class="grid gap-6 lg:grid-cols-2">
       <!-- Input -->
       <div class="card p-6">
-        <h3 class="text-lg font-semibold text-white mb-4">Input</h3>
+        <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.samSegmentation.textMode.title') }}</h3>
 
         <div class="space-y-4">
           <DirectoryBrowser
             v-model="imagePath"
-            label="Image Path"
+            :label="t('tools.samSegmentation.textMode.imagePath')"
             placeholder="/data/images/example.jpg"
             :show-files="true"
             file-pattern="*.jpg,*.png,*.jpeg"
+            path-mode="input"
           />
           <BaseInput
             v-model="textPrompt"
-            label="Text Prompt"
-            placeholder="e.g., car, person, dog"
-            hint="Describe the objects you want to segment"
+            :label="t('tools.samSegmentation.textMode.textPrompt')"
+            :placeholder="t('tools.samSegmentation.textMode.textPromptPlaceholder')"
+            :hint="t('tools.samSegmentation.textMode.textPromptHint')"
           />
         </div>
 
@@ -187,26 +190,26 @@ onUnmounted(() => {
           @click="runTextSegmentation"
         >
           <Wand2 class="h-5 w-5" />
-          Run Segmentation
+          {{ t('tools.samSegmentation.textMode.runSegmentation') }}
         </BaseButton>
       </div>
 
       <!-- Results -->
       <div class="card p-6">
-        <h3 class="text-lg font-semibold text-white mb-4">Results</h3>
+        <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.samSegmentation.textMode.results') }}</h3>
 
         <div v-if="textLoading" class="flex justify-center py-12">
-          <LoadingSpinner message="Segmenting..." />
+          <LoadingSpinner :message="t('common.status.processing')" />
         </div>
 
         <div v-else-if="!textResult" class="text-center py-12 text-gray-400">
           <Box class="h-12 w-12 mx-auto mb-4 opacity-50" />
-          <p>Run segmentation to see results</p>
+          <p>{{ t('tools.samSegmentation.textMode.runSegmentation') }}</p>
         </div>
 
         <div v-else class="space-y-4">
           <div class="flex items-center justify-between">
-            <span class="text-gray-400">Objects Found</span>
+            <span class="text-gray-400">{{ t('tools.samSegmentation.textMode.objectsFound') }}</span>
             <span class="text-2xl font-bold text-primary">{{ textResult.masks.length }}</span>
           </div>
 
@@ -216,7 +219,7 @@ onUnmounted(() => {
               :key="index"
               class="flex items-center gap-3"
             >
-              <span class="w-20 text-sm text-gray-400">Object {{ index + 1 }}</span>
+              <span class="w-20 text-sm text-gray-400">{{ t('tools.samSegmentation.textMode.object') }} {{ index + 1 }}</span>
               <div class="flex-1 h-2 bg-background-tertiary rounded-full overflow-hidden">
                 <div
                   class="h-full bg-primary"
@@ -235,42 +238,45 @@ onUnmounted(() => {
       <div class="grid gap-6 lg:grid-cols-2">
         <!-- Input -->
         <div class="card p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Source Dataset</h3>
+          <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.samSegmentation.convertMode.sourceTitle') }}</h3>
           <p class="text-sm text-gray-400 mb-4">
-            Convert bounding box annotations to precise segmentation masks using SAM3.
+            {{ t('tools.samSegmentation.convertMode.sourceDescription') }}
           </p>
 
           <div class="space-y-4">
             <DirectoryBrowser
               v-model="cocoJsonPath"
-              label="COCO JSON Path"
+              :label="t('tools.samSegmentation.convertMode.cocoJsonPath')"
               placeholder="/data/dataset/annotations.json"
               :show-files="true"
               file-pattern="*.json"
+              path-mode="input"
             />
             <DirectoryBrowser
               v-model="imagesDir"
-              label="Images Directory"
+              :label="t('tools.samSegmentation.convertMode.imagesDirectory')"
               placeholder="/data/dataset/images"
+              path-mode="input"
             />
           </div>
         </div>
 
         <!-- Output -->
         <div class="card p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Output Settings</h3>
+          <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.samSegmentation.convertMode.outputTitle') }}</h3>
 
           <div class="space-y-4">
             <DirectoryBrowser
               v-model="outputDir"
-              label="Output Directory"
+              :label="t('tools.samSegmentation.convertMode.outputDirectory')"
               placeholder="/data/sam3_converted"
+              path-mode="output"
             />
 
             <div>
               <label class="text-sm text-gray-400 flex justify-between mb-2">
-                <span>Minimum Area</span>
-                <span class="text-white">{{ minArea }}px²</span>
+                <span>{{ t('tools.samSegmentation.convertMode.minArea') }}</span>
+                <span class="text-white">{{ minArea }}{{ t('tools.samSegmentation.convertMode.minAreaUnit') }}</span>
               </label>
               <input
                 type="range"
@@ -280,12 +286,12 @@ onUnmounted(() => {
                 step="10"
                 class="w-full accent-primary"
               />
-              <p class="text-xs text-gray-500 mt-1">Minimum mask area to keep</p>
+              <p class="text-xs text-gray-500 mt-1">{{ t('tools.samSegmentation.convertMode.minAreaHint') }}</p>
             </div>
 
             <div>
               <label class="text-sm text-gray-400 flex justify-between mb-2">
-                <span>Confidence Threshold</span>
+                <span>{{ t('tools.samSegmentation.convertMode.confidenceThreshold') }}</span>
                 <span class="text-white">{{ (confidenceThreshold * 100).toFixed(0) }}%</span>
               </label>
               <input
@@ -296,7 +302,7 @@ onUnmounted(() => {
                 step="0.05"
                 class="w-full accent-primary"
               />
-              <p class="text-xs text-gray-500 mt-1">Minimum confidence for mask predictions</p>
+              <p class="text-xs text-gray-500 mt-1">{{ t('tools.samSegmentation.convertMode.confidenceHint') }}</p>
             </div>
           </div>
         </div>
@@ -304,7 +310,7 @@ onUnmounted(() => {
 
       <!-- Conversion Progress -->
       <div v-if="currentJob" class="card p-6">
-        <h3 class="text-lg font-semibold text-white mb-4">Conversion Progress</h3>
+        <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.samSegmentation.progress.title') }}</h3>
 
         <div class="flex items-center gap-4 mb-4">
           <component
@@ -316,9 +322,9 @@ onUnmounted(() => {
           />
           <div class="flex-1">
             <p class="font-medium text-white">
-              {{ currentJob.status === 'running' ? 'Converting...' : currentJob.status }}
+              {{ currentJob.status === 'running' ? t('tools.samSegmentation.progress.converting') : currentJob.status }}
             </p>
-            <p class="text-sm text-gray-400">Job ID: {{ currentJob.job_id.slice(0, 8) }}...</p>
+            <p class="text-sm text-gray-400">{{ t('tools.samSegmentation.progress.jobId', { id: currentJob.job_id.slice(0, 8) }) }}...</p>
           </div>
           <span class="text-2xl font-bold text-primary">{{ currentJob.progress }}%</span>
         </div>
@@ -340,7 +346,7 @@ onUnmounted(() => {
           size="lg"
         >
           <Play class="h-5 w-5" />
-          Start Conversion
+          {{ t('tools.samSegmentation.actions.startConversion') }}
         </BaseButton>
       </div>
     </div>
