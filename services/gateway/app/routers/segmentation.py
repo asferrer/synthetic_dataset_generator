@@ -255,10 +255,10 @@ async def get_active_labeling_jobs():
     try:
         registry = get_service_registry()
         result = await registry.segmentation.get("/labeling/jobs", params={"status": "running"})
-        # Also get queued jobs
-        queued = await registry.segmentation.get("/labeling/jobs", params={"status": "queued"})
+        # Also get pending jobs
+        pending = await registry.segmentation.get("/labeling/jobs", params={"status": "pending"})
 
-        jobs = result.get("jobs", []) + queued.get("jobs", [])
+        jobs = result.get("jobs", []) + pending.get("jobs", [])
         return jobs
     except Exception as e:
         logger.error(f"Get active labeling jobs failed: {e}")
