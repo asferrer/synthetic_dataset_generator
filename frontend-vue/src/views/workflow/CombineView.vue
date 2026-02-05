@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
 import { combineDatasets, listDatasets, type CombineResult } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
-import BaseInput from '@/components/ui/BaseInput.vue'
+import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
@@ -161,10 +161,11 @@ loadDatasets()
       <h3 class="text-lg font-semibold text-white mb-4">Combine Options</h3>
 
       <div class="space-y-4">
-        <BaseInput
+        <DirectoryBrowser
           v-model="outputDir"
           label="Output Directory"
           placeholder="/data/combined"
+          path-mode="output"
         />
 
         <label class="flex items-center gap-3 cursor-pointer">

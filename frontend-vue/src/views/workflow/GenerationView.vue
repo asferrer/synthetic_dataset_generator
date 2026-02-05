@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUiStore } from '@/stores/ui'
 import { startGeneration, getJob, getActiveLabelingJobs } from '@/lib/api'
@@ -43,6 +44,7 @@ import type { Job, LabelingJob, ValidationConfig, BatchConfig, LightingEstimatio
 const router = useRouter()
 const workflowStore = useWorkflowStore()
 const uiStore = useUiStore()
+const { t } = useI18n()
 
 const generating = ref(false)
 const currentJob = ref<Job | null>(null)
@@ -63,20 +65,20 @@ const lightingConfig = ref<LightingEstimationConfig>(JSON.parse(JSON.stringify(w
 const metadata = ref<DatasetMetadata>(JSON.parse(JSON.stringify(workflowStore.metadata)))
 
 // Tab options
-const tabs = [
-  { name: 'Targets', icon: Target },
-  { name: 'Validation', icon: Shield },
-  { name: 'Processing', icon: Cpu },
-  { name: 'Lighting', icon: Sun },
-  { name: 'Metadata', icon: FileText },
-]
+const tabs = computed(() => [
+  { nameKey: 'workflow.generation.tabs.targets', icon: Target },
+  { nameKey: 'workflow.generation.tabs.validation', icon: Shield },
+  { nameKey: 'workflow.generation.tabs.processing', icon: Cpu },
+  { nameKey: 'workflow.generation.tabs.lighting', icon: Sun },
+  { nameKey: 'workflow.generation.tabs.metadata', icon: FileText },
+])
 
 // Options for selects
-const depthCategoryOptions = [
-  { value: 'shallow', label: 'Shallow (0-5m)' },
-  { value: 'mid', label: 'Mid (5-20m)' },
-  { value: 'deep', label: 'Deep (20m+)' },
-]
+const depthCategoryOptions = computed(() => [
+  { value: 'shallow', label: t('workflow.generation.lighting.depth.shallow') },
+  { value: 'mid', label: t('workflow.generation.lighting.depth.mid') },
+  { value: 'deep', label: t('workflow.generation.lighting.depth.deep') },
+])
 
 // Computed
 const canGenerate = computed(() => {
@@ -106,7 +108,7 @@ watch(() => workflowStore.metadata, (newVal) => {
 
 async function startGenerationJob() {
   if (!canGenerate.value) {
-    uiStore.showError('Missing Configuration', 'Please complete the previous steps first')
+    uiStore.showError(t('workflow.generation.configRequired'), t('workflow.generation.configRequiredMsg'))
     return
   }
 
@@ -140,11 +142,11 @@ async function startGenerationJob() {
     })
 
     workflowStore.setActiveJobId(response.job_id)
-    uiStore.showSuccess('Generation Started', `Job ID: ${response.job_id.slice(0, 8)}...`)
+    uiStore.showSuccess(t('workflow.generation.notifications.started'), t('workflow.generation.notifications.startedMsg', { id: response.job_id.slice(0, 8) }))
     startPolling(response.job_id)
   } catch (e: any) {
-    error.value = e.message || 'Failed to start generation'
-    uiStore.showError('Generation Failed', error.value)
+    error.value = e.message || t('workflow.generation.notifications.failed')
+    uiStore.showError(t('workflow.generation.notifications.failed'), error.value)
     generating.value = false
   }
 }
@@ -158,12 +160,12 @@ async function pollJobStatus(jobId: string) {
       stopPolling()
       generating.value = false
       workflowStore.markStepCompleted(4)
-      uiStore.showSuccess('Generation Complete', 'Your synthetic dataset is ready!')
+      uiStore.showSuccess(t('workflow.generation.notifications.completed'), t('workflow.generation.notifications.completedMsg'))
     } else if (job.status === 'failed') {
       stopPolling()
       generating.value = false
-      error.value = job.error || 'Job failed'
-      uiStore.showError('Generation Failed', error.value)
+      error.value = job.error || t('workflow.generation.notifications.failed')
+      uiStore.showError(t('workflow.generation.notifications.failed'), error.value)
     }
   } catch (e) {
     // Ignore polling errors
@@ -227,9 +229,9 @@ onUnmounted(() => {
   <div class="space-y-6">
     <!-- Header -->
     <div>
-      <h2 class="text-2xl font-bold text-white">Generate Synthetic Data</h2>
+      <h2 class="text-2xl font-bold text-white">{{ t('workflow.generation.title') }}</h2>
       <p class="mt-2 text-gray-400">
-        Configure generation targets, validation, and processing options.
+        {{ t('workflow.generation.subtitle') }}
       </p>
     </div>
 
@@ -237,15 +239,15 @@ onUnmounted(() => {
     <AlertBox v-if="error" type="error" :title="error" dismissible @dismiss="error = null" />
 
     <!-- Warning if missing configuration -->
-    <AlertBox v-if="!canGenerate" type="warning" title="Configuration Required">
-      Please complete the Analysis and Source Selection steps before generating.
+    <AlertBox v-if="!canGenerate" type="warning" :title="t('workflow.generation.configRequired')">
+      {{ t('workflow.generation.configRequiredMsg') }}
     </AlertBox>
 
     <!-- Active Labeling Jobs -->
-    <AlertBox v-if="activeLabelingJobs.length > 0" type="info" title="Active Labeling Jobs">
-      {{ activeLabelingJobs.length }} labeling job(s) are currently running.
+    <AlertBox v-if="activeLabelingJobs.length > 0" type="info" :title="t('workflow.generation.activeLabelingJobs')">
+      {{ t('workflow.generation.labelingJobsMsg', { count: activeLabelingJobs.length }) }}
       <router-link to="/tools/labeling" class="text-primary hover:underline ml-1">
-        View Jobs
+        {{ t('common.actions.viewJobs') }}
       </router-link>
     </AlertBox>
 
@@ -254,7 +256,7 @@ onUnmounted(() => {
       <TabList class="flex space-x-1 rounded-xl bg-gray-800/50 p-1 overflow-x-auto">
         <Tab
           v-for="tab in tabs"
-          :key="tab.name"
+          :key="tab.nameKey"
           v-slot="{ selected }"
           class="rounded-lg py-2 text-sm font-medium leading-5 transition-all focus:outline-none flex-shrink-0"
         >
@@ -267,7 +269,7 @@ onUnmounted(() => {
             ]"
           >
             <component :is="tab.icon" class="h-4 w-4" />
-            {{ tab.name }}
+            {{ t(tab.nameKey) }}
           </div>
         </Tab>
       </TabList>
@@ -278,21 +280,21 @@ onUnmounted(() => {
           <div class="grid gap-6 lg:grid-cols-2">
             <!-- Target Counts -->
             <div class="card p-6">
-              <h3 class="text-lg font-semibold text-white mb-4">Target Counts per Category</h3>
+              <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.targets.title') }}</h3>
               <p class="text-sm text-gray-400 mb-4">
-                Set how many images you want to generate for each category.
+                {{ t('workflow.generation.targets.description') }}
               </p>
 
               <!-- Bulk actions -->
               <div class="flex gap-2 mb-4">
-                <button @click="setAllTargets(50)" class="btn-outline text-xs px-2 py-1">Set All: 50</button>
-                <button @click="setAllTargets(100)" class="btn-outline text-xs px-2 py-1">Set All: 100</button>
-                <button @click="setAllTargets(200)" class="btn-outline text-xs px-2 py-1">Set All: 200</button>
-                <button @click="setAllTargets(500)" class="btn-outline text-xs px-2 py-1">Set All: 500</button>
+                <button @click="setAllTargets(50)" class="btn-outline text-xs px-2 py-1">{{ t('workflow.generation.targets.setAll') }}: 50</button>
+                <button @click="setAllTargets(100)" class="btn-outline text-xs px-2 py-1">{{ t('workflow.generation.targets.setAll') }}: 100</button>
+                <button @click="setAllTargets(200)" class="btn-outline text-xs px-2 py-1">{{ t('workflow.generation.targets.setAll') }}: 200</button>
+                <button @click="setAllTargets(500)" class="btn-outline text-xs px-2 py-1">{{ t('workflow.generation.targets.setAll') }}: 500</button>
               </div>
 
               <div v-if="Object.keys(targets).length === 0" class="text-center py-8 text-gray-400">
-                No categories found. Please analyze a dataset first.
+                {{ t('workflow.generation.targets.noCategories') }}
               </div>
 
               <div v-else class="space-y-3 max-h-80 overflow-y-auto pr-2">
@@ -323,14 +325,14 @@ onUnmounted(() => {
 
               <div class="mt-4 pt-4 border-t border-gray-700">
                 <p class="text-sm text-gray-400">
-                  Total images to generate: <span class="text-white font-semibold">{{ totalTargetImages }}</span>
+                  {{ t('workflow.generation.targets.totalImages', { count: totalTargetImages }) }}
                 </p>
               </div>
             </div>
 
             <!-- Generation Options -->
             <div class="card p-6">
-              <h3 class="text-lg font-semibold text-white mb-4">Generation Options</h3>
+              <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.options.title') }}</h3>
 
               <div class="space-y-4">
                 <div class="space-y-3">
@@ -341,8 +343,8 @@ onUnmounted(() => {
                       class="h-5 w-5 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
                     />
                     <div>
-                      <span class="text-gray-300">Use depth estimation</span>
-                      <p class="text-xs text-gray-500">Enables realistic depth-based object placement</p>
+                      <span class="text-gray-300">{{ t('workflow.generation.options.useDepth') }}</span>
+                      <p class="text-xs text-gray-500">{{ t('workflow.generation.options.useDepthDesc') }}</p>
                     </div>
                   </label>
 
@@ -353,8 +355,8 @@ onUnmounted(() => {
                       class="h-5 w-5 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
                     />
                     <div>
-                      <span class="text-gray-300">Use segmentation</span>
-                      <p class="text-xs text-gray-500">Enables precise object boundary detection</p>
+                      <span class="text-gray-300">{{ t('workflow.generation.options.useSegmentation') }}</span>
+                      <p class="text-xs text-gray-500">{{ t('workflow.generation.options.useSegmentationDesc') }}</p>
                     </div>
                   </label>
 
@@ -365,8 +367,8 @@ onUnmounted(() => {
                       class="h-5 w-5 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
                     />
                     <div>
-                      <span class="text-gray-300">Depth-aware placement</span>
-                      <p class="text-xs text-gray-500">Scale objects based on depth for realism</p>
+                      <span class="text-gray-300">{{ t('workflow.generation.options.depthAwarePlacement') }}</span>
+                      <p class="text-xs text-gray-500">{{ t('workflow.generation.options.depthAwarePlacementDesc') }}</p>
                     </div>
                   </label>
                 </div>
@@ -378,9 +380,9 @@ onUnmounted(() => {
         <!-- Validation Tab -->
         <TabPanel class="space-y-6">
           <div class="card p-6">
-            <h3 class="text-lg font-semibold text-white mb-4">Validation Settings</h3>
+            <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.validation.title') }}</h3>
             <p class="text-sm text-gray-400 mb-6">
-              Configure quality validation for generated images. Invalid images can be rejected or flagged.
+              {{ t('workflow.generation.validation.description') }}
             </p>
 
             <div class="grid gap-6 md:grid-cols-2">
@@ -388,8 +390,8 @@ onUnmounted(() => {
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Identity Validation</h4>
-                    <p class="text-xs text-gray-400">Verify objects maintain identity after transforms</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.validation.identity.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.validation.identity.description') }}</p>
                   </div>
                   <Switch
                     v-model="validationConfig.validate_identity"
@@ -401,21 +403,21 @@ onUnmounted(() => {
                 <div v-if="validationConfig.validate_identity" class="space-y-3">
                   <div>
                     <label class="text-sm text-gray-400 flex justify-between mb-1">
-                      <span>Max Color Shift</span>
+                      <span>{{ t('workflow.generation.validation.identity.maxColorShift') }}</span>
                       <span class="text-white font-mono">{{ validationConfig.max_color_shift }}</span>
                     </label>
                     <input type="range" v-model.number="validationConfig.max_color_shift" min="10" max="100" step="5" class="w-full accent-primary" />
                   </div>
                   <div>
                     <label class="text-sm text-gray-400 flex justify-between mb-1">
-                      <span>Min Sharpness Ratio</span>
+                      <span>{{ t('workflow.generation.validation.identity.minSharpnessRatio') }}</span>
                       <span class="text-white font-mono">{{ validationConfig.min_sharpness_ratio.toFixed(2) }}</span>
                     </label>
                     <input type="range" v-model.number="validationConfig.min_sharpness_ratio" min="0" max="1" step="0.05" class="w-full accent-primary" />
                   </div>
                   <div>
                     <label class="text-sm text-gray-400 flex justify-between mb-1">
-                      <span>Min Contrast Ratio</span>
+                      <span>{{ t('workflow.generation.validation.identity.minContrastRatio') }}</span>
                       <span class="text-white font-mono">{{ validationConfig.min_contrast_ratio.toFixed(2) }}</span>
                     </label>
                     <input type="range" v-model.number="validationConfig.min_contrast_ratio" min="0" max="1" step="0.05" class="w-full accent-primary" />
@@ -427,8 +429,8 @@ onUnmounted(() => {
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Quality Validation</h4>
-                    <p class="text-xs text-gray-400">Validate perceptual quality and anomalies</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.validation.quality.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.validation.quality.description') }}</p>
                   </div>
                   <Switch
                     v-model="validationConfig.validate_quality"
@@ -440,14 +442,14 @@ onUnmounted(() => {
                 <div v-if="validationConfig.validate_quality" class="space-y-3">
                   <div>
                     <label class="text-sm text-gray-400 flex justify-between mb-1">
-                      <span>Min Perceptual Quality</span>
+                      <span>{{ t('workflow.generation.validation.quality.minPerceptualQuality') }}</span>
                       <span class="text-white font-mono">{{ validationConfig.min_perceptual_quality.toFixed(2) }}</span>
                     </label>
                     <input type="range" v-model.number="validationConfig.min_perceptual_quality" min="0" max="1" step="0.05" class="w-full accent-primary" />
                   </div>
                   <div>
                     <label class="text-sm text-gray-400 flex justify-between mb-1">
-                      <span>Min Anomaly Score</span>
+                      <span>{{ t('workflow.generation.validation.quality.minAnomalyScore') }}</span>
                       <span class="text-white font-mono">{{ validationConfig.min_anomaly_score.toFixed(2) }}</span>
                     </label>
                     <input type="range" v-model.number="validationConfig.min_anomaly_score" min="0" max="1" step="0.05" class="w-full accent-primary" />
@@ -459,8 +461,8 @@ onUnmounted(() => {
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Physics Validation</h4>
-                    <p class="text-xs text-gray-400">Validate physically plausible placements</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.validation.physics.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.validation.physics.description') }}</p>
                   </div>
                   <Switch
                     v-model="validationConfig.validate_physics"
@@ -475,8 +477,8 @@ onUnmounted(() => {
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Reject Invalid Images</h4>
-                    <p class="text-xs text-gray-400">Discard images that fail validation</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.validation.rejectInvalid.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.validation.rejectInvalid.description') }}</p>
                   </div>
                   <Switch
                     v-model="validationConfig.reject_invalid"
@@ -493,17 +495,17 @@ onUnmounted(() => {
         <!-- Processing Tab -->
         <TabPanel class="space-y-6">
           <div class="card p-6">
-            <h3 class="text-lg font-semibold text-white mb-4">Batch Processing Settings</h3>
+            <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.processing.title') }}</h3>
             <p class="text-sm text-gray-400 mb-6">
-              Configure parallel processing and resource management.
+              {{ t('workflow.generation.processing.description') }}
             </p>
 
             <div class="grid gap-6 md:grid-cols-2">
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Parallel Processing</h4>
-                    <p class="text-xs text-gray-400">Process multiple images concurrently</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.processing.parallel.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.processing.parallel.description') }}</p>
                   </div>
                   <Switch
                     v-model="batchConfig.parallel"
@@ -515,31 +517,31 @@ onUnmounted(() => {
 
                 <div v-if="batchConfig.parallel">
                   <label class="text-sm text-gray-400 flex justify-between mb-1">
-                    <span>Concurrent Limit</span>
+                    <span>{{ t('workflow.generation.processing.parallel.concurrentLimit') }}</span>
                     <span class="text-white font-mono">{{ batchConfig.concurrent_limit }}</span>
                   </label>
                   <input type="range" v-model.number="batchConfig.concurrent_limit" min="1" max="16" step="1" class="w-full accent-primary" />
-                  <p class="text-xs text-gray-500 mt-1">Max concurrent generation tasks</p>
+                  <p class="text-xs text-gray-500 mt-1">{{ t('workflow.generation.processing.parallel.concurrentLimitDesc') }}</p>
                 </div>
               </div>
 
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
-                <h4 class="font-medium text-white">VRAM Management</h4>
+                <h4 class="font-medium text-white">{{ t('workflow.generation.processing.vram.title') }}</h4>
                 <div>
                   <label class="text-sm text-gray-400 flex justify-between mb-1">
-                    <span>VRAM Threshold</span>
+                    <span>{{ t('workflow.generation.processing.vram.threshold') }}</span>
                     <span class="text-white font-mono">{{ (batchConfig.vram_threshold * 100).toFixed(0) }}%</span>
                   </label>
                   <input type="range" v-model.number="batchConfig.vram_threshold" min="0.3" max="0.95" step="0.05" class="w-full accent-primary" />
-                  <p class="text-xs text-gray-500 mt-1">Stop adding tasks when VRAM exceeds this threshold</p>
+                  <p class="text-xs text-gray-500 mt-1">{{ t('workflow.generation.processing.vram.thresholdDesc') }}</p>
                 </div>
               </div>
 
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="font-medium text-white">Debug Output</h4>
-                    <p class="text-xs text-gray-400">Save pipeline debug information</p>
+                    <h4 class="font-medium text-white">{{ t('workflow.generation.processing.debug.title') }}</h4>
+                    <p class="text-xs text-gray-400">{{ t('workflow.generation.processing.debug.description') }}</p>
                   </div>
                   <Switch
                     v-model="batchConfig.save_pipeline_debug"
@@ -556,24 +558,24 @@ onUnmounted(() => {
         <!-- Lighting Tab -->
         <TabPanel class="space-y-6">
           <div class="card p-6">
-            <h3 class="text-lg font-semibold text-white mb-4">Lighting Estimation Settings</h3>
+            <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.lighting.title') }}</h3>
             <p class="text-sm text-gray-400 mb-6">
-              Configure how lighting is estimated from background images.
+              {{ t('workflow.generation.lighting.description') }}
             </p>
 
             <div class="grid gap-6 md:grid-cols-2">
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
-                <h4 class="font-medium text-white">Light Detection</h4>
+                <h4 class="font-medium text-white">{{ t('workflow.generation.lighting.detection.title') }}</h4>
                 <div>
                   <label class="text-sm text-gray-400 flex justify-between mb-1">
-                    <span>Max Light Sources</span>
+                    <span>{{ t('workflow.generation.lighting.detection.maxSources') }}</span>
                     <span class="text-white font-mono">{{ lightingConfig.max_light_sources }}</span>
                   </label>
                   <input type="range" v-model.number="lightingConfig.max_light_sources" min="1" max="10" step="1" class="w-full accent-primary" />
                 </div>
                 <div>
                   <label class="text-sm text-gray-400 flex justify-between mb-1">
-                    <span>Intensity Threshold</span>
+                    <span>{{ t('workflow.generation.lighting.detection.intensityThreshold') }}</span>
                     <span class="text-white font-mono">{{ lightingConfig.intensity_threshold.toFixed(2) }}</span>
                   </label>
                   <input type="range" v-model.number="lightingConfig.intensity_threshold" min="0.1" max="1" step="0.05" class="w-full accent-primary" />
@@ -581,9 +583,9 @@ onUnmounted(() => {
               </div>
 
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
-                <h4 class="font-medium text-white">Advanced Options</h4>
+                <h4 class="font-medium text-white">{{ t('workflow.generation.lighting.advanced.title') }}</h4>
                 <div class="flex items-center justify-between">
-                  <span class="text-sm text-gray-400">Estimate HDR</span>
+                  <span class="text-sm text-gray-400">{{ t('workflow.generation.lighting.advanced.estimateHdr') }}</span>
                   <Switch
                     v-model="lightingConfig.estimate_hdr"
                     :class="[lightingConfig.estimate_hdr ? 'bg-primary' : 'bg-gray-600', 'relative inline-flex h-5 w-9 items-center rounded-full transition-colors']"
@@ -592,7 +594,7 @@ onUnmounted(() => {
                   </Switch>
                 </div>
                 <div class="flex items-center justify-between">
-                  <span class="text-sm text-gray-400">Apply Water Attenuation</span>
+                  <span class="text-sm text-gray-400">{{ t('workflow.generation.lighting.advanced.waterAttenuation') }}</span>
                   <Switch
                     v-model="lightingConfig.apply_water_attenuation"
                     :class="[lightingConfig.apply_water_attenuation ? 'bg-primary' : 'bg-gray-600', 'relative inline-flex h-5 w-9 items-center rounded-full transition-colors']"
@@ -603,13 +605,13 @@ onUnmounted(() => {
               </div>
 
               <div class="space-y-4 p-4 bg-background-tertiary rounded-lg">
-                <h4 class="font-medium text-white">Depth Category</h4>
+                <h4 class="font-medium text-white">{{ t('workflow.generation.lighting.depth.title') }}</h4>
                 <BaseSelect
                   v-model="lightingConfig.depth_category"
-                  label="Water Depth"
+                  :label="t('workflow.generation.lighting.depth.label')"
                   :options="depthCategoryOptions"
                 />
-                <p class="text-xs text-gray-500">Affects light attenuation and color shift</p>
+                <p class="text-xs text-gray-500">{{ t('workflow.generation.lighting.depth.description') }}</p>
               </div>
             </div>
           </div>
@@ -618,48 +620,48 @@ onUnmounted(() => {
         <!-- Metadata Tab -->
         <TabPanel class="space-y-6">
           <div class="card p-6">
-            <h3 class="text-lg font-semibold text-white mb-4">Dataset Metadata</h3>
+            <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.metadata.title') }}</h3>
             <p class="text-sm text-gray-400 mb-6">
-              Add metadata to your generated dataset for documentation.
+              {{ t('workflow.generation.metadata.description') }}
             </p>
 
             <div class="grid gap-4 md:grid-cols-2">
               <BaseInput
                 v-model="metadata.name"
-                label="Dataset Name"
+                :label="t('workflow.generation.metadata.name')"
                 placeholder="My Synthetic Dataset"
               />
               <BaseInput
                 v-model="metadata.version"
-                label="Version"
+                :label="t('workflow.generation.metadata.version')"
                 placeholder="1.0"
               />
               <div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-300 mb-1">Description</label>
+                <label class="block text-sm font-medium text-gray-300 mb-1">{{ t('workflow.generation.metadata.descriptionField') }}</label>
                 <textarea
                   v-model="metadata.description"
                   class="input w-full h-24 resize-none"
-                  placeholder="Describe your dataset..."
+                  :placeholder="t('workflow.generation.metadata.descriptionPlaceholder')"
                 />
               </div>
               <BaseInput
                 v-model="metadata.contributor"
-                label="Contributor"
+                :label="t('workflow.generation.metadata.contributor')"
                 placeholder="Your name or organization"
               />
               <BaseInput
                 v-model="metadata.url"
-                label="URL"
+                :label="t('workflow.generation.metadata.url')"
                 placeholder="https://example.com"
               />
               <BaseInput
                 v-model="metadata.license_name"
-                label="License"
+                :label="t('workflow.generation.metadata.license')"
                 placeholder="CC BY 4.0"
               />
               <BaseInput
                 v-model="metadata.license_url"
-                label="License URL"
+                :label="t('workflow.generation.metadata.licenseUrl')"
                 placeholder="https://creativecommons.org/licenses/by/4.0/"
               />
             </div>
@@ -670,7 +672,7 @@ onUnmounted(() => {
 
     <!-- Job Progress -->
     <div v-if="currentJob" class="card p-6">
-      <h3 class="text-lg font-semibold text-white mb-4">Generation Progress</h3>
+      <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.progress.title') }}</h3>
 
       <div class="flex items-center gap-4 mb-4">
         <component
@@ -684,9 +686,9 @@ onUnmounted(() => {
         />
         <div class="flex-1">
           <p class="font-medium text-white">
-            {{ currentJob.status === 'running' ? 'Generating...' : currentJob.status }}
+            {{ currentJob.status === 'running' ? t('workflow.generation.progress.generating') : currentJob.status }}
           </p>
-          <p class="text-sm text-gray-400">Job ID: {{ currentJob.job_id.slice(0, 8) }}...</p>
+          <p class="text-sm text-gray-400">{{ t('workflow.generation.progress.jobId', { id: currentJob.job_id.slice(0, 8) }) }}...</p>
         </div>
         <span class="text-2xl font-bold text-primary">{{ currentJob.progress }}%</span>
       </div>
@@ -702,18 +704,18 @@ onUnmounted(() => {
     <!-- Metrics (after completion) -->
     <div v-if="currentJob?.status === 'completed'" class="grid gap-6 sm:grid-cols-3">
       <MetricCard
-        title="Images Generated"
+        :title="t('workflow.generation.results.imagesGenerated')"
         :value="(currentJob.result as any)?.generated_images || 0"
         :icon="Image"
         variant="success"
       />
       <MetricCard
-        title="Annotations"
+        :title="t('workflow.generation.results.annotations')"
         :value="(currentJob.result as any)?.generated_annotations || 0"
         :icon="Layers"
       />
       <MetricCard
-        title="Duration"
+        :title="t('workflow.generation.results.duration')"
         :value="`${((currentJob.result as any)?.duration_seconds || 0).toFixed(1)}s`"
         :icon="Clock"
       />
@@ -723,7 +725,7 @@ onUnmounted(() => {
     <div class="flex justify-between pt-4">
       <BaseButton variant="outline" @click="goBack">
         <ArrowLeft class="h-5 w-5" />
-        Back
+        {{ t('common.actions.back') }}
       </BaseButton>
 
       <div class="flex gap-4">
@@ -733,14 +735,14 @@ onUnmounted(() => {
           @click="startGenerationJob"
         >
           <Play class="h-5 w-5" />
-          Start Generation
+          {{ t('workflow.generation.actions.startGeneration') }}
         </BaseButton>
 
         <BaseButton
           v-if="currentJob?.status === 'completed'"
           @click="continueToExport"
         >
-          Continue to Export
+          {{ t('workflow.generation.actions.continueToExport') }}
           <ArrowRight class="h-5 w-5" />
         </BaseButton>
       </div>

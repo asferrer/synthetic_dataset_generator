@@ -7,6 +7,7 @@ import { exportDataset, listDatasets, analyzeDataset } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
+import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
@@ -173,15 +174,12 @@ loadDatasets()
             placeholder="Choose a dataset to export..."
           />
 
-          <BaseInput
+          <DirectoryBrowser
             v-model="selectedImagesDir"
             label="Images Directory"
             placeholder="/data/dataset/images"
-          >
-            <template #icon>
-              <FolderOpen class="h-5 w-5" />
-            </template>
-          </BaseInput>
+            path-mode="input"
+          />
 
           <!-- Dataset Info -->
           <div v-if="datasetAnalysis" class="mt-4 p-4 bg-background-tertiary rounded-lg">
@@ -205,10 +203,11 @@ loadDatasets()
             label="Export Format"
           />
 
-          <BaseInput
+          <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
             placeholder="/data/exports"
+            path-mode="output"
           />
 
           <label class="flex items-center gap-3 cursor-pointer">

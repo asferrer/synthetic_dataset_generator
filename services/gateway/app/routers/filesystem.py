@@ -6,7 +6,7 @@ Endpoints for filesystem operations (directory listing, file listing, image serv
 
 import logging
 import os
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -17,6 +17,10 @@ router = APIRouter(prefix="/filesystem", tags=["Filesystem"])
 
 # Base paths for data (can be configured via environment)
 DATA_BASE_PATH = os.environ.get("DATA_BASE_PATH", "/data")
+DATA_DIR = os.environ.get("DATA_DIR", "/data")
+BACKGROUNDS_PATH = os.environ.get("BACKGROUNDS_PATH", "/data/Backgrounds_filtered")
+OBJECTS_PATH = os.environ.get("OBJECTS_PATH", "/data/Objects")
+OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/data/output")
 
 
 class DirectoryListResponse(BaseModel):
@@ -46,12 +50,79 @@ class DirectoryContentsResponse(BaseModel):
     items: List[FileInfo]
 
 
+class MountPoint(BaseModel):
+    """Information about a mount point / volume"""
+    id: str = Field(..., description="Unique identifier")
+    name: str = Field(..., description="Display name")
+    path: str = Field(..., description="Filesystem path")
+    description: str = Field(..., description="Help text for users")
+    purpose: Literal["input", "output", "both"] = Field(..., description="Whether this is for input, output, or both")
+    icon: str = Field(..., description="Icon identifier for frontend")
+    is_writable: bool = Field(..., description="Whether outputs can be written here")
+    exists: bool = Field(..., description="Whether the path currently exists")
+
+
+class MountPointsResponse(BaseModel):
+    """Response for mount points listing"""
+    mount_points: List[MountPoint]
+    default_input: str = Field(..., description="Default path for input operations")
+    default_output: str = Field(..., description="Default path for output operations")
+
+
+# Mount points configuration - defines available volumes for the frontend
+MOUNT_POINTS_CONFIG = [
+    {
+        "id": "datasets",
+        "name": "Datasets",
+        "path": DATA_DIR,
+        "description": "Main dataset storage with backgrounds and objects",
+        "purpose": "both",
+        "icon": "database",
+        "is_writable": True,
+    },
+    {
+        "id": "backgrounds",
+        "name": "Backgrounds",
+        "path": BACKGROUNDS_PATH,
+        "description": "Background images for composition",
+        "purpose": "input",
+        "icon": "image",
+        "is_writable": False,
+    },
+    {
+        "id": "objects",
+        "name": "Objects",
+        "path": OBJECTS_PATH,
+        "description": "Extracted objects with masks",
+        "purpose": "input",
+        "icon": "box",
+        "is_writable": False,
+    },
+    {
+        "id": "output",
+        "name": "Output",
+        "path": OUTPUT_PATH,
+        "description": "Generated datasets and exports",
+        "purpose": "output",
+        "icon": "folder-output",
+        "is_writable": True,
+    },
+]
+
+
 def _is_safe_path(path: str) -> bool:
-    """Check if path is safe (within data directory)."""
+    """Check if path is safe (within allowed directories)."""
     try:
         resolved = Path(path).resolve()
         base = Path(DATA_BASE_PATH).resolve()
-        return str(resolved).startswith(str(base)) or str(resolved).startswith("/data")
+        output_base = Path(OUTPUT_PATH).resolve()
+        # Allow paths within DATA_BASE_PATH, OUTPUT_PATH, or legacy /data paths
+        return (
+            str(resolved).startswith(str(base)) or
+            str(resolved).startswith(str(output_base)) or
+            str(resolved).startswith("/data") or
+            str(resolved).startswith("/app")
+        )
     except Exception:
         return False
 
@@ -75,9 +146,7 @@ async def list_directories(
 
     # Check path safety
     if not _is_safe_path(path):
-        # Allow common data paths
-        if not path.startswith("/data"):
-            raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+        raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
 
     try:
         target_path = Path(path)
@@ -131,8 +200,7 @@ async def list_files(
 
     # Check path safety
     if not _is_safe_path(path):
-        if not path.startswith("/data"):
-            raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+        raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
 
     try:
         target_path = Path(path)
@@ -184,8 +252,7 @@ async def list_directory_contents(
 
     # Check path safety
     if not _is_safe_path(path):
-        if not path.startswith("/data"):
-            raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+        raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
 
     try:
         target_path = Path(path)
@@ -272,10 +339,9 @@ async def serve_image(path: str = Query(..., description="Path to image file")):
     try:
         target_path = Path(path)
 
-        # Security check - must be within data directory
+        # Security check - must be within allowed directories
         if not _is_safe_path(path):
-            if not path.startswith("/data"):
-                raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+            raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
 
         # Check if file exists
         if not target_path.exists():
@@ -313,3 +379,51 @@ async def serve_image(path: str = Query(..., description="Path to image file")):
     except Exception as e:
         logger.error(f"Failed to serve image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mount-points", response_model=MountPointsResponse)
+async def get_mount_points():
+    """
+    Get available mount points / volumes for path selection.
+
+    Returns a list of mount points that are available for the frontend
+    to use for directory selection. Each mount point includes metadata
+    about its purpose (input/output) and whether it exists.
+    """
+    logger.info("Get mount points")
+
+    mount_points = []
+    for config in MOUNT_POINTS_CONFIG:
+        path = Path(config["path"])
+        mount_points.append(MountPoint(
+            id=config["id"],
+            name=config["name"],
+            path=config["path"],
+            description=config["description"],
+            purpose=config["purpose"],
+            icon=config["icon"],
+            is_writable=config["is_writable"],
+            exists=path.exists()
+        ))
+
+    # Find defaults
+    default_input = DATA_DIR
+    default_output = OUTPUT_PATH
+
+    # Use first existing input mount as default
+    for mp in mount_points:
+        if mp.exists and mp.purpose in ("input", "both"):
+            default_input = mp.path
+            break
+
+    # Use first existing output mount as default
+    for mp in mount_points:
+        if mp.exists and mp.purpose in ("output", "both") and mp.is_writable:
+            default_output = mp.path
+            break
+
+    return MountPointsResponse(
+        mount_points=mount_points,
+        default_input=default_input,
+        default_output=default_output
+    )

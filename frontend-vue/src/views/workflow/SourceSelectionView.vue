@@ -5,7 +5,7 @@ import { useWorkflowStore } from '@/stores/workflow'
 import { useUiStore } from '@/stores/ui'
 import { listDirectories, listFiles, getImageUrl } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
-import BaseInput from '@/components/ui/BaseInput.vue'
+import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
@@ -274,12 +274,13 @@ loadDirectories()
     <!-- Output Directory -->
     <div class="card p-6">
       <h3 class="text-lg font-semibold text-white mb-4">Output Directory</h3>
-      <BaseInput
+      <DirectoryBrowser
         v-model="outputDir"
         label="Output Path"
         placeholder="/data/output/synthetic"
-        hint="Where the generated dataset will be saved"
+        path-mode="output"
       />
+      <p class="text-sm text-gray-500 mt-2">Where the generated dataset will be saved</p>
     </div>
 
     <!-- Navigation Buttons -->

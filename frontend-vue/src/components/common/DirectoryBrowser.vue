@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { listDirectories, listFiles, checkPathExists } from '@/lib/api'
+import { useMountPoints } from '@/composables/useMountPoints'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
@@ -13,6 +14,11 @@ import {
   Home,
   RefreshCw,
   Check,
+  Database,
+  Image,
+  Box,
+  FolderOutput,
+  AlertCircle,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -22,18 +28,38 @@ const props = withDefaults(defineProps<{
   showFiles?: boolean
   filePattern?: string
   basePath?: string
+  /** Filter mount points by purpose: 'input', 'output', or 'both' */
+  pathMode?: 'input' | 'output' | 'both'
+  /** Show quick access buttons for mount points */
+  showMountPoints?: boolean
+  /** Restrict path selection to valid mount points only */
+  restrictToMounts?: boolean
 }>(), {
   label: 'Select Directory',
   placeholder: '/data/...',
   showFiles: false,
   filePattern: '*',
   basePath: '/data',
+  pathMode: 'both',
+  showMountPoints: true,
+  restrictToMounts: true,
 })
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'select', path: string): void
 }>()
+
+// Mount points composable
+const {
+  mountPoints,
+  loading: mountPointsLoading,
+  loaded: mountPointsLoaded,
+  getFilteredMountPoints,
+  getDefaultPath,
+  isPathValid,
+  getMountPointForPath,
+} = useMountPoints()
 
 const isOpen = ref(false)
 const loading = ref(false)
@@ -42,6 +68,21 @@ const directories = ref<string[]>([])
 const files = ref<string[]>([])
 const manualPath = ref(props.modelValue || '')
 const error = ref<string | null>(null)
+const validationError = ref<string | null>(null)
+
+// Get filtered mount points based on pathMode
+const filteredMountPoints = computed(() => getFilteredMountPoints(props.pathMode))
+
+// Get current active mount point
+const activeMountPoint = computed(() => getMountPointForPath(currentPath.value))
+
+// Icon mapping for mount points
+const mountPointIcons: Record<string, any> = {
+  database: Database,
+  image: Image,
+  box: Box,
+  'folder-output': FolderOutput,
+}
 
 // Breadcrumb parts
 const breadcrumbs = computed(() => {
@@ -95,7 +136,26 @@ function navigateToRoot() {
   loadContents()
 }
 
+function navigateToMountPoint(path: string) {
+  currentPath.value = path
+  loadContents()
+}
+
+function validatePath(path: string): boolean {
+  if (!props.restrictToMounts) return true
+
+  const valid = isPathValid(path, props.pathMode)
+  if (!valid) {
+    validationError.value = 'Path must be within an allowed mount point'
+  } else {
+    validationError.value = null
+  }
+  return valid
+}
+
 function selectDirectory(dir: string) {
+  if (!validatePath(dir)) return
+
   manualPath.value = dir
   emit('update:modelValue', dir)
   emit('select', dir)
@@ -112,11 +172,18 @@ function selectFile(file: string) {
 async function applyManualPath() {
   if (!manualPath.value) return
 
+  // First validate against mount points
+  if (!validatePath(manualPath.value)) {
+    error.value = validationError.value
+    return
+  }
+
   const result = await checkPathExists(manualPath.value)
   if (result.exists) {
     emit('update:modelValue', manualPath.value)
     emit('select', manualPath.value)
     isOpen.value = false
+    error.value = null
   } else {
     error.value = 'Path does not exist'
   }
@@ -142,9 +209,21 @@ watch(() => props.modelValue, (newVal) => {
   manualPath.value = newVal
 })
 
+// Initialize with default path based on mode when mount points are loaded
+watch(mountPointsLoaded, (loaded) => {
+  if (loaded && !props.modelValue) {
+    const defaultPath = getDefaultPath(props.pathMode)
+    if (defaultPath) {
+      currentPath.value = defaultPath
+    }
+  }
+})
+
 onMounted(() => {
   if (props.modelValue) {
     manualPath.value = props.modelValue
+    // Also set currentPath for browser navigation
+    currentPath.value = props.modelValue
   }
 })
 </script>
@@ -155,18 +234,48 @@ onMounted(() => {
       {{ label }}
     </label>
 
+    <!-- Quick access mount points -->
+    <div v-if="showMountPoints && filteredMountPoints.length > 0" class="flex flex-wrap gap-2 mb-2">
+      <span class="text-xs text-gray-500 self-center mr-1">Quick access:</span>
+      <button
+        v-for="mp in filteredMountPoints"
+        :key="mp.id"
+        @click="navigateToMountPoint(mp.path); manualPath = mp.path"
+        :class="[
+          'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+          manualPath === mp.path || manualPath.startsWith(mp.path + '/')
+            ? 'bg-primary text-white'
+            : mp.exists
+              ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+        ]"
+        :disabled="!mp.exists"
+        :title="mp.description"
+      >
+        <component :is="mountPointIcons[mp.icon] || Folder" class="h-3 w-3" />
+        {{ mp.name }}
+      </button>
+    </div>
+
     <!-- Input with browse button -->
     <div class="flex gap-2">
       <BaseInput
         v-model="manualPath"
         :placeholder="placeholder"
         class="flex-1"
+        :class="{ 'border-red-500': validationError }"
         @keyup.enter="applyManualPath"
       />
       <BaseButton variant="outline" @click="toggleBrowser">
         <FolderOpen class="h-4 w-4" />
         Browse
       </BaseButton>
+    </div>
+
+    <!-- Validation error message -->
+    <div v-if="validationError" class="flex items-center gap-1 text-xs text-red-400 mt-1">
+      <AlertCircle class="h-3 w-3" />
+      {{ validationError }}
     </div>
 
     <!-- Browser Panel -->
