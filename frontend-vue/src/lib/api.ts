@@ -124,7 +124,7 @@ export async function cancelJobBySource(jobId: string, source: string): Promise<
 }
 
 export async function cancelJob(jobId: string): Promise<{ success: boolean; message?: string }> {
-  const response = await api.post(`/augment/jobs/${jobId}/cancel`)
+  const response = await api.delete(`/augment/jobs/${jobId}`)
   return response.data
 }
 
@@ -180,7 +180,7 @@ export async function uploadDataset(file: File, name?: string): Promise<{ succes
 // ===========================================
 
 export async function startGeneration(request: GenerationRequest): Promise<GenerationResult> {
-  const response = await api.post('/augment/compose/batch', request)
+  const response = await api.post('/augment/compose-batch', request)
   return response.data
 }
 
@@ -307,8 +307,32 @@ export async function deleteCategory(
 // FILE SYSTEM
 // ===========================================
 
-export async function listDirectories(path = '/data'): Promise<string[]> {
-  const response = await api.get('/filesystem/directories', { params: { path } })
+export interface MountPoint {
+  id: string
+  name: string
+  path: string
+  description: string
+  purpose: 'input' | 'output' | 'both'
+  icon: string
+  is_writable: boolean
+  exists: boolean
+}
+
+export interface MountPointsResponse {
+  mount_points: MountPoint[]
+  default_input: string
+  default_output: string
+}
+
+export async function getMountPoints(): Promise<MountPointsResponse> {
+  const response = await api.get('/filesystem/mount-points')
+  return response.data
+}
+
+export async function listDirectories(path?: string): Promise<string[]> {
+  const params: Record<string, any> = {}
+  if (path) params.path = path
+  const response = await api.get('/filesystem/directories', { params })
   return response.data.directories || []
 }
 
@@ -370,7 +394,20 @@ export async function deleteLabelingJob(jobId: string, deleteFiles = false): Pro
   return response.data
 }
 
-export async function getLabelingPreviews(jobId: string, limit = 10): Promise<{ previews: any[] }> {
+export interface LabelingPreview {
+  filename: string
+  image_data: string
+  timestamp: string
+}
+
+export interface LabelingPreviewsResponse {
+  job_id: string
+  previews: LabelingPreview[]
+  total: number
+  message?: string
+}
+
+export async function getLabelingPreviews(jobId: string, limit = 10): Promise<LabelingPreviewsResponse> {
   const response = await segmentationApi.get(`/labeling/jobs/${jobId}/previews`, { params: { limit } })
   return response.data
 }
@@ -442,7 +479,7 @@ export async function updateMultipleObjectSizes(sizes: Record<string, number>): 
 // ===========================================
 
 export async function segmentWithText(imagePath: string, textPrompt: string): Promise<SegmentationResult> {
-  const response = await segmentationApi.post('/sam3/segment-text', {
+  const response = await segmentationApi.post('/segment-text', {
     image_path: imagePath,
     text_prompt: textPrompt,
   })

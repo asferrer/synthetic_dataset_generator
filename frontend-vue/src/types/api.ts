@@ -351,7 +351,7 @@ export interface LabelingRequest {
   output_dir: string
   min_confidence?: number
   task_type?: LabelingTaskType
-  use_sam2?: boolean
+  use_sam3?: boolean
   box_threshold?: number
   text_threshold?: number
 }
@@ -364,7 +364,7 @@ export interface RelabelingRequest {
   min_confidence?: number
   existing_annotations?: string
   task_type?: LabelingTaskType
-  use_sam2?: boolean
+  use_sam3?: boolean
 }
 
 export interface LabelingResult {
@@ -375,6 +375,14 @@ export interface LabelingResult {
   annotations_per_class: Record<string, number>
 }
 
+export interface LabelingQualityMetrics {
+  avg_confidence: number
+  images_with_detections: number
+  images_without_detections: number
+  low_confidence_count: number
+  total_detections: number
+}
+
 export interface LabelingJob {
   job_id: string
   status: JobStatus
@@ -383,6 +391,9 @@ export interface LabelingJob {
   processed_images: number
   total_images: number
   annotations_created: number
+  objects_by_class?: Record<string, number>
+  warnings?: string[]
+  quality_metrics?: LabelingQualityMetrics
   created_at: string
   started_at?: string
   completed_at?: string

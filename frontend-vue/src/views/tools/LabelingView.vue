@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import {
   startLabeling,
@@ -7,10 +8,13 @@ import {
   getLabelingStatus,
   getActiveLabelingJobs,
   listDirectories,
+  getLabelingPreviews,
+  type LabelingPreview,
 } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
+import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
@@ -34,13 +38,14 @@ import {
 import type { LabelingJob, LabelingTaskType, RelabelMode } from '@/types/api'
 
 const uiStore = useUiStore()
+const { t } = useI18n()
 
 // Predefined labeling templates
 interface LabelingTemplate {
   id: string
-  name: string
+  nameKey: string
+  descKey: string
   icon: any
-  description: string
   classes: string[]
   taskType: LabelingTaskType
   confidence: number
@@ -49,63 +54,63 @@ interface LabelingTemplate {
 const labelingTemplates: LabelingTemplate[] = [
   {
     id: 'marine_life',
-    name: 'Marine Life',
+    nameKey: 'tools.labeling.templates.marineLife',
+    descKey: 'tools.labeling.templates.marineLifeDesc',
     icon: Fish,
-    description: 'Fish, coral, sea creatures',
     classes: ['fish', 'coral', 'shark', 'turtle', 'jellyfish', 'octopus', 'starfish', 'crab', 'dolphin', 'whale'],
     taskType: 'both',
     confidence: 0.35,
   },
   {
     id: 'vehicles',
-    name: 'Vehicles',
+    nameKey: 'tools.labeling.templates.vehicles',
+    descKey: 'tools.labeling.templates.vehiclesDesc',
     icon: Car,
-    description: 'Cars, trucks, motorcycles',
     classes: ['car', 'truck', 'bus', 'motorcycle', 'bicycle', 'boat', 'airplane', 'train'],
     taskType: 'detection',
     confidence: 0.4,
   },
   {
     id: 'people',
-    name: 'People & Poses',
+    nameKey: 'tools.labeling.templates.people',
+    descKey: 'tools.labeling.templates.peopleDesc',
     icon: Users,
-    description: 'Person detection and poses',
     classes: ['person', 'face', 'hand', 'head'],
     taskType: 'both',
     confidence: 0.35,
   },
   {
     id: 'urban',
-    name: 'Urban Scene',
+    nameKey: 'tools.labeling.templates.urban',
+    descKey: 'tools.labeling.templates.urbanDesc',
     icon: Building,
-    description: 'Buildings, streets, signs',
     classes: ['building', 'traffic light', 'stop sign', 'street sign', 'bench', 'parking meter', 'fire hydrant'],
     taskType: 'detection',
     confidence: 0.4,
   },
   {
     id: 'nature',
-    name: 'Nature & Wildlife',
+    nameKey: 'tools.labeling.templates.nature',
+    descKey: 'tools.labeling.templates.natureDesc',
     icon: TreePine,
-    description: 'Animals, plants, landscapes',
     classes: ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'tree', 'flower'],
     taskType: 'both',
     confidence: 0.35,
   },
   {
     id: 'food',
-    name: 'Food & Kitchen',
+    nameKey: 'tools.labeling.templates.food',
+    descKey: 'tools.labeling.templates.foodDesc',
     icon: Utensils,
-    description: 'Food items and kitchenware',
     classes: ['apple', 'banana', 'orange', 'pizza', 'sandwich', 'cake', 'cup', 'bowl', 'bottle', 'knife', 'fork', 'spoon'],
     taskType: 'detection',
     confidence: 0.4,
   },
   {
     id: 'fashion',
-    name: 'Fashion & Clothing',
+    nameKey: 'tools.labeling.templates.fashion',
+    descKey: 'tools.labeling.templates.fashionDesc',
     icon: Shirt,
-    description: 'Clothes and accessories',
     classes: ['shirt', 'pants', 'dress', 'shoe', 'hat', 'bag', 'tie', 'watch', 'glasses', 'backpack'],
     taskType: 'detection',
     confidence: 0.35,
@@ -119,7 +124,10 @@ function applyTemplate(template: LabelingTemplate) {
   classes.value = [...template.classes]
   taskType.value = template.taskType
   minConfidence.value = template.confidence
-  uiStore.showSuccess('Template Applied', `Loaded ${template.name} template with ${template.classes.length} classes`)
+  uiStore.showSuccess(
+    t('tools.labeling.notifications.templateApplied'),
+    t('tools.labeling.notifications.templateAppliedMsg', { name: t(template.nameKey), count: template.classes.length })
+  )
 }
 
 function clearTemplate() {
@@ -133,7 +141,7 @@ const classes = ref<string[]>([''])
 const outputDir = ref('/data/labeled')
 const minConfidence = ref(0.3)
 const taskType = ref<LabelingTaskType>('detection')
-const useSam2 = ref(true)
+const useSam3 = ref(true)
 const boxThreshold = ref(0.25)
 const textThreshold = ref(0.25)
 
@@ -150,17 +158,22 @@ const currentJob = ref<LabelingJob | null>(null)
 const error = ref<string | null>(null)
 let pollingInterval: ReturnType<typeof setInterval> | null = null
 
-const taskTypeOptions = [
-  { value: 'detection', label: 'Detection (Bounding Boxes)' },
-  { value: 'segmentation', label: 'Segmentation (Masks)' },
-  { value: 'both', label: 'Both Detection & Segmentation' },
-]
+// Preview state
+const recentPreviews = ref<LabelingPreview[]>([])
+const selectedPreview = ref<LabelingPreview | null>(null)
+let previewPollingInterval: ReturnType<typeof setInterval> | null = null
 
-const relabelModeOptions = [
-  { value: 'add', label: 'Add - Keep existing, add new classes' },
-  { value: 'replace', label: 'Replace - Remove all, relabel everything' },
-  { value: 'improve_segmentation', label: 'Improve - Enhance segmentation quality' },
-]
+const taskTypeOptions = computed(() => [
+  { value: 'detection', label: t('tools.labeling.output.taskTypes.detection') },
+  { value: 'segmentation', label: t('tools.labeling.output.taskTypes.segmentation') },
+  { value: 'both', label: t('tools.labeling.output.taskTypes.both') },
+])
+
+const relabelModeOptions = computed(() => [
+  { value: 'add', label: t('tools.labeling.relabeling.modes.add') },
+  { value: 'replace', label: t('tools.labeling.relabeling.modes.replace') },
+  { value: 'improve_segmentation', label: t('tools.labeling.relabeling.modes.improve') },
+])
 
 async function loadDirectories() {
   try {
@@ -199,12 +212,12 @@ async function startJob() {
   const validClasses = classes.value.filter(c => c.trim())
 
   if (validDirs.length === 0) {
-    uiStore.showError('Missing Input', 'Please specify at least one image directory')
+    uiStore.showError(t('tools.labeling.notifications.missingInput'), t('tools.labeling.notifications.missingDirectories'))
     return
   }
 
   if (!isRelabeling.value && validClasses.length === 0) {
-    uiStore.showError('Missing Input', 'Please specify at least one class to detect')
+    uiStore.showError(t('tools.labeling.notifications.missingInput'), t('tools.labeling.notifications.missingClasses'))
     return
   }
 
@@ -223,7 +236,7 @@ async function startJob() {
         min_confidence: minConfidence.value,
         existing_annotations: existingAnnotations.value || undefined,
         task_type: taskType.value,
-        use_sam2: useSam2.value,
+        use_sam3: useSam3.value,
       })
     } else {
       response = await startLabeling({
@@ -232,17 +245,17 @@ async function startJob() {
         output_dir: outputDir.value,
         min_confidence: minConfidence.value,
         task_type: taskType.value,
-        use_sam2: useSam2.value,
+        use_sam3: useSam3.value,
         box_threshold: boxThreshold.value,
         text_threshold: textThreshold.value,
       })
     }
 
-    uiStore.showSuccess('Job Started', `Labeling job ${response.job_id.slice(0, 8)} started`)
+    uiStore.showSuccess(t('tools.labeling.notifications.started'), t('tools.labeling.notifications.startedMsg', { id: response.job_id.slice(0, 8) }))
     startPolling(response.job_id)
   } catch (e: any) {
-    error.value = e.message || 'Failed to start labeling job'
-    uiStore.showError('Job Failed', error.value)
+    error.value = e.message || t('tools.labeling.notifications.failed')
+    uiStore.showError(t('tools.labeling.notifications.failed'), error.value)
   } finally {
     loading.value = false
   }
@@ -256,9 +269,9 @@ async function pollJobStatus(jobId: string) {
     if (job.status === 'completed' || job.status === 'failed') {
       stopPolling()
       if (job.status === 'completed') {
-        uiStore.showSuccess('Labeling Complete', `Processed ${job.processed_images} images`)
+        uiStore.showSuccess(t('tools.labeling.notifications.completed'), t('tools.labeling.notifications.completedMsg', { count: job.processed_images }))
       } else {
-        uiStore.showError('Labeling Failed', job.error || 'Unknown error')
+        uiStore.showError(t('tools.labeling.notifications.failed'), job.error || t('common.errors.generic'))
       }
     }
   } catch (e) {
@@ -266,8 +279,21 @@ async function pollJobStatus(jobId: string) {
   }
 }
 
+async function pollPreviews(jobId: string) {
+  try {
+    const response = await getLabelingPreviews(jobId, 5)
+    recentPreviews.value = response.previews || []
+  } catch (e) {
+    // Ignore preview polling errors
+  }
+}
+
 function startPolling(jobId: string) {
   pollingInterval = setInterval(() => pollJobStatus(jobId), 2000)
+  // Poll previews less frequently (every 5 seconds)
+  previewPollingInterval = setInterval(() => pollPreviews(jobId), 5000)
+  // Initial preview load
+  pollPreviews(jobId)
 }
 
 function stopPolling() {
@@ -275,6 +301,13 @@ function stopPolling() {
     clearInterval(pollingInterval)
     pollingInterval = null
   }
+  if (previewPollingInterval) {
+    clearInterval(previewPollingInterval)
+    previewPollingInterval = null
+  }
+  // Clear previews on job completion
+  recentPreviews.value = []
+  selectedPreview.value = null
 }
 
 onMounted(() => {
@@ -291,15 +324,15 @@ onUnmounted(() => {
   <div class="space-y-6">
     <!-- Header -->
     <div>
-      <h2 class="text-2xl font-bold text-white">Auto Labeling</h2>
+      <h2 class="text-2xl font-bold text-white">{{ t('tools.labeling.title') }}</h2>
       <p class="mt-1 text-gray-400">
-        Automatically label images using AI models (GroundingDINO + SAM2)
+        {{ t('tools.labeling.subtitle') }}
       </p>
     </div>
 
     <!-- Active Jobs Alert -->
-    <AlertBox v-if="activeJobs.length > 0" type="info" title="Active Jobs">
-      {{ activeJobs.length }} labeling job(s) are currently running.
+    <AlertBox v-if="activeJobs.length > 0" type="info" :title="t('tools.labeling.activeJobs')">
+      {{ t('tools.labeling.activeJobsMsg', { count: activeJobs.length }) }}
     </AlertBox>
 
     <!-- Error -->
@@ -312,14 +345,14 @@ onUnmounted(() => {
         @click="isRelabeling = false"
       >
         <Tags class="h-5 w-5" />
-        New Labeling
+        {{ t('tools.labeling.mode.new') }}
       </BaseButton>
       <BaseButton
         :variant="isRelabeling ? 'primary' : 'outline'"
         @click="isRelabeling = true"
       >
         <RefreshCw class="h-5 w-5" />
-        Relabeling
+        {{ t('tools.labeling.mode.relabel') }}
       </BaseButton>
     </div>
 
@@ -329,9 +362,9 @@ onUnmounted(() => {
         <div>
           <h3 class="text-lg font-semibold text-white flex items-center gap-2">
             <Sparkles class="h-5 w-5 text-yellow-400" />
-            Quick Templates
+            {{ t('tools.labeling.templates.title') }}
           </h3>
-          <p class="text-sm text-gray-400">Select a predefined template or configure manually</p>
+          <p class="text-sm text-gray-400">{{ t('tools.labeling.templates.description') }}</p>
         </div>
         <BaseButton
           v-if="selectedTemplate"
@@ -340,7 +373,7 @@ onUnmounted(() => {
           @click="clearTemplate"
         >
           <X class="h-4 w-4" />
-          Clear
+          {{ t('common.actions.clear') }}
         </BaseButton>
       </div>
 
@@ -358,8 +391,8 @@ onUnmounted(() => {
         >
           <component :is="template.icon" class="h-8 w-8 text-primary" />
           <div>
-            <p class="text-sm font-medium text-white">{{ template.name }}</p>
-            <p class="text-xs text-gray-400">{{ template.description }}</p>
+            <p class="text-sm font-medium text-white">{{ t(template.nameKey) }}</p>
+            <p class="text-xs text-gray-400">{{ t(template.descKey) }}</p>
           </div>
         </button>
       </div>
@@ -368,23 +401,26 @@ onUnmounted(() => {
     <div class="grid gap-6 lg:grid-cols-2">
       <!-- Input Configuration -->
       <div class="card p-6">
-        <h3 class="text-lg font-semibold text-white mb-4">Image Directories</h3>
+        <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.labeling.input.imageDirectories') }}</h3>
 
         <div class="space-y-3">
           <div
             v-for="(dir, index) in imageDirectories"
             :key="index"
-            class="flex gap-2"
+            class="flex gap-2 items-start"
           >
-            <BaseInput
+            <DirectoryBrowser
               v-model="imageDirectories[index]"
+              :label="index === 0 ? '' : undefined"
               placeholder="/data/images"
+              path-mode="input"
               class="flex-1"
             />
             <BaseButton
               v-if="imageDirectories.length > 1"
               variant="ghost"
               size="sm"
+              class="mt-8"
               @click="removeDirectory(index)"
             >
               <X class="h-4 w-4" />
@@ -392,13 +428,13 @@ onUnmounted(() => {
           </div>
           <BaseButton variant="outline" size="sm" @click="addDirectory">
             <Plus class="h-4 w-4" />
-            Add Directory
+            {{ t('tools.labeling.input.addDirectory') }}
           </BaseButton>
         </div>
 
         <!-- Classes (for new labeling) -->
         <div v-if="!isRelabeling" class="mt-6">
-          <h4 class="text-md font-medium text-white mb-3">Classes to Detect</h4>
+          <h4 class="text-md font-medium text-white mb-3">{{ t('tools.labeling.input.classesToDetect') }}</h4>
           <div class="space-y-3">
             <div
               v-for="(cls, index) in classes"
@@ -407,7 +443,7 @@ onUnmounted(() => {
             >
               <BaseInput
                 v-model="classes[index]"
-                placeholder="e.g., person, car, dog"
+                :placeholder="t('tools.labeling.input.classPlaceholder')"
                 class="flex-1"
               />
               <BaseButton
@@ -421,7 +457,7 @@ onUnmounted(() => {
             </div>
             <BaseButton variant="outline" size="sm" @click="addClass">
               <Plus class="h-4 w-4" />
-              Add Class
+              {{ t('tools.labeling.input.addClass') }}
             </BaseButton>
           </div>
         </div>
@@ -431,36 +467,40 @@ onUnmounted(() => {
           <BaseSelect
             v-model="relabelMode"
             :options="relabelModeOptions"
-            label="Relabel Mode"
+            :label="t('tools.labeling.relabeling.mode')"
           />
-          <BaseInput
+          <DirectoryBrowser
             v-model="existingAnnotations"
-            label="Existing Annotations Path (optional)"
+            :label="t('tools.labeling.relabeling.existingAnnotations')"
             placeholder="/data/annotations.json"
+            :show-files="true"
+            file-pattern="*.json"
+            path-mode="input"
           />
         </div>
       </div>
 
       <!-- Output & Model Settings -->
       <div class="card p-6">
-        <h3 class="text-lg font-semibold text-white mb-4">Output Settings</h3>
+        <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.labeling.output.title') }}</h3>
 
         <div class="space-y-4">
-          <BaseInput
+          <DirectoryBrowser
             v-model="outputDir"
-            label="Output Directory"
+            :label="t('tools.labeling.output.outputDirectory')"
             placeholder="/data/labeled"
+            path-mode="output"
           />
 
           <BaseSelect
             v-model="taskType"
             :options="taskTypeOptions"
-            label="Task Type"
+            :label="t('tools.labeling.output.taskType')"
           />
 
           <div>
             <label class="text-sm text-gray-400 flex justify-between mb-2">
-              <span>Min Confidence</span>
+              <span>{{ t('tools.labeling.output.minConfidence') }}</span>
               <span class="text-white">{{ (minConfidence * 100).toFixed(0) }}%</span>
             </label>
             <input
@@ -476,12 +516,12 @@ onUnmounted(() => {
           <label class="flex items-center gap-3 cursor-pointer">
             <input
               type="checkbox"
-              v-model="useSam2"
+              v-model="useSam3"
               class="h-5 w-5 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
             />
             <div>
-              <span class="text-gray-300">Use SAM2 for Segmentation</span>
-              <p class="text-sm text-gray-500">Generate precise segmentation masks</p>
+              <span class="text-gray-300">{{ t('tools.labeling.output.useSam3') }}</span>
+              <p class="text-sm text-gray-500">{{ t('tools.labeling.output.useSam3Desc') }}</p>
             </div>
           </label>
         </div>
@@ -490,7 +530,7 @@ onUnmounted(() => {
 
     <!-- Current Job Progress -->
     <div v-if="currentJob" class="card p-6">
-      <h3 class="text-lg font-semibold text-white mb-4">Current Job Progress</h3>
+      <h3 class="text-lg font-semibold text-white mb-4">{{ t('tools.labeling.progress.title') }}</h3>
 
       <div class="flex items-center gap-4 mb-4">
         <component
@@ -504,11 +544,11 @@ onUnmounted(() => {
         />
         <div class="flex-1">
           <p class="font-medium text-white">
-            {{ currentJob.status === 'running' ? 'Processing...' : currentJob.status }}
+            {{ currentJob.status === 'running' ? t('tools.labeling.progress.processing') : currentJob.status }}
           </p>
           <p class="text-sm text-gray-400">
-            {{ currentJob.processed_images }}/{{ currentJob.total_images }} images |
-            {{ currentJob.annotations_created }} annotations
+            {{ t('tools.labeling.progress.imagesProcessed', { processed: currentJob.processed_images, total: currentJob.total_images }) }} |
+            {{ t('tools.labeling.progress.annotationsCreated', { count: currentJob.annotations_created }) }}
           </p>
         </div>
         <span class="text-2xl font-bold text-primary">{{ currentJob.progress }}%</span>
@@ -519,6 +559,76 @@ onUnmounted(() => {
           class="h-full bg-gradient-to-r from-primary to-green-400 transition-all duration-500"
           :style="{ width: `${currentJob.progress}%` }"
         />
+      </div>
+
+      <!-- Quality Metrics -->
+      <div v-if="currentJob.quality_metrics" class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-background-tertiary rounded-lg p-3">
+          <p class="text-xs text-gray-500 uppercase">{{ t('tools.labeling.metrics.avgConfidence') }}</p>
+          <p class="text-lg font-semibold text-white">
+            {{ (currentJob.quality_metrics.avg_confidence * 100).toFixed(1) }}%
+          </p>
+        </div>
+        <div class="bg-background-tertiary rounded-lg p-3">
+          <p class="text-xs text-gray-500 uppercase">{{ t('tools.labeling.metrics.withDetections') }}</p>
+          <p class="text-lg font-semibold text-green-400">
+            {{ currentJob.quality_metrics.images_with_detections }}
+          </p>
+        </div>
+        <div class="bg-background-tertiary rounded-lg p-3">
+          <p class="text-xs text-gray-500 uppercase">{{ t('tools.labeling.metrics.noDetections') }}</p>
+          <p class="text-lg font-semibold text-yellow-400">
+            {{ currentJob.quality_metrics.images_without_detections }}
+          </p>
+        </div>
+        <div class="bg-background-tertiary rounded-lg p-3">
+          <p class="text-xs text-gray-500 uppercase">{{ t('tools.labeling.metrics.lowConfidence') }}</p>
+          <p class="text-lg font-semibold text-orange-400">
+            {{ currentJob.quality_metrics.low_confidence_count }}
+          </p>
+        </div>
+      </div>
+
+      <!-- Warnings -->
+      <AlertBox
+        v-if="currentJob.warnings && currentJob.warnings.length > 0"
+        type="warning"
+        :title="t('tools.labeling.warnings.title')"
+        class="mt-4"
+      >
+        <ul class="list-disc list-inside text-sm">
+          <li v-for="(warning, idx) in currentJob.warnings" :key="idx">{{ warning }}</li>
+        </ul>
+      </AlertBox>
+
+      <!-- Recent Previews -->
+      <div v-if="recentPreviews.length > 0" class="mt-4">
+        <h4 class="text-sm font-medium text-gray-400 mb-2">{{ t('tools.labeling.previews.title') }}</h4>
+        <div class="grid grid-cols-5 gap-2">
+          <button
+            v-for="preview in recentPreviews"
+            :key="preview.filename"
+            @click="selectedPreview = preview"
+            class="relative aspect-square rounded overflow-hidden hover:ring-2 ring-primary transition-all"
+          >
+            <img :src="`data:image/jpeg;base64,${preview.image_data}`" class="w-full h-full object-cover" />
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div
+      v-if="selectedPreview"
+      class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+      @click="selectedPreview = null"
+    >
+      <div class="max-w-4xl max-h-[90vh] p-4" @click.stop>
+        <img
+          :src="`data:image/jpeg;base64,${selectedPreview.image_data}`"
+          class="max-w-full max-h-[85vh] rounded-lg shadow-2xl"
+        />
+        <p class="text-center text-gray-400 mt-2">{{ selectedPreview.filename }}</p>
       </div>
     </div>
 
@@ -531,7 +641,7 @@ onUnmounted(() => {
         size="lg"
       >
         <Play class="h-5 w-5" />
-        {{ isRelabeling ? 'Start Relabeling' : 'Start Labeling' }}
+        {{ isRelabeling ? t('tools.labeling.actions.startRelabeling') : t('tools.labeling.actions.startLabeling') }}
       </BaseButton>
     </div>
   </div>
