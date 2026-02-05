@@ -1,0 +1,290 @@
+{
+  "home": {
+    "welcome": "Welcome Back",
+    "subtitle": "Manage your synthetic datasets and monitor generation jobs",
+    "startGeneration": "Start New Generation",
+    "quickStart": "Quick Start Workflow",
+    "activeDomain": "Active Domain",
+    "domainDescription": "The active domain determines which regions, effects, and physics rules are used during generation.",
+    "recentJobs": "Recent Jobs",
+    "noJobs": "No jobs yet. Start a generation to see jobs here."
+  },
+  "metrics": {
+    "totalDatasets": "Total Datasets",
+    "totalImages": "Total Images",
+    "activeJobs": "Active Jobs",
+    "servicesOnline": "Services Online"
+  },
+  "steps": {
+    "analysis": {
+      "name": "Analysis",
+      "description": "Analyze your dataset structure"
+    },
+    "configure": {
+      "name": "Configure",
+      "description": "Set up augmentation effects"
+    },
+    "source": {
+      "name": "Source",
+      "description": "Select source images"
+    },
+    "generate": {
+      "name": "Generate",
+      "description": "Create synthetic data"
+    },
+    "export": {
+      "name": "Export",
+      "description": "Export in various formats"
+    }
+  },
+  "analysis": {
+    "title": "Dataset Analysis",
+    "subtitle": "Upload and analyze your COCO format dataset",
+    "uploadDataset": "Upload Dataset",
+    "selectDataset": "Select Dataset",
+    "dropzone": "Drop your COCO JSON file here or click to browse",
+    "analyzing": "Analyzing dataset...",
+    "results": {
+      "title": "Analysis Results",
+      "totalImages": "Total Images",
+      "totalAnnotations": "Total Annotations",
+      "categories": "Categories",
+      "avgAnnotationsPerImage": "Avg. Annotations/Image"
+    },
+    "notifications": {
+      "uploadComplete": "Upload Complete",
+      "uploadCompleteMsg": "Dataset uploaded successfully. Analyzing...",
+      "uploadFailed": "Upload Failed",
+      "analysisComplete": "Analysis Complete",
+      "analysisCompleteMsg": "Dataset analyzed successfully",
+      "analysisFailed": "Analysis Failed",
+      "invalidFile": "Invalid File",
+      "invalidFileMsg": "Please upload a COCO JSON file"
+    }
+  },
+  "configure": {
+    "title": "Configure Effects and Placement",
+    "subtitle": "Customize augmentation effects for your synthetic data",
+    "effectsPresets": "Effects Presets",
+    "customEffects": "Custom Effects",
+    "intensity": "Intensity",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "presets": {
+      "subtle": "Subtle",
+      "moderate": "Moderate",
+      "strong": "Strong",
+      "custom": "Custom"
+    }
+  },
+  "sourceSelection": {
+    "title": "Source Selection",
+    "subtitle": "Select background images and object sources",
+    "backgroundImages": "Background Images",
+    "objectSources": "Object Sources",
+    "selectDirectory": "Select Directory",
+    "imagesFound": "{count} images found",
+    "noImagesFound": "No images found in selected directory"
+  },
+  "generation": {
+    "title": "Generate Synthetic Data",
+    "subtitle": "Configure generation targets, validation, and processing options.",
+    "configRequired": "Configuration Required",
+    "configRequiredMsg": "Please complete the Analysis and Source Selection steps before generating.",
+    "activeLabelingJobs": "Active Labeling Jobs",
+    "labelingJobsMsg": "{count} labeling job(s) are currently running.",
+    "tabs": {
+      "targets": "Targets",
+      "validation": "Validation",
+      "processing": "Processing",
+      "lighting": "Lighting",
+      "metadata": "Metadata"
+    },
+    "targets": {
+      "title": "Target Counts per Category",
+      "description": "Set how many images you want to generate for each category.",
+      "setAll": "Set All",
+      "noCategories": "No categories found. Please analyze a dataset first.",
+      "totalImages": "Total images to generate: {count}"
+    },
+    "options": {
+      "title": "Generation Options",
+      "useDepth": "Use depth estimation",
+      "useDepthDesc": "Enables realistic depth-based object placement",
+      "useSegmentation": "Use segmentation",
+      "useSegmentationDesc": "Enables precise object boundary detection",
+      "depthAwarePlacement": "Depth-aware placement",
+      "depthAwarePlacementDesc": "Scale objects based on depth for realism"
+    },
+    "validation": {
+      "title": "Validation Settings",
+      "description": "Configure quality validation for generated images.",
+      "identity": {
+        "title": "Identity Validation",
+        "description": "Verify objects maintain identity after transforms",
+        "maxColorShift": "Max Color Shift",
+        "minSharpnessRatio": "Min Sharpness Ratio",
+        "minContrastRatio": "Min Contrast Ratio"
+      },
+      "quality": {
+        "title": "Quality Validation",
+        "description": "Validate perceptual quality and anomalies",
+        "minPerceptualQuality": "Min Perceptual Quality",
+        "minAnomalyScore": "Min Anomaly Score"
+      },
+      "physics": {
+        "title": "Physics Validation",
+        "description": "Validate physically plausible placements"
+      },
+      "rejectInvalid": {
+        "title": "Reject Invalid Images",
+        "description": "Discard images that fail validation"
+      }
+    },
+    "processing": {
+      "title": "Batch Processing Settings",
+      "description": "Configure parallel processing and resource management.",
+      "parallel": {
+        "title": "Parallel Processing",
+        "description": "Process multiple images concurrently",
+        "concurrentLimit": "Concurrent Limit",
+        "concurrentLimitDesc": "Max concurrent generation tasks"
+      },
+      "vram": {
+        "title": "VRAM Management",
+        "threshold": "VRAM Threshold",
+        "thresholdDesc": "Stop adding tasks when VRAM exceeds this threshold"
+      },
+      "debug": {
+        "title": "Debug Output",
+        "description": "Save pipeline debug information"
+      }
+    },
+    "lighting": {
+      "title": "Lighting Estimation Settings",
+      "description": "Configure how lighting is estimated from background images.",
+      "detection": {
+        "title": "Light Detection",
+        "maxSources": "Max Light Sources",
+        "intensityThreshold": "Intensity Threshold"
+      },
+      "advanced": {
+        "title": "Advanced Options",
+        "estimateHdr": "Estimate HDR",
+        "waterAttenuation": "Apply Water Attenuation"
+      },
+      "depth": {
+        "title": "Depth Category",
+        "label": "Water Depth",
+        "description": "Affects light attenuation and color shift",
+        "shallow": "Shallow (0-5m)",
+        "mid": "Mid (5-20m)",
+        "deep": "Deep (20m+)"
+      }
+    },
+    "metadata": {
+      "title": "Dataset Metadata",
+      "description": "Add metadata to your generated dataset.",
+      "name": "Dataset Name",
+      "version": "Version",
+      "descriptionField": "Description",
+      "descriptionPlaceholder": "Describe your dataset...",
+      "contributor": "Contributor",
+      "url": "URL",
+      "license": "License",
+      "licenseUrl": "License URL"
+    },
+    "progress": {
+      "title": "Generation Progress",
+      "generating": "Generating...",
+      "jobId": "Job ID: {id}"
+    },
+    "results": {
+      "imagesGenerated": "Images Generated",
+      "annotations": "Annotations",
+      "duration": "Duration"
+    },
+    "actions": {
+      "startGeneration": "Start Generation",
+      "continueToExport": "Continue to Export"
+    },
+    "notifications": {
+      "started": "Generation Started",
+      "startedMsg": "Job ID: {id}",
+      "completed": "Generation Complete",
+      "completedMsg": "Your synthetic dataset is ready!",
+      "failed": "Generation Failed"
+    }
+  },
+  "export": {
+    "title": "Export Dataset",
+    "subtitle": "Export your dataset in various formats",
+    "selectDataset": "Select Dataset",
+    "selectFormat": "Select Format",
+    "outputDirectory": "Output Directory",
+    "formats": {
+      "coco": "COCO JSON",
+      "yolo": "YOLO",
+      "voc": "Pascal VOC",
+      "createml": "CreateML"
+    },
+    "actions": {
+      "export": "Export Dataset"
+    },
+    "notifications": {
+      "started": "Export Started",
+      "completed": "Export Complete",
+      "failed": "Export Failed"
+    }
+  },
+  "combine": {
+    "title": "Combine Datasets",
+    "subtitle": "Merge multiple datasets into one",
+    "selectDatasets": "Select Datasets to Combine",
+    "outputName": "Output Dataset Name",
+    "minDatasets": "Select at least 2 datasets to combine",
+    "actions": {
+      "combine": "Combine Datasets"
+    },
+    "notifications": {
+      "started": "Combining Datasets",
+      "completed": "Datasets Combined",
+      "failed": "Combine Failed",
+      "notEnough": "Not Enough Datasets"
+    }
+  },
+  "splits": {
+    "title": "Dataset Splits",
+    "subtitle": "Split your dataset into train, validation, and test sets",
+    "selectDataset": "Select Dataset to Split",
+    "splitType": "Split Type",
+    "types": {
+      "percentage": "Percentage Split",
+      "kfold": "K-Fold Cross Validation"
+    },
+    "percentage": {
+      "train": "Train",
+      "val": "Validation",
+      "test": "Test",
+      "mustEqual100": "Train + Val + Test must equal 100%"
+    },
+    "kfold": {
+      "numFolds": "Number of Folds",
+      "folds": "folds"
+    },
+    "outputDirectory": "Output Directory",
+    "actions": {
+      "split": "Split Dataset"
+    },
+    "notifications": {
+      "completed": "Split Complete",
+      "completedMsg": "Dataset split successfully",
+      "kfoldCompleted": "K-Fold Split Complete",
+      "kfoldCompletedMsg": "Created {n} folds",
+      "failed": "Split Failed",
+      "invalidRatios": "Invalid Ratios",
+      "missingDataset": "Missing Dataset",
+      "missingDatasetMsg": "Please select a dataset to split"
+    }
+  }
+}

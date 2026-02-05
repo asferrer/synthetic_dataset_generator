@@ -1,0 +1,152 @@
+{
+  "manager": {
+    "title": "Gestor de Dominios",
+    "subtitle": "Gestiona configuraciones de dominio para diferentes entornos",
+    "createDomain": "Crear Dominio",
+    "importDomain": "Importar Dominio",
+    "builtIn": "Incorporado",
+    "custom": "Personalizado",
+    "noDomains": "No se encontraron dominios",
+    "confirmDelete": "¿Estás seguro de que deseas eliminar el dominio \"{name}\"? Esta acción no se puede deshacer.",
+    "cannotEditBuiltIn": "No se pueden editar dominios incorporados",
+    "actions": {
+      "activate": "Activar",
+      "edit": "Editar",
+      "export": "Exportar",
+      "delete": "Eliminar",
+      "duplicate": "Duplicar"
+    },
+    "notifications": {
+      "created": "Dominio Creado",
+      "createdMsg": "{name} ha sido creado",
+      "activated": "Dominio Activado",
+      "activatedMsg": "{name} ahora está activo",
+      "deleted": "Dominio Eliminado",
+      "deletedMsg": "{name} ha sido eliminado",
+      "exported": "Exportado",
+      "exportedMsg": "{name}.json descargado",
+      "imported": "Dominio Importado",
+      "importedMsg": "{name} ha sido importado",
+      "duplicated": "Dominio Duplicado",
+      "duplicatedMsg": "{name} ha sido duplicado",
+      "failed": "Operación Fallida"
+    }
+  },
+  "editor": {
+    "title": "Editar Dominio",
+    "createTitle": "Crear Dominio",
+    "unsavedChanges": "Tienes cambios sin guardar",
+    "tabs": {
+      "general": "Información General",
+      "regions": "Regiones de Escena",
+      "objects": "Tipos de Objetos",
+      "compatibility": "Compatibilidad Objeto-Región",
+      "effects": "Configuración de Efectos",
+      "physics": "Configuración de Física"
+    },
+    "general": {
+      "domainId": "ID del Dominio",
+      "domainIdPlaceholder": "ej., mi_dominio_personalizado",
+      "domainIdHint": "No se puede cambiar después de la creación",
+      "name": "Nombre",
+      "namePlaceholder": "ej., Mi Dominio Personalizado",
+      "description": "Descripción",
+      "descriptionPlaceholder": "Describe tu dominio...",
+      "version": "Versión",
+      "keywords": "Palabras Clave",
+      "keywordsPlaceholder": "palabra1, palabra2"
+    },
+    "regions": {
+      "title": "Regiones de Escena",
+      "description": "Define regiones donde se pueden colocar objetos",
+      "addRegion": "Agregar Región",
+      "regionId": "ID de Región",
+      "displayName": "Nombre para Mostrar",
+      "color": "Color",
+      "sam3Prompt": "Prompt SAM3",
+      "sam3PromptPlaceholder": "Prompt de texto para segmentación",
+      "physicsType": "Tipo de Física",
+      "mediumDensity": "Densidad del Medio",
+      "confirmDelete": "¿Eliminar esta región?"
+    },
+    "objects": {
+      "title": "Tipos de Objetos",
+      "description": "Define tipos de objetos que se pueden colocar en este dominio",
+      "addObject": "Agregar Objeto",
+      "objectId": "ID del Objeto",
+      "displayName": "Nombre para Mostrar",
+      "density": "Densidad (relativa)",
+      "behavior": "Comportamiento",
+      "minSize": "Tamaño Mín",
+      "maxSize": "Tamaño Máx"
+    },
+    "compatibility": {
+      "title": "Compatibilidad Objeto-Región",
+      "description": "Define qué objetos se pueden colocar en qué regiones",
+      "selectAll": "Seleccionar Todo",
+      "clearAll": "Limpiar Todo"
+    },
+    "effects": {
+      "title": "Configuración de Efectos",
+      "description": "Configura efectos visuales específicos del dominio",
+      "caustics": {
+        "title": "Cáusticas",
+        "enabled": "Habilitar Cáusticas",
+        "intensity": "Intensidad",
+        "scale": "Escala"
+      },
+      "waterAttenuation": {
+        "title": "Atenuación de Agua",
+        "enabled": "Habilitar Atenuación",
+        "strength": "Fuerza"
+      }
+    },
+    "physics": {
+      "title": "Configuración de Física",
+      "description": "Configura reglas físicas para ubicación de objetos",
+      "gravity": {
+        "title": "Gravedad",
+        "direction": "Dirección",
+        "strength": "Fuerza"
+      },
+      "buoyancy": {
+        "title": "Flotabilidad",
+        "enabled": "Habilitar Flotabilidad",
+        "factor": "Factor"
+      }
+    },
+    "actions": {
+      "save": "Guardar Cambios",
+      "cancel": "Cancelar",
+      "delete": "Eliminar Dominio"
+    },
+    "notifications": {
+      "saved": "Guardado",
+      "savedMsg": "Dominio actualizado exitosamente",
+      "saveFailed": "Error al Guardar",
+      "validationError": "Error de Validación",
+      "requiredFields": "ID del dominio y nombre son requeridos"
+    }
+  },
+  "detail": {
+    "title": "Detalles del Dominio",
+    "overview": "Resumen",
+    "statistics": "Estadísticas",
+    "regions": "Regiones",
+    "objects": "Objetos",
+    "regionCount": "{count} regiones",
+    "objectCount": "{count} objetos",
+    "actions": {
+      "edit": "Editar Dominio",
+      "activate": "Activar",
+      "export": "Exportar"
+    }
+  },
+  "selector": {
+    "title": "Dominio Activo",
+    "selectDomain": "Seleccionar Dominio",
+    "builtIn": "Incorporado",
+    "custom": "Personalizado",
+    "manageDomains": "Gestionar Dominios"
+  }
+}

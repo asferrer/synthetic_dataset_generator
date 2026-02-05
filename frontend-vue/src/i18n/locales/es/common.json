@@ -1,0 +1,122 @@
+{
+  "app": {
+    "name": "Generador de Datasets Sintéticos",
+    "shortName": "Generador de Datasets"
+  },
+  "actions": {
+    "save": "Guardar",
+    "saveChanges": "Guardar Cambios",
+    "cancel": "Cancelar",
+    "delete": "Eliminar",
+    "remove": "Quitar",
+    "confirm": "Confirmar",
+    "close": "Cerrar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "continue": "Continuar",
+    "retry": "Reintentar",
+    "refresh": "Actualizar",
+    "search": "Buscar",
+    "filter": "Filtrar",
+    "clear": "Limpiar",
+    "clearAll": "Limpiar Todo",
+    "viewAll": "Ver Todo",
+    "viewJobs": "Ver Trabajos",
+    "manage": "Gestionar",
+    "manageDomains": "Gestionar Dominios",
+    "startNew": "Iniciar Nuevo",
+    "select": "Seleccionar",
+    "selectAll": "Seleccionar Todo",
+    "browse": "Explorar",
+    "upload": "Subir",
+    "download": "Descargar",
+    "export": "Exportar",
+    "import": "Importar",
+    "add": "Agregar",
+    "edit": "Editar",
+    "create": "Crear",
+    "apply": "Aplicar",
+    "applyPreset": "Aplicar Preset",
+    "reset": "Restablecer",
+    "resume": "Reanudar",
+    "pause": "Pausar",
+    "stop": "Detener",
+    "start": "Iniciar",
+    "run": "Ejecutar",
+    "analyze": "Analizar",
+    "generate": "Generar",
+    "collapse": "Colapsar",
+    "expand": "Expandir"
+  },
+  "status": {
+    "loading": "Cargando...",
+    "saving": "Guardando...",
+    "processing": "Procesando...",
+    "analyzing": "Analizando...",
+    "generating": "Generando...",
+    "completed": "Completado",
+    "failed": "Fallido",
+    "pending": "Pendiente",
+    "running": "Ejecutando",
+    "queued": "En cola",
+    "cancelled": "Cancelado",
+    "interrupted": "Interrumpido",
+    "online": "En línea",
+    "offline": "Desconectado",
+    "healthy": "Saludable",
+    "unhealthy": "No saludable",
+    "active": "Activo",
+    "inactive": "Inactivo",
+    "enabled": "Habilitado",
+    "disabled": "Deshabilitado"
+  },
+  "time": {
+    "justNow": "Ahora mismo",
+    "minutesAgo": "Hace {n} min",
+    "hoursAgo": "Hace {n}h",
+    "daysAgo": "Hace {n}d",
+    "seconds": "segundos",
+    "minutes": "minutos",
+    "hours": "horas"
+  },
+  "empty": {
+    "noData": "No hay datos disponibles",
+    "noResults": "No se encontraron resultados",
+    "noItems": "No se encontraron {item}",
+    "noJobs": "Aún no hay trabajos. Inicia una generación para ver trabajos aquí."
+  },
+  "errors": {
+    "generic": "Ocurrió un error",
+    "networkError": "Error de red. Por favor verifica tu conexión.",
+    "loadFailed": "Error al cargar {item}",
+    "saveFailed": "Error al guardar {item}",
+    "deleteFailed": "Error al eliminar {item}",
+    "required": "Este campo es requerido",
+    "invalidFormat": "Formato inválido",
+    "notFound": "No encontrado",
+    "serverError": "Error del servidor"
+  },
+  "confirm": {
+    "delete": "¿Estás seguro de que deseas eliminar este {item}? Esta acción no se puede deshacer.",
+    "unsavedChanges": "Tienes cambios sin guardar. ¿Estás seguro de que deseas salir?",
+    "cancel": "¿Estás seguro de que deseas cancelar?"
+  },
+  "language": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  },
+  "units": {
+    "images": "imágenes",
+    "annotations": "anotaciones",
+    "categories": "categorías",
+    "objects": "objetos",
+    "pixels": "px",
+    "percent": "%"
+  },
+  "filters": {
+    "all": "Todos",
+    "allStatus": "Todos los Estados",
+    "allTypes": "Todos los Tipos"
+  }
+}

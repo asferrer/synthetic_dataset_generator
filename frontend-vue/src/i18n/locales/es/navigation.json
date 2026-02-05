@@ -1,0 +1,53 @@
+{
+  "sidebar": {
+    "dashboard": "Panel",
+    "domains": "Dominios",
+    "workflow": "Flujo de Trabajo",
+    "tools": "Herramientas"
+  },
+  "workflow": {
+    "analysis": "Análisis",
+    "configure": "Configurar",
+    "sourceSelection": "Selección de Fuentes",
+    "generation": "Generación",
+    "export": "Exportar",
+    "combine": "Combinar",
+    "splits": "Divisiones"
+  },
+  "tools": {
+    "jobMonitor": "Monitor de Trabajos",
+    "serviceStatus": "Estado de Servicios",
+    "objectExtraction": "Extracción de Objetos",
+    "autoLabeling": "Etiquetado Automático",
+    "samSegmentation": "Segmentación SAM",
+    "labelManager": "Gestor de Etiquetas",
+    "objectSizes": "Tamaños de Objetos",
+    "postProcessing": "Post-Procesamiento"
+  },
+  "titles": {
+    "dashboard": "Panel",
+    "home": "Inicio",
+    "analysis": "Análisis de Dataset",
+    "configure": "Configurar Efectos",
+    "sourceSelection": "Selección de Fuentes",
+    "generation": "Generación",
+    "export": "Exportar",
+    "combine": "Combinar Datasets",
+    "splits": "Divisiones de Dataset",
+    "domains": "Gestor de Dominios",
+    "domainDetail": "Detalles del Dominio",
+    "domainEdit": "Editar Dominio",
+    "domainCreate": "Crear Dominio",
+    "jobMonitor": "Monitor de Trabajos",
+    "serviceStatus": "Estado de Servicios",
+    "objectExtraction": "Extracción de Objetos",
+    "autoLabeling": "Etiquetado Automático",
+    "samSegmentation": "Segmentación SAM3",
+    "labelManager": "Gestor de Etiquetas",
+    "objectSizes": "Tamaños de Objetos",
+    "postProcessing": "Post-Procesamiento",
+    "notFound": "Página No Encontrada"
+  },
+  "searchPlaceholder": "Buscar páginas...",
+  "keyboardShortcut": "Ctrl+K"
+}

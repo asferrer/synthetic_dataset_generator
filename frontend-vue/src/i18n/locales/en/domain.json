@@ -1,0 +1,152 @@
+{
+  "manager": {
+    "title": "Domain Manager",
+    "subtitle": "Manage domain configurations for different environments",
+    "createDomain": "Create Domain",
+    "importDomain": "Import Domain",
+    "builtIn": "Built-in",
+    "custom": "Custom",
+    "noDomains": "No domains found",
+    "confirmDelete": "Are you sure you want to delete domain \"{name}\"? This action cannot be undone.",
+    "cannotEditBuiltIn": "Cannot edit built-in domains",
+    "actions": {
+      "activate": "Activate",
+      "edit": "Edit",
+      "export": "Export",
+      "delete": "Delete",
+      "duplicate": "Duplicate"
+    },
+    "notifications": {
+      "created": "Domain Created",
+      "createdMsg": "{name} has been created",
+      "activated": "Domain Activated",
+      "activatedMsg": "{name} is now active",
+      "deleted": "Domain Deleted",
+      "deletedMsg": "{name} has been deleted",
+      "exported": "Exported",
+      "exportedMsg": "{name}.json downloaded",
+      "imported": "Domain Imported",
+      "importedMsg": "{name} has been imported",
+      "duplicated": "Domain Duplicated",
+      "duplicatedMsg": "{name} has been duplicated",
+      "failed": "Operation Failed"
+    }
+  },
+  "editor": {
+    "title": "Edit Domain",
+    "createTitle": "Create Domain",
+    "unsavedChanges": "You have unsaved changes",
+    "tabs": {
+      "general": "General Information",
+      "regions": "Scene Regions",
+      "objects": "Object Types",
+      "compatibility": "Object-Region Compatibility",
+      "effects": "Effects Configuration",
+      "physics": "Physics Configuration"
+    },
+    "general": {
+      "domainId": "Domain ID",
+      "domainIdPlaceholder": "e.g., my_custom_domain",
+      "domainIdHint": "Cannot be changed after creation",
+      "name": "Name",
+      "namePlaceholder": "e.g., My Custom Domain",
+      "description": "Description",
+      "descriptionPlaceholder": "Describe your domain...",
+      "version": "Version",
+      "keywords": "Keywords",
+      "keywordsPlaceholder": "keyword1, keyword2"
+    },
+    "regions": {
+      "title": "Scene Regions",
+      "description": "Define regions where objects can be placed",
+      "addRegion": "Add Region",
+      "regionId": "Region ID",
+      "displayName": "Display Name",
+      "color": "Color",
+      "sam3Prompt": "SAM3 Prompt",
+      "sam3PromptPlaceholder": "Text prompt for segmentation",
+      "physicsType": "Physics Type",
+      "mediumDensity": "Medium Density",
+      "confirmDelete": "Delete this region?"
+    },
+    "objects": {
+      "title": "Object Types",
+      "description": "Define object types that can be placed in this domain",
+      "addObject": "Add Object",
+      "objectId": "Object ID",
+      "displayName": "Display Name",
+      "density": "Density (relative)",
+      "behavior": "Behavior",
+      "minSize": "Min Size",
+      "maxSize": "Max Size"
+    },
+    "compatibility": {
+      "title": "Object-Region Compatibility",
+      "description": "Define which objects can be placed in which regions",
+      "selectAll": "Select All",
+      "clearAll": "Clear All"
+    },
+    "effects": {
+      "title": "Effects Configuration",
+      "description": "Configure domain-specific visual effects",
+      "caustics": {
+        "title": "Caustics",
+        "enabled": "Enable Caustics",
+        "intensity": "Intensity",
+        "scale": "Scale"
+      },
+      "waterAttenuation": {
+        "title": "Water Attenuation",
+        "enabled": "Enable Attenuation",
+        "strength": "Strength"
+      }
+    },
+    "physics": {
+      "title": "Physics Configuration",
+      "description": "Configure physics rules for object placement",
+      "gravity": {
+        "title": "Gravity",
+        "direction": "Direction",
+        "strength": "Strength"
+      },
+      "buoyancy": {
+        "title": "Buoyancy",
+        "enabled": "Enable Buoyancy",
+        "factor": "Factor"
+      }
+    },
+    "actions": {
+      "save": "Save Changes",
+      "cancel": "Cancel",
+      "delete": "Delete Domain"
+    },
+    "notifications": {
+      "saved": "Saved",
+      "savedMsg": "Domain updated successfully",
+      "saveFailed": "Save Failed",
+      "validationError": "Validation Error",
+      "requiredFields": "Domain ID and name are required"
+    }
+  },
+  "detail": {
+    "title": "Domain Details",
+    "overview": "Overview",
+    "statistics": "Statistics",
+    "regions": "Regions",
+    "objects": "Objects",
+    "regionCount": "{count} regions",
+    "objectCount": "{count} objects",
+    "actions": {
+      "edit": "Edit Domain",
+      "activate": "Activate",
+      "export": "Export"
+    }
+  },
+  "selector": {
+    "title": "Active Domain",
+    "selectDomain": "Select Domain",
+    "builtIn": "Built-in",
+    "custom": "Custom",
+    "manageDomains": "Manage Domains"
+  }
+}

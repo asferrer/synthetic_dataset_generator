@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { i18nGlobal, type SupportedLocale, SUPPORTED_LOCALES } from '@/i18n'
 
 export interface Toast {
   id: string
@@ -28,10 +29,27 @@ export const useUiStore = defineStore('ui', () => {
   const isLoading = ref(false)
   const loadingMessage = ref('')
 
+  // Language state
+  const locale = ref<SupportedLocale>(
+    (localStorage.getItem('ui-locale') as SupportedLocale) || 'en'
+  )
+  // Validate locale
+  if (!SUPPORTED_LOCALES.includes(locale.value)) {
+    locale.value = 'en'
+  }
+
   // Getters
   const hasToasts = computed(() => toasts.value.length > 0)
   const unreadCount = computed(() => notifications.value.filter(n => !n.read).length)
   const hasUnread = computed(() => unreadCount.value > 0)
+  const currentLocale = computed(() => locale.value)
+
+  // Watch locale changes and sync with vue-i18n
+  watch(locale, (newLocale) => {
+    i18nGlobal.locale.value = newLocale
+    localStorage.setItem('ui-locale', newLocale)
+    document.documentElement.lang = newLocale
+  }, { immediate: true })
 
   // Actions
   function toggleSidebar() {
@@ -150,6 +168,13 @@ export const useUiStore = defineStore('ui', () => {
     }
   }
 
+  // Language actions
+  function setLocale(newLocale: SupportedLocale) {
+    if (SUPPORTED_LOCALES.includes(newLocale)) {
+      locale.value = newLocale
+    }
+  }
+
   return {
     // State
     sidebarCollapsed,
@@ -159,10 +184,12 @@ export const useUiStore = defineStore('ui', () => {
     notificationPanelOpen,
     isLoading,
     loadingMessage,
+    locale,
     // Getters
     hasToasts,
     unreadCount,
     hasUnread,
+    currentLocale,
     // Actions
     toggleSidebar,
     setSidebarCollapsed,
@@ -184,5 +211,7 @@ export const useUiStore = defineStore('ui', () => {
     markAllNotificationsRead,
     clearNotifications,
     removeNotification,
+    // Language actions
+    setLocale,
   }
 })

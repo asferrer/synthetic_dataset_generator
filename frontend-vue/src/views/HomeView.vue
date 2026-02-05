@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { getHealthStatus, getJobs, listDatasets } from '@/lib/api'
 import { useDomainStore } from '@/stores/domain'
 import MetricCard from '@/components/common/MetricCard.vue'
@@ -23,6 +24,7 @@ import type { HealthStatus, Job, DatasetInfo } from '@/types/api'
 
 const router = useRouter()
 const domainStore = useDomainStore()
+const { t } = useI18n()
 
 const loading = ref(true)
 const health = ref<HealthStatus | null>(null)
@@ -45,7 +47,7 @@ async function fetchData() {
     recentJobs.value = jobsData
     datasets.value = datasetsData
   } catch (e) {
-    error.value = 'Failed to load dashboard data'
+    error.value = t('common.errors.loadFailed', { item: 'dashboard' })
   } finally {
     loading.value = false
   }
@@ -88,11 +90,11 @@ function getJobStatusColor(status: string) {
 }
 
 const workflowSteps = [
-  { name: 'Analysis', description: 'Analyze your dataset structure', path: '/analysis' },
-  { name: 'Configure', description: 'Set up augmentation effects', path: '/configure' },
-  { name: 'Source', description: 'Select source images', path: '/source-selection' },
-  { name: 'Generate', description: 'Create synthetic data', path: '/generation' },
-  { name: 'Export', description: 'Export in various formats', path: '/export' },
+  { nameKey: 'workflow.steps.analysis.name', descKey: 'workflow.steps.analysis.description', path: '/analysis' },
+  { nameKey: 'workflow.steps.configure.name', descKey: 'workflow.steps.configure.description', path: '/configure' },
+  { nameKey: 'workflow.steps.source.name', descKey: 'workflow.steps.source.description', path: '/source-selection' },
+  { nameKey: 'workflow.steps.generate.name', descKey: 'workflow.steps.generate.description', path: '/generation' },
+  { nameKey: 'workflow.steps.export.name', descKey: 'workflow.steps.export.description', path: '/export' },
 ]
 
 onMounted(() => {
@@ -106,9 +108,9 @@ onMounted(() => {
     <!-- Welcome Header -->
     <div class="flex items-start justify-between">
       <div>
-        <h1 class="text-3xl font-bold text-white">Welcome Back</h1>
+        <h1 class="text-3xl font-bold text-white">{{ t('workflow.home.welcome') }}</h1>
         <p class="mt-2 text-gray-400">
-          Manage your synthetic datasets and monitor generation jobs
+          {{ t('workflow.home.subtitle') }}
         </p>
       </div>
       <button
@@ -116,18 +118,18 @@ onMounted(() => {
         class="btn-primary flex items-center gap-2"
       >
         <Sparkles class="h-5 w-5" />
-        Start New Generation
+        {{ t('workflow.home.startGeneration') }}
       </button>
     </div>
 
     <!-- Loading State -->
     <div v-if="loading" class="flex justify-center py-12">
-      <LoadingSpinner size="lg" message="Loading dashboard..." />
+      <LoadingSpinner size="lg" :message="t('common.status.loading')" />
     </div>
 
     <!-- Error State -->
     <AlertBox v-else-if="error" type="error" :title="error" dismissible @dismiss="error = null">
-      Please check your connection to the backend services.
+      {{ t('common.errors.networkError') }}
     </AlertBox>
 
     <!-- Dashboard Content -->
@@ -135,24 +137,24 @@ onMounted(() => {
       <!-- Metrics Grid -->
       <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
-          title="Total Datasets"
+          :title="t('workflow.metrics.totalDatasets')"
           :value="datasets.length"
           :icon="Database"
           variant="info"
         />
         <MetricCard
-          title="Total Images"
+          :title="t('workflow.metrics.totalImages')"
           :value="datasets.reduce((sum, d) => sum + d.num_images, 0)"
           :icon="Image"
         />
         <MetricCard
-          title="Active Jobs"
+          :title="t('workflow.metrics.activeJobs')"
           :value="recentJobs.filter(j => j.status === 'running').length"
           :icon="Activity"
           variant="warning"
         />
         <MetricCard
-          title="Services Online"
+          :title="t('workflow.metrics.servicesOnline')"
           :value="`${getHealthyServices()}/${getTotalServices()}`"
           :icon="Server"
           :variant="getHealthyServices() === getTotalServices() ? 'success' : 'warning'"
@@ -162,23 +164,23 @@ onMounted(() => {
       <!-- Active Domain -->
       <div class="card p-6">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold text-white">Active Domain</h2>
+          <h2 class="text-lg font-semibold text-white">{{ t('workflow.home.activeDomain') }}</h2>
           <button
             @click="router.push('/domains')"
             class="text-sm text-primary hover:text-primary-hover"
           >
-            Manage Domains
+            {{ t('common.actions.manageDomains') }}
           </button>
         </div>
         <DomainSelector :show-manage-link="false" />
         <p class="mt-3 text-sm text-gray-500">
-          The active domain determines which regions, effects, and physics rules are used during generation.
+          {{ t('workflow.home.domainDescription') }}
         </p>
       </div>
 
       <!-- Quick Start Workflow -->
       <div class="card p-6">
-        <h2 class="text-lg font-semibold text-white mb-4">Quick Start Workflow</h2>
+        <h2 class="text-lg font-semibold text-white mb-4">{{ t('workflow.home.quickStart') }}</h2>
         <div class="flex items-center gap-4 overflow-x-auto pb-2">
           <template v-for="(step, index) in workflowSteps" :key="step.path">
             <button
@@ -188,8 +190,8 @@ onMounted(() => {
               <div class="flex h-10 w-10 items-center justify-center rounded-full bg-primary/20 text-primary font-semibold">
                 {{ index + 1 }}
               </div>
-              <span class="mt-3 font-medium text-white">{{ step.name }}</span>
-              <span class="mt-1 text-xs text-gray-400 text-center">{{ step.description }}</span>
+              <span class="mt-3 font-medium text-white">{{ t(step.nameKey) }}</span>
+              <span class="mt-1 text-xs text-gray-400 text-center">{{ t(step.descKey) }}</span>
             </button>
             <ArrowRight
               v-if="index < workflowSteps.length - 1"
@@ -202,17 +204,17 @@ onMounted(() => {
       <!-- Recent Jobs -->
       <div class="card p-6">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold text-white">Recent Jobs</h2>
+          <h2 class="text-lg font-semibold text-white">{{ t('workflow.home.recentJobs') }}</h2>
           <button
             @click="router.push('/tools/job-monitor')"
             class="text-sm text-primary hover:text-primary-hover"
           >
-            View All
+            {{ t('common.actions.viewAll') }}
           </button>
         </div>
 
         <div v-if="recentJobs.length === 0" class="text-center py-8 text-gray-400">
-          No jobs yet. Start a generation to see jobs here.
+          {{ t('workflow.home.noJobs') }}
         </div>
 
         <div v-else class="space-y-3">

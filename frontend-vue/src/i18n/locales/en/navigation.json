@@ -1,0 +1,53 @@
+{
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "domains": "Domains",
+    "workflow": "Workflow",
+    "tools": "Tools"
+  },
+  "workflow": {
+    "analysis": "Analysis",
+    "configure": "Configure",
+    "sourceSelection": "Source Selection",
+    "generation": "Generation",
+    "export": "Export",
+    "combine": "Combine",
+    "splits": "Splits"
+  },
+  "tools": {
+    "jobMonitor": "Job Monitor",
+    "serviceStatus": "Service Status",
+    "objectExtraction": "Object Extraction",
+    "autoLabeling": "Auto Labeling",
+    "samSegmentation": "SAM Segmentation",
+    "labelManager": "Label Manager",
+    "objectSizes": "Object Sizes",
+    "postProcessing": "Post-Processing"
+  },
+  "titles": {
+    "dashboard": "Dashboard",
+    "home": "Home",
+    "analysis": "Dataset Analysis",
+    "configure": "Configure Effects",
+    "sourceSelection": "Source Selection",
+    "generation": "Generation",
+    "export": "Export",
+    "combine": "Combine Datasets",
+    "splits": "Dataset Splits",
+    "domains": "Domain Manager",
+    "domainDetail": "Domain Details",
+    "domainEdit": "Edit Domain",
+    "domainCreate": "Create Domain",
+    "jobMonitor": "Job Monitor",
+    "serviceStatus": "Service Status",
+    "objectExtraction": "Object Extraction",
+    "autoLabeling": "Auto Labeling",
+    "samSegmentation": "SAM3 Segmentation",
+    "labelManager": "Label Manager",
+    "objectSizes": "Object Sizes",
+    "postProcessing": "Post-Processing",
+    "notFound": "Page Not Found"
+  },
+  "searchPlaceholder": "Search pages...",
+  "keyboardShortcut": "Ctrl+K"
+}

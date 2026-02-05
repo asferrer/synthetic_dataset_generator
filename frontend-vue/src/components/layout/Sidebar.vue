@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import {
   LayoutDashboard,
@@ -26,33 +27,34 @@ import {
 const route = useRoute()
 const router = useRouter()
 const uiStore = useUiStore()
+const { t } = useI18n()
 
 interface NavItem {
-  name: string
+  nameKey: string
   path: string
   icon: any
   step?: number
 }
 
 const workflowItems: NavItem[] = [
-  { name: 'Analysis', path: '/analysis', icon: BarChart3, step: 1 },
-  { name: 'Configure', path: '/configure', icon: Settings, step: 2 },
-  { name: 'Source Selection', path: '/source-selection', icon: FolderInput, step: 3 },
-  { name: 'Generation', path: '/generation', icon: Sparkles, step: 4 },
-  { name: 'Export', path: '/export', icon: Download, step: 5 },
-  { name: 'Combine', path: '/combine', icon: Combine, step: 6 },
-  { name: 'Splits', path: '/splits', icon: Split, step: 7 },
+  { nameKey: 'nav.workflow.analysis', path: '/analysis', icon: BarChart3, step: 1 },
+  { nameKey: 'nav.workflow.configure', path: '/configure', icon: Settings, step: 2 },
+  { nameKey: 'nav.workflow.sourceSelection', path: '/source-selection', icon: FolderInput, step: 3 },
+  { nameKey: 'nav.workflow.generation', path: '/generation', icon: Sparkles, step: 4 },
+  { nameKey: 'nav.workflow.export', path: '/export', icon: Download, step: 5 },
+  { nameKey: 'nav.workflow.combine', path: '/combine', icon: Combine, step: 6 },
+  { nameKey: 'nav.workflow.splits', path: '/splits', icon: Split, step: 7 },
 ]
 
 const toolItems: NavItem[] = [
-  { name: 'Job Monitor', path: '/tools/job-monitor', icon: Activity },
-  { name: 'Service Status', path: '/tools/service-status', icon: Server },
-  { name: 'Object Extraction', path: '/tools/object-extraction', icon: Scissors },
-  { name: 'Auto Labeling', path: '/tools/labeling', icon: Tags },
-  { name: 'SAM Segmentation', path: '/tools/sam-segmentation', icon: Box },
-  { name: 'Label Manager', path: '/tools/label-manager', icon: Tags },
-  { name: 'Object Sizes', path: '/tools/object-sizes', icon: Ruler },
-  { name: 'Post-Processing', path: '/tools/post-processing', icon: Scale },
+  { nameKey: 'nav.tools.jobMonitor', path: '/tools/job-monitor', icon: Activity },
+  { nameKey: 'nav.tools.serviceStatus', path: '/tools/service-status', icon: Server },
+  { nameKey: 'nav.tools.objectExtraction', path: '/tools/object-extraction', icon: Scissors },
+  { nameKey: 'nav.tools.autoLabeling', path: '/tools/labeling', icon: Tags },
+  { nameKey: 'nav.tools.samSegmentation', path: '/tools/sam-segmentation', icon: Box },
+  { nameKey: 'nav.tools.labelManager', path: '/tools/label-manager', icon: Tags },
+  { nameKey: 'nav.tools.objectSizes', path: '/tools/object-sizes', icon: Ruler },
+  { nameKey: 'nav.tools.postProcessing', path: '/tools/post-processing', icon: Scale },
 ]
 
 const isActive = (path: string) => route.path === path
@@ -74,7 +76,7 @@ const sidebarClasses = computed(() => [
           <Sparkles class="h-6 w-6 text-white" />
         </div>
         <span v-if="!uiStore.sidebarCollapsed" class="font-semibold text-white">
-          Dataset Generator
+          {{ t('common.app.shortName') }}
         </span>
       </router-link>
     </div>
@@ -91,7 +93,7 @@ const sidebarClasses = computed(() => [
           ]"
         >
           <LayoutDashboard class="h-5 w-5 flex-shrink-0" />
-          <span v-if="!uiStore.sidebarCollapsed">Dashboard</span>
+          <span v-if="!uiStore.sidebarCollapsed">{{ t('nav.sidebar.dashboard') }}</span>
         </router-link>
       </div>
 
@@ -105,7 +107,7 @@ const sidebarClasses = computed(() => [
           ]"
         >
           <Globe class="h-5 w-5 flex-shrink-0" />
-          <span v-if="!uiStore.sidebarCollapsed">Domains</span>
+          <span v-if="!uiStore.sidebarCollapsed">{{ t('nav.sidebar.domains') }}</span>
         </router-link>
       </div>
 
@@ -115,7 +117,7 @@ const sidebarClasses = computed(() => [
           v-if="!uiStore.sidebarCollapsed"
           class="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-500"
         >
-          Workflow
+          {{ t('nav.sidebar.workflow') }}
         </h3>
         <div class="space-y-1">
           <router-link
@@ -136,7 +138,7 @@ const sidebarClasses = computed(() => [
                 {{ item.step }}
               </span>
             </div>
-            <span v-if="!uiStore.sidebarCollapsed">{{ item.name }}</span>
+            <span v-if="!uiStore.sidebarCollapsed">{{ t(item.nameKey) }}</span>
           </router-link>
         </div>
       </div>
@@ -147,7 +149,7 @@ const sidebarClasses = computed(() => [
           v-if="!uiStore.sidebarCollapsed"
           class="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-500"
         >
-          Tools
+          {{ t('nav.sidebar.tools') }}
         </h3>
         <div class="space-y-1">
           <router-link
@@ -160,7 +162,7 @@ const sidebarClasses = computed(() => [
             ]"
           >
             <component :is="item.icon" class="h-5 w-5 flex-shrink-0" />
-            <span v-if="!uiStore.sidebarCollapsed">{{ item.name }}</span>
+            <span v-if="!uiStore.sidebarCollapsed">{{ t(item.nameKey) }}</span>
           </router-link>
         </div>
       </div>
@@ -174,7 +176,7 @@ const sidebarClasses = computed(() => [
       >
         <ChevronLeft v-if="!uiStore.sidebarCollapsed" class="h-5 w-5" />
         <ChevronRight v-else class="h-5 w-5" />
-        <span v-if="!uiStore.sidebarCollapsed">Collapse</span>
+        <span v-if="!uiStore.sidebarCollapsed">{{ t('common.actions.collapse') }}</span>
       </button>
     </div>
   </aside>

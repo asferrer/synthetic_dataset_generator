@@ -1,18 +1,29 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import { Menu, Bell, Search } from 'lucide-vue-next'
 import ServiceStatusBadge from '@/components/common/ServiceStatusBadge.vue'
 import NotificationPanel from '@/components/common/NotificationPanel.vue'
 import SearchModal from '@/components/common/SearchModal.vue'
+import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 
 const route = useRoute()
 const uiStore = useUiStore()
+const { t } = useI18n()
 const searchOpen = ref(false)
 
 const pageTitle = computed(() => {
-  return (route.meta.title as string) || 'Synthetic Dataset Generator'
+  // Try to get translated title from route meta
+  const titleKey = route.meta.titleKey as string | undefined
+  if (titleKey) {
+    const translated = t(titleKey)
+    if (translated !== titleKey) {
+      return translated
+    }
+  }
+  return (route.meta.title as string) || t('common.app.name')
 })
 
 // Close panel when clicking outside
@@ -68,13 +79,16 @@ onUnmounted(() => {
       <!-- Service status badge -->
       <ServiceStatusBadge />
 
+      <!-- Language switcher -->
+      <LanguageSwitcher />
+
       <!-- Search button -->
       <button
         @click="searchOpen = true"
         class="hidden items-center gap-2 rounded-lg bg-background-tertiary px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-gray-600 hover:text-white sm:flex"
       >
         <Search class="h-4 w-4" />
-        <span>Search</span>
+        <span>{{ t('common.actions.search') }}</span>
         <kbd class="rounded bg-gray-700 px-1.5 py-0.5 text-xs font-mono">Ctrl+K</kbd>
       </button>
 
