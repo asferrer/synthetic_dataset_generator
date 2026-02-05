@@ -115,6 +115,10 @@ except ImportError:
     JobDatabase = None
     get_job_db = None
 
+# Labeling optimization modules
+from app.prompt_optimizer import PromptOptimizer, get_prompt_optimizer
+from app.detection_validator import DetectionValidator, get_detection_validator, deduplicate_annotations
+
 
 def encode_region_map_base64(region_map: np.ndarray) -> str:
     """Encode region map as base64 PNG string.
@@ -146,9 +150,13 @@ class ServiceState:
     sam3_processor = None
     device: str = "cpu"
     sam3_available: bool = False
+    sam3_loading: bool = False  # True while SAM3 is being loaded in background
+    sam3_load_error: Optional[str] = None  # Error message if loading failed
+    sam3_load_progress: str = ""  # Progress message during loading
     gpu_available: bool = False
     object_extractor: Optional[ObjectExtractor] = None
     db: Optional["JobDatabase"] = None  # Database for job persistence
+    _loading_task: Optional[asyncio.Task] = None  # Background loading task
 
 
 state = ServiceState()
@@ -205,8 +213,8 @@ def init_object_extractor():
     logger.info(f"ObjectExtractor initialized (SAM3: {state.sam3_available})")
 
 
-def init_sam3():
-    """Initialize SAM3 model if available"""
+def init_gpu():
+    """Initialize GPU detection (fast, non-blocking)"""
     import torch
 
     # Check GPU availability
@@ -214,9 +222,18 @@ def init_sam3():
     state.device = "cuda" if state.gpu_available else "cpu"
 
     if state.gpu_available:
-        logger.info(f"GPU available: {torch.cuda.get_device_name(0)}")
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        logger.info(f"GPU available: {gpu_name} ({gpu_mem:.1f}GB VRAM)")
     else:
         logger.warning("No GPU available, using CPU")
+
+
+def _load_sam3_sync():
+    """Load SAM3 model synchronously (called from background thread)"""
+    import torch
+
+    state.sam3_load_progress = "Starting SAM3 load..."
 
     # Try to load SAM3 (Segment Anything Model 3)
     # Released 2025-11-19, uses Promptable Concept Segmentation (PCS)
@@ -227,36 +244,105 @@ def init_sam3():
         model_id = os.environ.get("SAM3_MODEL_ID", "facebook/sam3")
         hf_token = os.environ.get("HF_TOKEN")
 
-        logger.info(f"Loading SAM3 model: {model_id}")
+        logger.info(f"[Background] Loading SAM3 model: {model_id}")
+        state.sam3_load_progress = f"Loading processor from {model_id}..."
+        load_start = time.time()
 
+        # Load processor (fast)
         state.sam3_processor = Sam3Processor.from_pretrained(
             model_id,
             token=hf_token,
         )
-        state.sam3_model = Sam3Model.from_pretrained(
-            model_id,
-            token=hf_token,
-        ).to(state.device)
+        proc_time = time.time() - load_start
+        logger.info(f"[Background] Processor loaded in {proc_time:.1f}s")
+        state.sam3_load_progress = "Loading model weights..."
+
+        # Optimized model loading:
+        # - torch_dtype=float16: Uses half precision (50% less VRAM, faster loading)
+        # - low_cpu_mem_usage=True: Reduces peak RAM usage during loading
+        model_start = time.time()
+        use_fp16 = state.gpu_available and os.environ.get("SAM3_FP32", "").lower() != "true"
+
+        if use_fp16:
+            logger.info("[Background] Loading model in FP16 (half precision)...")
+            state.sam3_load_progress = "Loading model in FP16 mode..."
+            state.sam3_model = Sam3Model.from_pretrained(
+                model_id,
+                token=hf_token,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
+            ).to(state.device)
+        else:
+            logger.info("[Background] Loading model in FP32 (full precision)...")
+            state.sam3_load_progress = "Loading model in FP32 mode..."
+            state.sam3_model = Sam3Model.from_pretrained(
+                model_id,
+                token=hf_token,
+                low_cpu_mem_usage=True,
+            ).to(state.device)
+
         state.sam3_model.eval()
+        model_time = time.time() - model_start
+        logger.info(f"[Background] Model loaded in {model_time:.1f}s")
+
+        # Initialize dependent components
+        state.sam3_load_progress = "Initializing scene analyzer..."
+        init_scene_analyzer()
+        init_object_extractor()
 
         state.sam3_available = True
-        logger.info("SAM3 model loaded successfully")
+        state.sam3_load_progress = "Ready"
+        total_time = time.time() - load_start
+        logger.info(f"[Background] SAM3 fully initialized in {total_time:.1f}s total")
 
     except ImportError as e:
-        logger.warning(f"SAM3 not available (transformers may need update): {e}")
+        error_msg = f"SAM3 not available (transformers may need update): {e}"
+        logger.warning(f"[Background] {error_msg}")
         logger.info("Install transformers from main: pip install git+https://github.com/huggingface/transformers.git")
-        logger.info("Falling back to heuristic-based analysis")
+        state.sam3_load_error = error_msg
         state.sam3_available = False
+        # Still initialize analyzers with heuristic-based mode
+        init_scene_analyzer()
+        init_object_extractor()
     except Exception as e:
-        logger.warning(f"SAM3 loading failed: {e}")
-        logger.info("Falling back to heuristic-based analysis")
+        error_msg = f"SAM3 loading failed: {e}"
+        logger.warning(f"[Background] {error_msg}")
+        state.sam3_load_error = error_msg
         state.sam3_available = False
+        # Still initialize analyzers with heuristic-based mode
+        init_scene_analyzer()
+        init_object_extractor()
+    finally:
+        state.sam3_loading = False
+
+
+async def init_sam3_background():
+    """Initialize SAM3 model in background (non-blocking)"""
+    state.sam3_loading = True
+    state.sam3_load_error = None
+    state.sam3_load_progress = "Queued for loading..."
+
+    logger.info("Starting SAM3 background loading...")
+
+    # Run the sync loading function in a thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(thread_pool, _load_sam3_sync)
+
+
+def init_sam3():
+    """Initialize SAM3 model synchronously (legacy, blocking mode)
+
+    Use init_sam3_background() for non-blocking startup.
+    """
+    init_gpu()
+    _load_sam3_sync()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown logic"""
+    """Startup and shutdown logic with fast non-blocking startup"""
     logger.info("Starting Segmentation Service...")
+    startup_start = time.time()
 
     # Initialize database for job persistence
     if JOB_DATABASE_AVAILABLE and get_job_db is not None:
@@ -270,7 +356,7 @@ async def lifespan(app: FastAPI):
                 job_type="labeling"
             )
             for db_job in interrupted_jobs:
-                if db_job["status"] in ["queued", "processing"]:
+                if db_job["status"] in ["pending", "running"]:
                     # Mark as interrupted since we're restarting
                     state.db.update_job_status(db_job["id"], "interrupted")
                     logger.info(f"Marked job {db_job['id']} as interrupted (service restarted)")
@@ -280,16 +366,37 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Job database not available - jobs will not persist across restarts")
 
-    # Initialize models
-    init_sam3()
-    init_scene_analyzer()
-    init_object_extractor()
+    # Fast startup: Initialize GPU detection only (non-blocking)
+    init_gpu()
 
-    logger.info("Segmentation Service ready")
+    # Check if we should use blocking or background loading
+    # Set SAM3_LAZY_LOAD=false to use blocking mode (useful for debugging)
+    use_lazy_load = os.environ.get("SAM3_LAZY_LOAD", "true").lower() != "false"
+
+    if use_lazy_load:
+        # Start SAM3 loading in background - service is immediately available
+        logger.info("Service starting with lazy SAM3 loading (non-blocking)")
+        state._loading_task = asyncio.create_task(init_sam3_background())
+    else:
+        # Blocking mode: Wait for SAM3 to load before accepting requests
+        logger.info("Service starting with blocking SAM3 loading")
+        _load_sam3_sync()
+
+    startup_time = time.time() - startup_start
+    logger.info(f"Segmentation Service ready in {startup_time:.1f}s (SAM3 loading in background: {use_lazy_load})")
     yield
 
     # Cleanup
     logger.info("Shutting down Segmentation Service...")
+
+    # Cancel background loading if still running
+    if state._loading_task and not state._loading_task.done():
+        state._loading_task.cancel()
+        try:
+            await state._loading_task
+        except asyncio.CancelledError:
+            pass
+
     state.sam3_model = None
     state.scene_analyzer = None
 
@@ -314,14 +421,70 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
-    """Check service health"""
+    """Check service health
+
+    Returns healthy even while SAM3 is loading in background.
+    Check sam3_loading and sam3_load_progress for detailed status.
+    """
+    # Service is healthy as long as it's running
+    # SAM3 loading happens in background and doesn't affect basic health
     return HealthResponse(
         status="healthy",
         sam3_available=state.sam3_available,
+        sam3_loading=state.sam3_loading,
+        sam3_load_progress=state.sam3_load_progress,
+        sam3_load_error=state.sam3_load_error,
         gpu_available=state.gpu_available,
         model_loaded=state.scene_analyzer is not None,
         version="1.0.0",
     )
+
+
+async def wait_for_sam3(timeout: float = 300.0) -> bool:
+    """Wait for SAM3 to finish loading.
+
+    Args:
+        timeout: Maximum time to wait in seconds (default 5 minutes)
+
+    Returns:
+        True if SAM3 is available, False if loading failed or timed out
+    """
+    if state.sam3_available:
+        return True
+
+    if not state.sam3_loading:
+        # Not loading and not available = loading failed
+        return False
+
+    # Wait for loading to complete
+    start = time.time()
+    while state.sam3_loading and (time.time() - start) < timeout:
+        await asyncio.sleep(0.5)
+
+    return state.sam3_available
+
+
+@app.get("/model-status", tags=["Health"])
+async def model_status():
+    """Get detailed model loading status"""
+    return {
+        "sam3": {
+            "available": state.sam3_available,
+            "loading": state.sam3_loading,
+            "progress": state.sam3_load_progress,
+            "error": state.sam3_load_error,
+        },
+        "gpu": {
+            "available": state.gpu_available,
+            "device": state.device,
+        },
+        "scene_analyzer": {
+            "initialized": state.scene_analyzer is not None,
+        },
+        "object_extractor": {
+            "initialized": state.object_extractor is not None,
+        },
+    }
 
 
 @app.post("/analyze", response_model=AnalyzeSceneResponse, tags=["Analysis"])
@@ -330,6 +493,11 @@ async def analyze_scene(request: AnalyzeSceneRequest):
     start_time = time.time()
 
     try:
+        # Wait for SAM3 if still loading (with 30s timeout for this endpoint)
+        if state.sam3_loading and state.scene_analyzer is None:
+            logger.info("Waiting for SAM3 to load before analyzing scene...")
+            await wait_for_sam3(timeout=30.0)
+
         # Load image
         image_path = Path(request.image_path)
         if not image_path.exists():
@@ -561,11 +729,17 @@ async def segment_text(request: SegmentTextRequest):
     """
     start_time = time.time()
 
+    # Wait for SAM3 if still loading
+    if state.sam3_loading:
+        logger.info("Waiting for SAM3 to load for text segmentation...")
+        await wait_for_sam3(timeout=60.0)
+
     if not state.sam3_available:
+        error_msg = state.sam3_load_error or "SAM3 not available. Install: pip install transformers>=4.45.0"
         return SegmentTextResponse(
             success=False,
             processing_time_ms=(time.time() - start_time) * 1000,
-            error="SAM3 not available. Install: pip install transformers>=4.45.0",
+            error=error_msg,
         )
 
     try:
@@ -956,6 +1130,7 @@ async def extract_objects(request: ExtractObjectsRequest):
             "errors": [],
             "extracted_files": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),  # Track when job was created
             "started_at": None,
             "completed_at": None,
             "duplicates_prevented": 0,
@@ -1080,6 +1255,7 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
             "errors": [],
             "extracted_files": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),  # Track when job was created
             "started_at": None,
             "completed_at": None,
             "duplicates_prevented": 0,
@@ -1168,10 +1344,20 @@ async def list_extraction_jobs():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
         status_str = status.value if hasattr(status, 'value') else str(status)
+
+        # Calculate progress
+        total = job.get("total_objects", 0)
+        extracted = job.get("extracted_objects", 0)
+        failed = job.get("failed_objects", 0)
+        progress = round(((extracted + failed) / total * 100), 1) if total > 0 else 0.0
+
         jobs.append({
             "job_id": job_id,
+            "type": "extraction",  # Frontend expects 'type' field
             "job_type": "extraction",
             "status": status_str,
+            "progress": progress,  # Add progress percentage
+            "created_at": job.get("created_at", job.get("started_at", datetime.now().isoformat())),
             "total_objects": job.get("total_objects", 0),
             "extracted_objects": job.get("extracted_objects", 0),
             "failed_objects": job.get("failed_objects", 0),
@@ -1191,7 +1377,17 @@ async def get_extraction_job_status(job_id: str):
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
     job = extraction_jobs[job_id]
-    return ExtractionJobStatus(**job)
+
+    # Calculate progress percentage
+    total = job.get("total_objects", 0)
+    extracted = job.get("extracted_objects", 0)
+    failed = job.get("failed_objects", 0)
+    progress = ((extracted + failed) / total * 100) if total > 0 else 0.0
+
+    return ExtractionJobStatus(
+        **{k: v for k, v in job.items() if k != "progress"},
+        progress=round(progress, 1)
+    )
 
 
 @app.post("/extract/single-object", response_model=ExtractSingleObjectResponse, tags=["Object Extraction"])
@@ -1321,6 +1517,7 @@ async def extract_from_imagenet(
             "errors": [],
             "extracted_files": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),  # Track when job was created
             "started_at": None,
             "completed_at": None,
             "extraction_type": "imagenet"
@@ -1375,7 +1572,7 @@ async def extract_from_imagenet(
         return {
             "success": True,
             "job_id": job_id,
-            "status": "queued",
+            "status": "pending",
             "message": f"ImageNet extraction job queued. Processing {num_classes} classes."
         }
 
@@ -1400,11 +1597,17 @@ async def sam3_segment_image(request: SAM3SegmentImageRequest):
     """
     start_time = time.time()
 
+    # Wait for SAM3 if still loading
+    if state.sam3_loading:
+        logger.info("Waiting for SAM3 to load for image segmentation...")
+        await wait_for_sam3(timeout=60.0)
+
     if not state.sam3_available:
+        error_msg = state.sam3_load_error or "SAM3 not available"
         return SAM3SegmentImageResponse(
             success=False,
             processing_time_ms=(time.time() - start_time) * 1000,
-            error="SAM3 not available"
+            error=error_msg
         )
 
     try:
@@ -1608,6 +1811,7 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
             "output_path": request.output_path,
             "errors": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),  # Track when job was created
             "started_at": None,
             "completed_at": None
         }
@@ -1686,10 +1890,21 @@ async def list_sam3_conversion_jobs():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
         status_str = status.value if hasattr(status, 'value') else str(status)
+
+        # Calculate progress
+        total = job.get("total_annotations", 0)
+        converted = job.get("converted_annotations", 0)
+        skipped = job.get("skipped_annotations", 0)
+        failed = job.get("failed_annotations", 0)
+        progress = round(((converted + skipped + failed) / total * 100), 1) if total > 0 else 0.0
+
         jobs.append({
             "job_id": job_id,
+            "type": "sam3_conversion",  # Frontend expects 'type' field
             "job_type": "sam3_conversion",
             "status": status_str,
+            "progress": progress,  # Add progress percentage
+            "created_at": job.get("created_at", job.get("started_at", datetime.now().isoformat())),
             "total_annotations": job.get("total_annotations", 0),
             "converted_annotations": job.get("converted_annotations", 0),
             "skipped_annotations": job.get("skipped_annotations", 0),
@@ -1710,7 +1925,18 @@ async def get_sam3_conversion_job_status(job_id: str):
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
     job = sam3_conversion_jobs[job_id]
-    return SAM3ConversionJobStatus(**job)
+
+    # Calculate progress percentage
+    total = job.get("total_annotations", 0)
+    converted = job.get("converted_annotations", 0)
+    skipped = job.get("skipped_annotations", 0)
+    failed = job.get("failed_annotations", 0)
+    progress = ((converted + skipped + failed) / total * 100) if total > 0 else 0.0
+
+    return SAM3ConversionJobStatus(
+        **{k: v for k, v in job.items() if k != "progress"},
+        progress=round(progress, 1)
+    )
 
 
 # =========================================================================
@@ -1725,10 +1951,16 @@ async def start_labeling_job(request: StartLabelingRequest):
     Uses SAM3 text prompts to detect and segment specified classes.
     Supports multiple image directories and output formats.
     """
+    # Wait for SAM3 if still loading
+    if state.sam3_loading:
+        logger.info("Waiting for SAM3 to load for labeling job...")
+        await wait_for_sam3(timeout=120.0)
+
     if not state.sam3_available:
+        error_msg = state.sam3_load_error or "SAM3 not available. This feature requires SAM3 for text-based segmentation."
         return LabelingJobResponse(
             success=False,
-            error="SAM3 not available. This feature requires SAM3 for text-based segmentation."
+            error=error_msg
         )
 
     try:
@@ -1790,6 +2022,7 @@ async def start_labeling_job(request: StartLabelingRequest):
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),  # Track when job was created
             "started_at": None,
             "completed_at": None,
             # Store request params for processing
@@ -1834,10 +2067,10 @@ async def start_labeling_job(request: StartLabelingRequest):
                 labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
                 labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
-                # Update database status to processing
+                # Update database status to running
                 if state.db:
                     try:
-                        state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+                        state.db.update_job_status(job_id, "running", started_at=datetime.now())
                     except Exception as e:
                         logger.warning(f"Failed to update job status in database: {e}")
 
@@ -1911,10 +2144,16 @@ async def start_relabeling_job(request: StartRelabelingRequest):
     - replace: Replace all annotations with new labeling
     - improve_segmentation: Convert bbox-only annotations to segmentations
     """
+    # Wait for SAM3 if still loading
+    if state.sam3_loading:
+        logger.info("Waiting for SAM3 to load for relabeling job...")
+        await wait_for_sam3(timeout=120.0)
+
     if not state.sam3_available:
+        error_msg = state.sam3_load_error or "SAM3 not available. This feature requires SAM3."
         return LabelingJobResponse(
             success=False,
-            error="SAM3 not available. This feature requires SAM3."
+            error=error_msg
         )
 
     try:
@@ -2050,12 +2289,20 @@ async def list_labeling_jobs():
             checkpoint_path = output_dir / "checkpoint.json"
             can_resume = checkpoint_path.exists()
 
+        # Calculate progress
+        total_images = job.get("total_images", 0)
+        processed_images = job.get("processed_images", 0)
+        progress = round((processed_images / total_images * 100), 1) if total_images > 0 else 0.0
+
         jobs.append({
             "job_id": job_id,
+            "type": "labeling",  # Frontend expects 'type' field
             "job_type": job.get("job_type", "labeling"),
             "status": status_str,
-            "total_images": job.get("total_images", 0),
-            "processed_images": job.get("processed_images", 0),
+            "progress": progress,  # Add progress percentage
+            "created_at": job.get("created_at", job.get("started_at", datetime.now().isoformat())),
+            "total_images": total_images,
+            "processed_images": processed_images,
             "total_objects_found": job.get("total_objects_found", 0),
             "objects_by_class": job.get("objects_by_class", {}),
             "output_dir": job.get("output_dir", ""),
@@ -2085,12 +2332,20 @@ async def list_labeling_jobs():
                     # Parse result_summary if available
                     result_summary = db_job.get("result_summary", {}) or {}
 
+                    # Calculate progress
+                    total_images = db_job.get("total_items", 0)
+                    processed_images = db_job.get("processed_items", 0)
+                    progress = round((processed_images / total_images * 100), 1) if total_images > 0 else 0.0
+
                     jobs.append({
                         "job_id": job_id,
+                        "type": "labeling",  # Frontend expects 'type' field
                         "job_type": "labeling",
                         "status": db_job.get("status", "unknown"),
-                        "total_images": db_job.get("total_items", 0),
-                        "processed_images": db_job.get("processed_items", 0),
+                        "progress": progress,  # Add progress percentage
+                        "created_at": db_job.get("created_at", db_job.get("started_at", datetime.now().isoformat())),
+                        "total_images": total_images,
+                        "processed_images": processed_images,
                         "total_objects_found": result_summary.get("total_objects_found", 0),
                         "objects_by_class": result_summary.get("objects_by_class", {}),
                         "output_dir": output_path,
@@ -2123,19 +2378,45 @@ async def get_labeling_job_status(job_id: str):
         checkpoint_path = output_dir / "checkpoint.json"
         can_resume = checkpoint_path.exists()
 
+    # Calculate progress percentage
+    total_images = job.get("total_images", 0)
+    processed_images = job.get("processed_images", 0)
+    progress = (processed_images / total_images * 100) if total_images > 0 else 0.0
+
+    # Get annotations count
+    total_objects = job.get("total_objects_found", 0)
+
+    # Build quality metrics if available
+    quality_metrics = None
+    if "quality_metrics" in job:
+        from app.models.extraction_schemas import LabelingQualityMetrics
+        qm = job["quality_metrics"]
+        quality_metrics = LabelingQualityMetrics(
+            avg_confidence=qm.get("avg_confidence", 0.0),
+            images_with_detections=qm.get("images_with_detections", 0),
+            images_without_detections=qm.get("images_without_detections", 0),
+            low_confidence_count=qm.get("low_confidence_count", 0),
+            total_detections=qm.get("total_detections", 0),
+        )
+
     return LabelingJobStatus(
         job_id=job_id,
         job_type=job.get("job_type", "labeling"),
         status=status or JobStatus.QUEUED,
-        total_images=job.get("total_images", 0),
-        processed_images=job.get("processed_images", 0),
-        total_objects_found=job.get("total_objects_found", 0),
+        total_images=total_images,
+        processed_images=processed_images,
+        progress=round(progress, 1),  # Percentage of completion
+        annotations_created=total_objects,  # Frontend expects this name
+        total_objects_found=total_objects,  # Keep for backwards compatibility
         objects_by_class=job.get("objects_by_class", {}),
         current_image=job.get("current_image", ""),
         output_dir=job.get("output_dir", ""),
         output_formats=job.get("output_formats", []),
         errors=job.get("errors", [])[:50],
+        warnings=job.get("warnings", [])[:20],  # Include warnings
+        quality_metrics=quality_metrics,  # Include quality metrics
         processing_time_ms=job.get("processing_time_ms", 0),
+        created_at=job.get("created_at"),  # When job was created
         started_at=job.get("started_at"),
         completed_at=job.get("completed_at"),
         can_resume=can_resume,
@@ -2447,7 +2728,7 @@ async def cancel_labeling_job(job_id: str):
     if state.db:
         db_job = state.db.get_job(job_id)
         if db_job and db_job.get("job_type") == "labeling":
-            if db_job.get("status") in ["processing", "queued"]:
+            if db_job.get("status") in ["running", "pending"]:
                 state.db.update_job_status(job_id, "cancelled")
                 return {
                     "success": True,
@@ -2751,6 +3032,21 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     preview_count = len(preview_paths)
     images_with_detections = 0
 
+    # Initialize quality metrics tracking
+    all_scores = []  # Track all detection scores for avg_confidence
+    low_confidence_count = 0  # Detections with score < 0.5
+    images_without_detections = 0
+    consecutive_errors = 0
+    max_consecutive_errors = 10  # Abort if this many consecutive errors
+    max_error_rate = 0.1  # Abort if error rate exceeds 10%
+
+    # Initialize optimization modules
+    prompt_optimizer = get_prompt_optimizer()
+    detection_validator = get_detection_validator()
+
+    # Initialize warnings list for class-level issues
+    job["warnings"] = job.get("warnings", [])
+
     # Initialize VRAM monitor if available
     vram_monitor = None
     if VRAM_MONITOR_AVAILABLE and VRAMMonitor is not None:
@@ -2840,15 +3136,21 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                 "height": h
             })
 
+            # Track annotations added for this image (for deduplication)
+            image_annotations_start_idx = len(coco_result["annotations"])
+
             # Process each class (cls is the search prompt)
             for cls in classes:
                 # Get final class name (may be different if mapping exists)
                 final_class = class_mapping.get(cls, cls) if class_mapping else cls
 
-                # Run SAM3 text prompt segmentation using original prompt
+                # Get optimized prompt for better detection
+                optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
+
+                # Run SAM3 text prompt segmentation using optimized prompt
                 inputs = state.sam3_processor(
                     images=pil_image,
-                    text=cls,  # Use original prompt for detection
+                    text=optimized_prompt,  # Use optimized prompt for detection
                     return_tensors="pt"
                 ).to(state.device)
 
@@ -2904,6 +3206,24 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
                     bbox = [float(x), float(y), float(bw), float(bh)]
 
+                    # Validate detection using DetectionValidator
+                    is_valid, rejection_reason, adjusted_score = detection_validator.validate_detection(
+                        mask=mask_np,
+                        bbox=bbox,
+                        class_name=final_class,
+                        image_size=(w, h),
+                        score=score_val,
+                    )
+
+                    if not is_valid:
+                        logger.debug(f"Rejected detection for '{final_class}': {rejection_reason}")
+                        continue
+
+                    # Track quality metrics
+                    all_scores.append(adjusted_score)
+                    if adjusted_score < 0.5:
+                        low_confidence_count += 1
+
                     # Apply padding if configured
                     if padding > 0:
                         bbox = _apply_padding_to_bbox(bbox, padding, w, h)
@@ -2916,6 +3236,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                         "bbox": bbox,
                         "area": area,
                         "iscrowd": 0,
+                        "_score": adjusted_score,  # Track score for potential dedup
                     }
 
                     # Add segmentation if task requires it
@@ -2935,6 +3256,30 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     # Track by final class name
                     job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
                     job["total_objects_found"] += 1
+
+            # Deduplicate annotations for this image (remove overlapping detections)
+            image_annotations = coco_result["annotations"][image_annotations_start_idx:]
+            if len(image_annotations) > 1:
+                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.7)
+                removed_count = len(image_annotations) - len(deduped)
+                if removed_count > 0:
+                    # Update the annotations list
+                    coco_result["annotations"] = coco_result["annotations"][:image_annotations_start_idx] + deduped
+                    # Adjust counts
+                    job["total_objects_found"] -= removed_count
+                    # Re-assign annotation IDs for this image's annotations
+                    for i, ann in enumerate(coco_result["annotations"][image_annotations_start_idx:]):
+                        ann["id"] = image_annotations_start_idx + i + 1
+                    annotation_id = len(coco_result["annotations"]) + 1
+                    logger.debug(f"Deduplicated {removed_count} overlapping annotations for {Path(img_path).name}")
+
+            # Track images without detections
+            current_image_detections = len(coco_result["annotations"]) - image_annotations_start_idx
+            if current_image_detections == 0:
+                images_without_detections += 1
+
+            # Reset consecutive error counter on successful processing
+            consecutive_errors = 0
 
             # Save preview image if this image had detections
             if save_visualizations and instances_added > 0:
@@ -3005,7 +3350,28 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             if (img_idx + 1) % yield_interval == 0:
                 await asyncio.sleep(0)
 
+        except torch.cuda.OutOfMemoryError as e:
+            # OOM: Clean memory and retry with exponential backoff
+            consecutive_errors += 1
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            retry_count = job.get("_retry_count", {}).get(img_path, 0)
+            if retry_count < 3:
+                # Set up retry
+                job.setdefault("_retry_count", {})[img_path] = retry_count + 1
+                wait_time = 2 ** retry_count  # Exponential backoff: 1, 2, 4 seconds
+                logger.warning(f"OOM on {img_path}, retry {retry_count + 1}/3 after {wait_time}s")
+                await asyncio.sleep(wait_time)
+                # Re-add to process queue (will be picked up next iteration)
+                image_paths.insert(img_idx + 1, img_path)
+                continue
+            else:
+                job["errors"].append(f"OOM error after 3 retries: {img_path}")
+                logger.error(f"OOM error after 3 retries: {img_path}")
+
         except Exception as e:
+            consecutive_errors += 1
             job["errors"].append(f"Error processing {img_path}: {str(e)}")
             logger.error(f"Error processing {img_path}: {e}")
             # Save checkpoint on error so we can resume
@@ -3017,6 +3383,52 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+        # Check abort conditions
+        processed = img_idx + 1
+        error_count = len(job.get("errors", []))
+
+        # Abort if too many consecutive errors
+        if consecutive_errors >= max_consecutive_errors:
+            job["status"] = "failed"
+            job["error"] = f"Too many consecutive errors ({consecutive_errors}). Check input data or GPU memory."
+            logger.error(f"Job {job_id} aborted: {job['error']}")
+            break
+
+        # Abort if error rate exceeds threshold (after processing enough images)
+        if processed >= 50 and error_count / processed > max_error_rate:
+            job["status"] = "failed"
+            job["error"] = f"Error rate too high: {error_count}/{processed} ({100*error_count/processed:.1f}%). Check class names or image quality."
+            logger.error(f"Job {job_id} aborted: {job['error']}")
+            break
+
+        # Add warning if a class has no detections after significant processing
+        if processed >= 20 and processed % 20 == 0:
+            for cls in classes:
+                final_cls = class_mapping.get(cls, cls) if class_mapping else cls
+                if job["objects_by_class"].get(final_cls, 0) == 0:
+                    warning = f"No detections for '{cls}' after {processed} images"
+                    if warning not in job.get("warnings", []):
+                        job.setdefault("warnings", []).append(warning)
+                        logger.warning(f"Job {job_id}: {warning}")
+
+    # Update quality metrics
+    job["quality_metrics"] = {
+        "avg_confidence": sum(all_scores) / len(all_scores) if all_scores else 0.0,
+        "images_with_detections": images_with_detections,
+        "images_without_detections": images_without_detections,
+        "low_confidence_count": low_confidence_count,
+        "total_detections": len(all_scores),
+    }
+
+    # Check if job was aborted
+    if job.get("status") == "failed":
+        # Save partial results even on failure
+        coco_path = output_dir / "annotations_partial.json"
+        with open(coco_path, 'w') as f:
+            json.dump(coco_result, f, indent=2)
+        logger.info(f"Saved partial results to {coco_path}")
+        return
 
     # Save results
     job["processed_images"] = len(image_paths)
