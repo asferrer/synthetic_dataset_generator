@@ -20,12 +20,23 @@ services:
       - OBJECTS_PATH=/app/datasets/Objects
       # Job database path
       - JOBS_DB_PATH=/shared/db/jobs.db
+      # Filesystem endpoints configuration
+      - DATA_BASE_PATH=/app/datasets
+      - DATA_DIR=/app/datasets
+      - DATASETS_DIR=/app/datasets
+      - UPLOADS_DIR=/app/datasets/uploads
+      - OUTPUT_PATH=/app/output
+      # Domain configuration paths
+      - DOMAINS_PATH=/app/config/domains
+      - USER_DOMAINS_PATH=/shared/domains
     volumes:
       - shared_data:/shared
       - jobs_db:/shared/db
       # Dataset con Backgrounds_filtered/ y Objects/
       # Configura DATASET_PATH en .env.microservices
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+      # Domain configurations (built-in)
+      - ./config/domains:/app/config/domains:ro
     # Límites de recursos - hardware potente (96GB RAM, Core Ultra 9 - 24 cores)
     mem_limit: 4G
     memswap_limit: 4G
@@ -126,11 +137,13 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
+      # Service uses lazy loading - health check passes immediately
+      # SAM3 model loads in background (check /model-status endpoint)
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
       interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 30s  # Fast startup with lazy SAM3 loading
     networks:
       - synth-network
     restart: unless-stopped
@@ -221,38 +234,34 @@ services:
     restart: unless-stopped
 
   # ============================================
-  # Frontend - Streamlit UI
+  # Frontend - Vue.js Modern UI (Principal)
   # ============================================
+  # Nginx sirve el frontend y actúa como reverse proxy para las APIs:
+  #   /api/*           -> gateway:8000
+  #   /segmentation/*  -> segmentation:8002
   frontend:
     build:
-      context: .
-      dockerfile: frontend/Dockerfile
+      context: ./frontend-vue
+      dockerfile: Dockerfile
     container_name: synth-frontend
     ports:
-      - "8501:8501"
-    environment:
-      - GATEWAY_URL=http://gateway:8000
-      - SEGMENTATION_SERVICE_URL=http://segmentation:8002
-      - PYTHONUNBUFFERED=1
-      # Rutas por defecto para datasets
-      - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
-      - OBJECTS_PATH=/app/datasets/Objects
-      - OUTPUT_PATH=/app/output
-    volumes:
-      - shared_data:/shared:ro
-      # Dataset con Backgrounds_filtered/ y Objects/
-      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
-      # Output para imágenes generadas (lectura/escritura)
-      - ./output:/app/output
-    # Límites de recursos - interfaz web
-    mem_limit: 2G
-    memswap_limit: 2G
-    cpus: 2
+      - "3000:3000"
+    # No se necesitan variables VITE_* - nginx hace proxy a las APIs internas
+    # Límites de recursos - interfaz web ligera (nginx sirve archivos estáticos)
+    mem_limit: 256M
+    memswap_limit: 256M
+    cpus: 0.5
     depends_on:
       gateway:
         condition: service_healthy
       segmentation:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     networks:
       - synth-network
     restart: unless-stopped

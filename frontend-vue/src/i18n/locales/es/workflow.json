@@ -1,0 +1,290 @@
+{
+  "home": {
+    "welcome": "Bienvenido",
+    "subtitle": "Gestiona tus datasets sintéticos y monitorea los trabajos de generación",
+    "startGeneration": "Iniciar Nueva Generación",
+    "quickStart": "Inicio Rápido del Flujo",
+    "activeDomain": "Dominio Activo",
+    "domainDescription": "El dominio activo determina qué regiones, efectos y reglas físicas se usan durante la generación.",
+    "recentJobs": "Trabajos Recientes",
+    "noJobs": "Aún no hay trabajos. Inicia una generación para ver trabajos aquí."
+  },
+  "metrics": {
+    "totalDatasets": "Total de Datasets",
+    "totalImages": "Total de Imágenes",
+    "activeJobs": "Trabajos Activos",
+    "servicesOnline": "Servicios En Línea"
+  },
+  "steps": {
+    "analysis": {
+      "name": "Análisis",
+      "description": "Analiza la estructura de tu dataset"
+    },
+    "configure": {
+      "name": "Configurar",
+      "description": "Configura los efectos de aumentación"
+    },
+    "source": {
+      "name": "Fuentes",
+      "description": "Selecciona imágenes fuente"
+    },
+    "generate": {
+      "name": "Generar",
+      "description": "Crea datos sintéticos"
+    },
+    "export": {
+      "name": "Exportar",
+      "description": "Exporta en varios formatos"
+    }
+  },
+  "analysis": {
+    "title": "Análisis de Dataset",
+    "subtitle": "Sube y analiza tu dataset en formato COCO",
+    "uploadDataset": "Subir Dataset",
+    "selectDataset": "Seleccionar Dataset",
+    "dropzone": "Arrastra tu archivo JSON COCO aquí o haz clic para explorar",
+    "analyzing": "Analizando dataset...",
+    "results": {
+      "title": "Resultados del Análisis",
+      "totalImages": "Total de Imágenes",
+      "totalAnnotations": "Total de Anotaciones",
+      "categories": "Categorías",
+      "avgAnnotationsPerImage": "Prom. Anotaciones/Imagen"
+    },
+    "notifications": {
+      "uploadComplete": "Subida Completa",
+      "uploadCompleteMsg": "Dataset subido exitosamente. Analizando...",
+      "uploadFailed": "Error de Subida",
+      "analysisComplete": "Análisis Completo",
+      "analysisCompleteMsg": "Dataset analizado exitosamente",
+      "analysisFailed": "Error de Análisis",
+      "invalidFile": "Archivo Inválido",
+      "invalidFileMsg": "Por favor sube un archivo JSON COCO"
+    }
+  },
+  "configure": {
+    "title": "Configurar Efectos y Ubicación",
+    "subtitle": "Personaliza los efectos de aumentación para tus datos sintéticos",
+    "effectsPresets": "Presets de Efectos",
+    "customEffects": "Efectos Personalizados",
+    "intensity": "Intensidad",
+    "enabled": "Habilitado",
+    "disabled": "Deshabilitado",
+    "presets": {
+      "subtle": "Sutil",
+      "moderate": "Moderado",
+      "strong": "Fuerte",
+      "custom": "Personalizado"
+    }
+  },
+  "sourceSelection": {
+    "title": "Selección de Fuentes",
+    "subtitle": "Selecciona imágenes de fondo y fuentes de objetos",
+    "backgroundImages": "Imágenes de Fondo",
+    "objectSources": "Fuentes de Objetos",
+    "selectDirectory": "Seleccionar Directorio",
+    "imagesFound": "{count} imágenes encontradas",
+    "noImagesFound": "No se encontraron imágenes en el directorio seleccionado"
+  },
+  "generation": {
+    "title": "Generar Datos Sintéticos",
+    "subtitle": "Configura objetivos de generación, validación y opciones de procesamiento.",
+    "configRequired": "Configuración Requerida",
+    "configRequiredMsg": "Por favor completa los pasos de Análisis y Selección de Fuentes antes de generar.",
+    "activeLabelingJobs": "Trabajos de Etiquetado Activos",
+    "labelingJobsMsg": "{count} trabajo(s) de etiquetado en ejecución.",
+    "tabs": {
+      "targets": "Objetivos",
+      "validation": "Validación",
+      "processing": "Procesamiento",
+      "lighting": "Iluminación",
+      "metadata": "Metadatos"
+    },
+    "targets": {
+      "title": "Cantidad Objetivo por Categoría",
+      "description": "Establece cuántas imágenes quieres generar para cada categoría.",
+      "setAll": "Establecer Todos",
+      "noCategories": "No se encontraron categorías. Por favor analiza un dataset primero.",
+      "totalImages": "Total de imágenes a generar: {count}"
+    },
+    "options": {
+      "title": "Opciones de Generación",
+      "useDepth": "Usar estimación de profundidad",
+      "useDepthDesc": "Habilita ubicación de objetos basada en profundidad",
+      "useSegmentation": "Usar segmentación",
+      "useSegmentationDesc": "Habilita detección precisa de bordes de objetos",
+      "depthAwarePlacement": "Ubicación según profundidad",
+      "depthAwarePlacementDesc": "Escala objetos basándose en profundidad para realismo"
+    },
+    "validation": {
+      "title": "Configuración de Validación",
+      "description": "Configura la validación de calidad para imágenes generadas.",
+      "identity": {
+        "title": "Validación de Identidad",
+        "description": "Verifica que los objetos mantengan identidad después de transformaciones",
+        "maxColorShift": "Cambio Máx. de Color",
+        "minSharpnessRatio": "Ratio Mín. de Nitidez",
+        "minContrastRatio": "Ratio Mín. de Contraste"
+      },
+      "quality": {
+        "title": "Validación de Calidad",
+        "description": "Valida calidad perceptual y anomalías",
+        "minPerceptualQuality": "Calidad Perceptual Mín.",
+        "minAnomalyScore": "Puntuación Mín. de Anomalía"
+      },
+      "physics": {
+        "title": "Validación Física",
+        "description": "Valida ubicaciones físicamente plausibles"
+      },
+      "rejectInvalid": {
+        "title": "Rechazar Imágenes Inválidas",
+        "description": "Descarta imágenes que fallen la validación"
+      }
+    },
+    "processing": {
+      "title": "Configuración de Procesamiento por Lotes",
+      "description": "Configura el procesamiento paralelo y gestión de recursos.",
+      "parallel": {
+        "title": "Procesamiento Paralelo",
+        "description": "Procesa múltiples imágenes concurrentemente",
+        "concurrentLimit": "Límite de Concurrencia",
+        "concurrentLimitDesc": "Máx. tareas de generación concurrentes"
+      },
+      "vram": {
+        "title": "Gestión de VRAM",
+        "threshold": "Umbral de VRAM",
+        "thresholdDesc": "Detiene nuevas tareas cuando VRAM excede este umbral"
+      },
+      "debug": {
+        "title": "Salida de Depuración",
+        "description": "Guarda información de depuración del pipeline"
+      }
+    },
+    "lighting": {
+      "title": "Configuración de Estimación de Iluminación",
+      "description": "Configura cómo se estima la iluminación de las imágenes de fondo.",
+      "detection": {
+        "title": "Detección de Luz",
+        "maxSources": "Máx. Fuentes de Luz",
+        "intensityThreshold": "Umbral de Intensidad"
+      },
+      "advanced": {
+        "title": "Opciones Avanzadas",
+        "estimateHdr": "Estimar HDR",
+        "waterAttenuation": "Aplicar Atenuación de Agua"
+      },
+      "depth": {
+        "title": "Categoría de Profundidad",
+        "label": "Profundidad del Agua",
+        "description": "Afecta la atenuación de luz y cambio de color",
+        "shallow": "Superficial (0-5m)",
+        "mid": "Media (5-20m)",
+        "deep": "Profunda (20m+)"
+      }
+    },
+    "metadata": {
+      "title": "Metadatos del Dataset",
+      "description": "Agrega metadatos a tu dataset generado.",
+      "name": "Nombre del Dataset",
+      "version": "Versión",
+      "descriptionField": "Descripción",
+      "descriptionPlaceholder": "Describe tu dataset...",
+      "contributor": "Contribuidor",
+      "url": "URL",
+      "license": "Licencia",
+      "licenseUrl": "URL de Licencia"
+    },
+    "progress": {
+      "title": "Progreso de Generación",
+      "generating": "Generando...",
+      "jobId": "ID del Trabajo: {id}"
+    },
+    "results": {
+      "imagesGenerated": "Imágenes Generadas",
+      "annotations": "Anotaciones",
+      "duration": "Duración"
+    },
+    "actions": {
+      "startGeneration": "Iniciar Generación",
+      "continueToExport": "Continuar a Exportar"
+    },
+    "notifications": {
+      "started": "Generación Iniciada",
+      "startedMsg": "ID del Trabajo: {id}",
+      "completed": "Generación Completa",
+      "completedMsg": "¡Tu dataset sintético está listo!",
+      "failed": "Generación Fallida"
+    }
+  },
+  "export": {
+    "title": "Exportar Dataset",
+    "subtitle": "Exporta tu dataset en varios formatos",
+    "selectDataset": "Seleccionar Dataset",
+    "selectFormat": "Seleccionar Formato",
+    "outputDirectory": "Directorio de Salida",
+    "formats": {
+      "coco": "COCO JSON",
+      "yolo": "YOLO",
+      "voc": "Pascal VOC",
+      "createml": "CreateML"
+    },
+    "actions": {
+      "export": "Exportar Dataset"
+    },
+    "notifications": {
+      "started": "Exportación Iniciada",
+      "completed": "Exportación Completa",
+      "failed": "Exportación Fallida"
+    }
+  },
+  "combine": {
+    "title": "Combinar Datasets",
+    "subtitle": "Fusiona múltiples datasets en uno",
+    "selectDatasets": "Selecciona Datasets a Combinar",
+    "outputName": "Nombre del Dataset de Salida",
+    "minDatasets": "Selecciona al menos 2 datasets para combinar",
+    "actions": {
+      "combine": "Combinar Datasets"
+    },
+    "notifications": {
+      "started": "Combinando Datasets",
+      "completed": "Datasets Combinados",
+      "failed": "Combinación Fallida",
+      "notEnough": "Datasets Insuficientes"
+    }
+  },
+  "splits": {
+    "title": "Divisiones de Dataset",
+    "subtitle": "Divide tu dataset en conjuntos de entrenamiento, validación y prueba",
+    "selectDataset": "Seleccionar Dataset a Dividir",
+    "splitType": "Tipo de División",
+    "types": {
+      "percentage": "División por Porcentaje",
+      "kfold": "Validación Cruzada K-Fold"
+    },
+    "percentage": {
+      "train": "Entrenamiento",
+      "val": "Validación",
+      "test": "Prueba",
+      "mustEqual100": "Entrenamiento + Validación + Prueba debe ser igual a 100%"
+    },
+    "kfold": {
+      "numFolds": "Número de Folds",
+      "folds": "folds"
+    },
+    "outputDirectory": "Directorio de Salida",
+    "actions": {
+      "split": "Dividir Dataset"
+    },
+    "notifications": {
+      "completed": "División Completa",
+      "completedMsg": "Dataset dividido exitosamente",
+      "kfoldCompleted": "División K-Fold Completa",
+      "kfoldCompletedMsg": "Se crearon {n} folds",
+      "failed": "División Fallida",
+      "invalidRatios": "Proporciones Inválidas",
+      "missingDataset": "Dataset Faltante",
+      "missingDatasetMsg": "Por favor selecciona un dataset para dividir"
+    }
+  }
+}

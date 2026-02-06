@@ -1,0 +1,265 @@
+{
+  "domain_id": "underwater",
+  "name": "Underwater Marine",
+  "description": "Underwater scenes with marine life and debris detection. Optimized for oceanic environments with caustics, water tinting, and buoyancy physics.",
+  "version": "1.0.0",
+  "icon": "Fish",
+  "is_builtin": true,
+  "regions": [
+    {
+      "id": "open_water",
+      "name": "open_water",
+      "display_name": "Open Water",
+      "color_rgb": [255, 150, 50],
+      "sam3_prompt": "water",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [80, 30, 50], "max": [135, 255, 255]}
+        ],
+        "position_zone": {"y_min": 0.2, "y_max": 0.8}
+      }
+    },
+    {
+      "id": "seafloor",
+      "name": "seafloor",
+      "display_name": "Seafloor",
+      "color_rgb": [50, 150, 200],
+      "sam3_prompt": "seafloor",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.55, "y_max": 1.0},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 0], "max": [180, 150, 180]}
+        ]
+      }
+    },
+    {
+      "id": "surface",
+      "name": "surface",
+      "display_name": "Water Surface",
+      "color_rgb": [255, 255, 200],
+      "sam3_prompt": "water surface",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.0, "y_max": 0.3},
+        "brightness_range": {"min": 0.6, "max": 1.0}
+      }
+    },
+    {
+      "id": "vegetation",
+      "name": "vegetation",
+      "display_name": "Vegetation (Seaweed/Kelp)",
+      "color_rgb": [50, 200, 50],
+      "sam3_prompt": "seaweed",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [35, 40, 30], "max": [85, 255, 200]}
+        ]
+      }
+    },
+    {
+      "id": "rocky",
+      "name": "rocky",
+      "display_name": "Rocky Area",
+      "color_rgb": [100, 100, 100],
+      "sam3_prompt": "rock",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 30], "max": [180, 60, 150]}
+        ]
+      }
+    },
+    {
+      "id": "sandy",
+      "name": "sandy",
+      "display_name": "Sandy Bottom",
+      "color_rgb": [100, 180, 220],
+      "sam3_prompt": "sand",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.6, "y_max": 1.0},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [15, 20, 100], "max": [35, 120, 255]}
+        ]
+      }
+    },
+    {
+      "id": "murky",
+      "name": "murky",
+      "display_name": "Murky Water",
+      "color_rgb": [80, 80, 60],
+      "sam3_prompt": null,
+      "detection_heuristics": {
+        "brightness_range": {"min": 0.0, "max": 0.4},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [20, 10, 20], "max": [60, 80, 120]}
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "unknown",
+      "display_name": "Unknown",
+      "color_rgb": [128, 128, 128],
+      "sam3_prompt": null
+    }
+  ],
+  "objects": [
+    {"class_name": "fish", "display_name": "Fish", "real_world_size_meters": 0.25, "keywords": ["fish", "tuna", "salmon", "bass", "trout", "cod"], "physics_properties": {"density_relative": 1.05, "behavior": "hover"}},
+    {"class_name": "small_fish", "display_name": "Small Fish", "real_world_size_meters": 0.10, "keywords": ["small_fish", "minnow"], "physics_properties": {"density_relative": 1.02, "behavior": "hover"}},
+    {"class_name": "large_fish", "display_name": "Large Fish", "real_world_size_meters": 0.60, "keywords": ["large_fish", "grouper"], "physics_properties": {"density_relative": 1.08, "behavior": "hover"}},
+    {"class_name": "shark", "display_name": "Shark", "real_world_size_meters": 2.5, "keywords": ["shark", "tiburon"], "physics_properties": {"density_relative": 1.08, "behavior": "hover"}},
+    {"class_name": "whale", "display_name": "Whale", "real_world_size_meters": 12.0, "keywords": ["whale", "ballena"], "physics_properties": {"density_relative": 1.03, "behavior": "hover"}},
+    {"class_name": "dolphin", "display_name": "Dolphin", "real_world_size_meters": 2.5, "keywords": ["dolphin", "delfin"], "physics_properties": {"density_relative": 1.02, "behavior": "hover"}},
+    {"class_name": "turtle", "display_name": "Sea Turtle", "real_world_size_meters": 0.8, "keywords": ["turtle", "tortuga"], "physics_properties": {"density_relative": 1.05, "behavior": "hover"}},
+    {"class_name": "jellyfish", "display_name": "Jellyfish", "real_world_size_meters": 0.30, "keywords": ["jellyfish", "medusa"], "physics_properties": {"density_relative": 0.98, "behavior": "float"}},
+    {"class_name": "octopus", "display_name": "Octopus", "real_world_size_meters": 0.50, "keywords": ["octopus", "pulpo"], "physics_properties": {"density_relative": 1.04, "behavior": "hover"}},
+    {"class_name": "squid", "display_name": "Squid", "real_world_size_meters": 0.40, "keywords": ["squid", "calamar"], "physics_properties": {"density_relative": 1.04, "behavior": "hover"}},
+    {"class_name": "crab", "display_name": "Crab", "real_world_size_meters": 0.15, "keywords": ["crab", "cangrejo"], "physics_properties": {"density_relative": 1.80, "behavior": "sink"}},
+    {"class_name": "lobster", "display_name": "Lobster", "real_world_size_meters": 0.35, "keywords": ["lobster", "langosta"], "physics_properties": {"density_relative": 1.50, "behavior": "sink"}},
+    {"class_name": "starfish", "display_name": "Starfish", "real_world_size_meters": 0.20, "keywords": ["starfish", "estrella"], "physics_properties": {"density_relative": 1.40, "behavior": "sink"}},
+    {"class_name": "seahorse", "display_name": "Seahorse", "real_world_size_meters": 0.15, "keywords": ["seahorse", "caballito"], "physics_properties": {"density_relative": 1.05, "behavior": "hover"}},
+    {"class_name": "ray", "display_name": "Ray", "real_world_size_meters": 1.5, "keywords": ["ray", "manta", "raya"], "physics_properties": {"density_relative": 1.06, "behavior": "hover"}},
+    {"class_name": "eel", "display_name": "Eel", "real_world_size_meters": 0.80, "keywords": ["eel", "anguila"], "physics_properties": {"density_relative": 1.05, "behavior": "hover"}},
+    {"class_name": "coral", "display_name": "Coral", "real_world_size_meters": 0.40, "keywords": ["coral"], "physics_properties": {"density_relative": 2.50, "behavior": "static"}},
+    {"class_name": "plastic", "display_name": "Plastic", "real_world_size_meters": 0.15, "keywords": ["plastic", "plastico", "wrapper"], "physics_properties": {"density_relative": 0.95, "behavior": "float"}},
+    {"class_name": "plastic_bag", "display_name": "Plastic Bag", "real_world_size_meters": 0.30, "keywords": ["plastic_bag", "bolsa"], "physics_properties": {"density_relative": 0.92, "behavior": "float"}},
+    {"class_name": "plastic_bottle", "display_name": "Plastic Bottle", "real_world_size_meters": 0.25, "keywords": ["plastic_bottle"], "physics_properties": {"density_relative": 0.90, "behavior": "float"}},
+    {"class_name": "bottle", "display_name": "Bottle", "real_world_size_meters": 0.25, "keywords": ["bottle", "botella"], "physics_properties": {"density_relative": 1.10, "behavior": "sink"}},
+    {"class_name": "can", "display_name": "Can", "real_world_size_meters": 0.12, "keywords": ["can", "lata", "aluminum"], "physics_properties": {"density_relative": 2.70, "behavior": "sink"}},
+    {"class_name": "tire", "display_name": "Tire", "real_world_size_meters": 0.65, "keywords": ["tire", "tyre", "llanta", "neumatico"], "physics_properties": {"density_relative": 1.20, "behavior": "sink"}},
+    {"class_name": "rope", "display_name": "Rope", "real_world_size_meters": 0.03, "keywords": ["rope", "cuerda", "line", "string"], "physics_properties": {"density_relative": 1.10, "behavior": "hover"}},
+    {"class_name": "net", "display_name": "Net", "real_world_size_meters": 0.50, "keywords": ["net", "red"], "physics_properties": {"density_relative": 1.05, "behavior": "hover"}},
+    {"class_name": "fishing_net", "display_name": "Fishing Net", "real_world_size_meters": 1.5, "keywords": ["fishing_net", "fishing net"], "physics_properties": {"density_relative": 1.08, "behavior": "hover"}},
+    {"class_name": "debris", "display_name": "Debris", "real_world_size_meters": 0.25, "keywords": ["debris", "escombros"], "physics_properties": {"density_relative": 1.30, "behavior": "sink"}},
+    {"class_name": "metal_debris", "display_name": "Metal Debris", "real_world_size_meters": 0.35, "keywords": ["metal_debris", "metal"], "physics_properties": {"density_relative": 7.80, "behavior": "sink"}},
+    {"class_name": "glass", "display_name": "Glass", "real_world_size_meters": 0.20, "keywords": ["glass", "vidrio"], "physics_properties": {"density_relative": 2.50, "behavior": "sink"}}
+  ],
+  "compatibility_matrix": {
+    "fish": {"open_water": 1.0, "surface": 0.8, "vegetation": 0.7, "seafloor": 0.5, "rocky": 0.6, "murky": 0.4},
+    "small_fish": {"open_water": 1.0, "surface": 0.9, "vegetation": 0.8, "seafloor": 0.4, "rocky": 0.5, "murky": 0.3},
+    "large_fish": {"open_water": 1.0, "surface": 0.7, "vegetation": 0.5, "seafloor": 0.6, "rocky": 0.6, "murky": 0.4},
+    "shark": {"open_water": 1.0, "surface": 0.9, "seafloor": 0.3, "vegetation": 0.4},
+    "whale": {"open_water": 1.0, "surface": 0.8, "seafloor": 0.1},
+    "dolphin": {"open_water": 1.0, "surface": 0.9, "seafloor": 0.2},
+    "turtle": {"open_water": 0.9, "surface": 1.0, "seafloor": 0.6, "vegetation": 0.7},
+    "jellyfish": {"open_water": 1.0, "surface": 0.9, "seafloor": 0.2},
+    "octopus": {"seafloor": 1.0, "rocky": 1.0, "open_water": 0.4, "vegetation": 0.7},
+    "squid": {"open_water": 1.0, "surface": 0.7, "seafloor": 0.3},
+    "crab": {"seafloor": 1.0, "sandy": 1.0, "rocky": 0.9, "open_water": 0.1},
+    "lobster": {"seafloor": 1.0, "rocky": 1.0, "sandy": 0.8, "open_water": 0.1},
+    "starfish": {"seafloor": 1.0, "sandy": 1.0, "rocky": 0.8, "open_water": 0.1},
+    "seahorse": {"vegetation": 1.0, "open_water": 0.6, "rocky": 0.5, "seafloor": 0.4},
+    "ray": {"seafloor": 1.0, "sandy": 1.0, "open_water": 0.7},
+    "eel": {"rocky": 1.0, "seafloor": 0.9, "vegetation": 0.7, "open_water": 0.5},
+    "coral": {"seafloor": 1.0, "rocky": 1.0},
+    "plastic": {"open_water": 0.9, "surface": 1.0, "seafloor": 0.7, "vegetation": 0.6},
+    "plastic_bag": {"open_water": 1.0, "surface": 1.0, "seafloor": 0.5},
+    "plastic_bottle": {"surface": 1.0, "open_water": 0.8, "seafloor": 0.6},
+    "bottle": {"surface": 0.9, "open_water": 0.7, "seafloor": 0.8},
+    "can": {"seafloor": 1.0, "sandy": 1.0, "rocky": 0.8, "open_water": 0.3, "surface": 0.1},
+    "tire": {"seafloor": 1.0, "sandy": 0.9, "rocky": 0.8, "open_water": 0.2},
+    "rope": {"open_water": 0.8, "seafloor": 0.7, "vegetation": 0.6, "surface": 0.5},
+    "net": {"open_water": 0.9, "seafloor": 0.7, "vegetation": 0.8, "surface": 0.6},
+    "fishing_net": {"open_water": 0.9, "seafloor": 0.8, "vegetation": 0.7, "rocky": 0.6},
+    "debris": {"seafloor": 1.0, "sandy": 0.9, "rocky": 0.8, "open_water": 0.4},
+    "metal_debris": {"seafloor": 1.0, "sandy": 1.0, "rocky": 0.9, "open_water": 0.2},
+    "glass": {"seafloor": 1.0, "sandy": 1.0, "open_water": 0.3}
+  },
+  "effects": {
+    "domain_specific": [
+      {
+        "effect_id": "underwater_tint",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.15,
+          "water_color_bgr": [120, 80, 20],
+          "depth_falloff": true
+        }
+      },
+      {
+        "effect_id": "caustics",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.10,
+          "deterministic": true,
+          "pattern_scale": 1.0
+        }
+      },
+      {
+        "effect_id": "water_attenuation",
+        "enabled_by_default": true,
+        "parameters": {
+          "clarity": "clear",
+          "attenuation_coefficients": {
+            "red": 0.4,
+            "green": 0.07,
+            "blue": 0.02
+          }
+        }
+      }
+    ],
+    "disabled": [],
+    "universal_overrides": {
+      "color_correction": {"color_intensity": 0.15},
+      "blur_matching": {"blur_strength": 0.4},
+      "lighting": {"lighting_type": "ambient", "lighting_intensity": 0.4},
+      "shadows": {"shadow_opacity": 0.08}
+    }
+  },
+  "physics": {
+    "physics_type": "buoyancy",
+    "medium_density": 1.0,
+    "float_threshold": 0.95,
+    "sink_threshold": 1.15,
+    "surface_zone": 0.25,
+    "bottom_zone": 0.75,
+    "gravity_direction": "down"
+  },
+  "presets": [
+    {
+      "id": "clear_water",
+      "name": "Clear Water",
+      "description": "Crystal clear tropical waters with visible caustics",
+      "icon": "Waves",
+      "config": {
+        "underwater": {"underwater_intensity": 0.12, "water_clarity": "clear"},
+        "caustics": {"caustics_intensity": 0.15}
+      }
+    },
+    {
+      "id": "murky_water",
+      "name": "Murky Water",
+      "description": "Low visibility murky conditions",
+      "icon": "CloudFog",
+      "config": {
+        "underwater": {"underwater_intensity": 0.25, "water_clarity": "murky"},
+        "caustics": {"caustics_intensity": 0.05}
+      }
+    },
+    {
+      "id": "deep_ocean",
+      "name": "Deep Ocean",
+      "description": "Deep water with strong blue tint and minimal caustics",
+      "icon": "Anchor",
+      "config": {
+        "underwater": {"underwater_intensity": 0.30, "water_color": [150, 100, 30]},
+        "caustics": {"enabled": false},
+        "lighting": {"lighting_intensity": 0.2}
+      }
+    }
+  ],
+  "labeling_templates": [
+    {
+      "id": "marine_life",
+      "name": "Marine Life",
+      "description": "Fish, sharks, and other sea creatures",
+      "icon": "Fish",
+      "classes": ["fish", "shark", "turtle", "jellyfish", "octopus", "crab", "starfish", "seahorse", "ray", "eel", "whale", "dolphin", "squid", "lobster"]
+    },
+    {
+      "id": "marine_debris",
+      "name": "Marine Debris",
+      "description": "Plastic and other underwater pollution",
+      "icon": "Trash2",
+      "classes": ["plastic", "plastic_bag", "plastic_bottle", "bottle", "can", "tire", "rope", "net", "fishing_net", "debris", "metal_debris", "glass"]
+    }
+  ]
+}

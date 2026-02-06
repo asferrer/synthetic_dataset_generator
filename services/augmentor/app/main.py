@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
         logger.info("Job database initialized")
 
         # Recover interrupted jobs
-        processing_jobs = state.db.list_jobs(service="augmentor", status="processing")
+        processing_jobs = state.db.list_jobs(service="augmentor", status="running")
         for job in processing_jobs:
             output_path = job.get("output_path", "")
             progress_file = Path(output_path) / "progress.json" if output_path else None
@@ -365,7 +365,7 @@ async def compose_batch(request: ComposeBatchRequest, background_tasks: Backgrou
 
     ## Returns
     - **job_id**: Use this to track progress
-    - **status**: "queued" initially
+    - **status**: "pending" initially
     """
     import time
     start_time = time.time()
@@ -410,7 +410,7 @@ async def compose_batch(request: ComposeBatchRequest, background_tasks: Backgrou
     return ComposeBatchResponse(
         success=True,
         job_id=job_id,
-        status="queued",
+        status="pending",
         images_pending=request.num_images,
         processing_time_ms=(time.time() - start_time) * 1000,
     )
@@ -487,9 +487,14 @@ async def list_jobs():
         synthetic_counts = progress.get("synthetic_counts", {})
         targets_per_class = request_params.get("targets_per_class", {})
 
+        # Calculate progress percentage
+        progress_pct = round((processed / effective_total * 100), 1) if effective_total > 0 else 0.0
+
         jobs_list.append({
             "job_id": job["id"],
+            "type": "generation",  # Frontend expects 'type' field
             "status": job["status"],
+            "progress": progress_pct,  # Add progress percentage for JobMonitor
             "images_generated": processed,
             "images_rejected": job.get("failed_items", 0),
             "images_pending": effective_pending,
@@ -542,8 +547,8 @@ async def cancel_job(job_id: str):
     job_logger = JobLogger(job_id, state.db)
     job_logger.info("Cancellation requested")
 
-    # If job is still queued, mark as cancelled immediately
-    if job["status"] == "queued":
+    # If job is still pending, mark as cancelled immediately
+    if job["status"] == "pending":
         state.db.complete_job(job_id, "cancelled")
         return {
             "success": True,
@@ -565,7 +570,7 @@ async def delete_job(job_id: str):
     """
     Permanently delete a job from the database.
 
-    If the job is active (queued/processing), it will be stopped first,
+    If the job is active (pending/running), it will be stopped first,
     then deleted from the database. Generated images are preserved on disk.
 
     **Important**: This action cannot be undone.
@@ -587,19 +592,19 @@ async def delete_job(job_id: str):
     job_status = job["status"]
 
     # Step 1: Stop active jobs first
-    if job_status in ["queued", "processing"]:
+    if job_status in ["pending", "running"]:
         # Set cancellation flag if in cache
         if job_id in state._active_jobs_cache:
             state._active_jobs_cache[job_id]["cancelled"] = True
             logger.info(f"Set cancellation flag for job {job_id} before deletion")
 
-        # If queued, mark as cancelled in DB
-        if job_status == "queued":
+        # If pending, mark as cancelled in DB
+        if job_status == "pending":
             state.db.complete_job(job_id, "cancelled")
-            logger.info(f"Cancelled queued job {job_id}")
+            logger.info(f"Cancelled pending job {job_id}")
 
-        # If processing, wait briefly for graceful stop
-        elif job_status == "processing":
+        # If running, wait briefly for graceful stop
+        elif job_status == "running":
             # Give it a moment to check the cancellation flag
             await asyncio.sleep(1.0)
 
@@ -688,7 +693,7 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     request = ComposeBatchRequest(**request_params)
 
     # Update job status
-    state.db.update_job_status(job_id, "queued")
+    state.db.update_job_status(job_id, "pending")
 
     # Cache for cancellation
     state._active_jobs_cache[job_id] = {
@@ -716,7 +721,7 @@ async def resume_job(job_id: str, background_tasks: BackgroundTasks):
         "success": True,
         "job_id": job_id,
         "message": f"Job resumed from checkpoint ({checkpoint.get('generated', 0)} images already generated)",
-        "status": "queued",
+        "status": "pending",
         "checkpoint": checkpoint,
     }
 
@@ -786,7 +791,7 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
         "job_id": new_job_id,
         "original_job_id": job_id,
         "message": "New job created as retry of original",
-        "status": "queued",
+        "status": "pending",
     }
 
 
@@ -1147,8 +1152,8 @@ async def run_batch_composition_resume(
         job_logger.info("Job cancelled before resuming")
         return
 
-    # Update status to processing
-    state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+    # Update status to running
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
     job_logger.start("Resuming batch composition from checkpoint")
 
     # Cancellation check callback
@@ -1321,8 +1326,8 @@ async def run_batch_composition(job_id: str, request: ComposeBatchRequest, job_o
         job_logger.info("Job cancelled before starting")
         return
 
-    # Update status to processing
-    state.db.update_job_status(job_id, "processing", started_at=datetime.now())
+    # Update status to running
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
     job_logger.start("Starting batch composition")
 
     # Cancellation check callback

@@ -1,0 +1,301 @@
+{
+  "jobMonitor": {
+    "title": "Monitor de Trabajos",
+    "subtitle": "Monitorea y gestiona todos los trabajos en ejecución",
+    "filters": {
+      "status": "Estado",
+      "type": "Tipo"
+    },
+    "types": {
+      "generation": "Generación",
+      "labeling": "Etiquetado",
+      "extraction": "Extracción",
+      "sam3": "SAM3"
+    },
+    "columns": {
+      "jobId": "ID del Trabajo",
+      "type": "Tipo",
+      "status": "Estado",
+      "progress": "Progreso",
+      "created": "Creado",
+      "actions": "Acciones"
+    },
+    "actions": {
+      "viewLogs": "Ver Logs",
+      "cancel": "Cancelar",
+      "retry": "Reintentar",
+      "delete": "Eliminar",
+      "regenerate": "Regenerar"
+    },
+    "confirmDelete": "¿Estás seguro de que deseas eliminar este trabajo? Esta acción no se puede deshacer.",
+    "notifications": {
+      "cancelled": "Trabajo Cancelado",
+      "cancelFailed": "Error al Cancelar",
+      "resumed": "Trabajo Reanudado",
+      "resumeFailed": "Error al Reanudar",
+      "retried": "Trabajo Reintentado",
+      "retryFailed": "Error al Reintentar",
+      "deleted": "Trabajo Eliminado",
+      "deleteFailed": "Error al Eliminar",
+      "regenerated": "Dataset Regenerado",
+      "regenerateFailed": "Error al Regenerar"
+    }
+  },
+  "serviceStatus": {
+    "title": "Estado de Servicios",
+    "subtitle": "Monitorea la salud de los servicios backend",
+    "services": {
+      "gateway": "Gateway",
+      "depth": "Servicio de Profundidad",
+      "segmentation": "Servicio de Segmentación",
+      "effects": "Servicio de Efectos",
+      "augmentor": "Servicio de Aumentación"
+    },
+    "status": {
+      "healthy": "Saludable",
+      "unhealthy": "No Saludable",
+      "unknown": "Desconocido"
+    },
+    "details": {
+      "uptime": "Tiempo Activo",
+      "version": "Versión",
+      "gpuAvailable": "GPU Disponible",
+      "gpuMemory": "Memoria GPU"
+    }
+  },
+  "objectExtraction": {
+    "title": "Extracción de Objetos",
+    "subtitle": "Extrae objetos de imágenes usando segmentación",
+    "inputImage": "Imagen de Entrada",
+    "inputImagePath": "Ruta de Imagen",
+    "outputDirectory": "Directorio de Salida",
+    "extractionMethod": "Método de Extracción",
+    "methods": {
+      "sam3": "Segmentación SAM3",
+      "contour": "Detección de Contornos",
+      "grabcut": "GrabCut"
+    },
+    "options": {
+      "minArea": "Área Mínima",
+      "padding": "Relleno",
+      "saveOriginal": "Guardar Recorte Original"
+    },
+    "actions": {
+      "extract": "Extraer Objetos",
+      "extractAll": "Extraer Todos"
+    },
+    "notifications": {
+      "started": "Extracción Iniciada",
+      "completed": "Extracción Completa",
+      "completedMsg": "Se extrajeron {count} objetos",
+      "failed": "Extracción Fallida"
+    }
+  },
+  "labeling": {
+    "title": "Etiquetado Automático",
+    "subtitle": "Etiqueta imágenes automáticamente usando modelos de IA (SAM3 - Segment Anything Model 3)",
+    "mode": {
+      "new": "Nuevo Etiquetado",
+      "relabel": "Re-etiquetado"
+    },
+    "templates": {
+      "title": "Plantillas Rápidas",
+      "description": "Selecciona una plantilla predefinida o configura manualmente",
+      "marineLife": "Vida Marina",
+      "marineLifeDesc": "Peces, corales, criaturas marinas",
+      "vehicles": "Vehículos",
+      "vehiclesDesc": "Autos, camiones, motocicletas",
+      "people": "Personas y Poses",
+      "peopleDesc": "Detección de personas y poses",
+      "urban": "Escena Urbana",
+      "urbanDesc": "Edificios, calles, señales",
+      "nature": "Naturaleza y Vida Silvestre",
+      "natureDesc": "Animales, plantas, paisajes",
+      "food": "Comida y Cocina",
+      "foodDesc": "Alimentos y utensilios de cocina",
+      "fashion": "Moda y Ropa",
+      "fashionDesc": "Ropa y accesorios"
+    },
+    "input": {
+      "imageDirectories": "Directorios de Imágenes",
+      "classesToDetect": "Clases a Detectar",
+      "classPlaceholder": "ej., persona, auto, perro",
+      "addDirectory": "Agregar Directorio",
+      "addClass": "Agregar Clase"
+    },
+    "output": {
+      "title": "Configuración de Salida",
+      "outputDirectory": "Directorio de Salida",
+      "taskType": "Tipo de Tarea",
+      "taskTypes": {
+        "detection": "Detección (Cajas Delimitadoras)",
+        "segmentation": "Segmentación (Máscaras)",
+        "both": "Ambos: Detección y Segmentación"
+      },
+      "minConfidence": "Confianza Mínima",
+      "useSam3": "Usar SAM3 para Segmentación",
+      "useSam3Desc": "Genera máscaras de segmentación precisas"
+    },
+    "relabeling": {
+      "mode": "Modo de Re-etiquetado",
+      "modes": {
+        "add": "Agregar - Mantener existentes, agregar nuevas clases",
+        "replace": "Reemplazar - Eliminar todo, re-etiquetar completamente",
+        "improve": "Mejorar - Mejorar calidad de segmentación"
+      },
+      "existingAnnotations": "Ruta de Anotaciones Existentes (opcional)"
+    },
+    "progress": {
+      "title": "Progreso del Trabajo Actual",
+      "processing": "Procesando...",
+      "imagesProcessed": "{processed}/{total} imágenes",
+      "annotationsCreated": "{count} anotaciones"
+    },
+    "metrics": {
+      "avgConfidence": "Confianza Promedio",
+      "withDetections": "Con Detecciones",
+      "noDetections": "Sin Detecciones",
+      "lowConfidence": "Baja Confianza"
+    },
+    "warnings": {
+      "title": "Advertencias"
+    },
+    "previews": {
+      "title": "Detecciones Recientes"
+    },
+    "actions": {
+      "startLabeling": "Iniciar Etiquetado",
+      "startRelabeling": "Iniciar Re-etiquetado"
+    },
+    "notifications": {
+      "templateApplied": "Plantilla Aplicada",
+      "templateAppliedMsg": "Cargada plantilla {name} con {count} clases",
+      "started": "Trabajo Iniciado",
+      "startedMsg": "Trabajo de etiquetado {id} iniciado",
+      "completed": "Etiquetado Completo",
+      "completedMsg": "Se procesaron {count} imágenes",
+      "failed": "Etiquetado Fallido",
+      "missingInput": "Entrada Faltante",
+      "missingDirectories": "Por favor especifica al menos un directorio de imágenes",
+      "missingClasses": "Por favor especifica al menos una clase a detectar"
+    },
+    "activeJobs": "Trabajos Activos",
+    "activeJobsMsg": "{count} trabajo(s) de etiquetado en ejecución."
+  },
+  "samSegmentation": {
+    "title": "Segmentación SAM3",
+    "subtitle": "Segmentación interactiva y conversión de datasets usando Segment Anything Model 3.",
+    "modes": {
+      "text": "Segmentación por Texto",
+      "convert": "Conversión de Dataset"
+    },
+    "textMode": {
+      "title": "Entrada",
+      "imagePath": "Ruta de Imagen",
+      "textPrompt": "Prompt de Texto",
+      "textPromptPlaceholder": "ej., auto, persona, perro",
+      "textPromptHint": "Describe los objetos que deseas segmentar",
+      "runSegmentation": "Ejecutar Segmentación",
+      "results": "Resultados",
+      "objectsFound": "Objetos Encontrados",
+      "object": "Objeto"
+    },
+    "convertMode": {
+      "sourceTitle": "Dataset de Origen",
+      "sourceDescription": "Convierte anotaciones de cajas delimitadoras a máscaras de segmentación precisas usando SAM3.",
+      "cocoJsonPath": "Ruta del JSON COCO",
+      "imagesDirectory": "Directorio de Imágenes",
+      "outputTitle": "Configuración de Salida",
+      "outputDirectory": "Directorio de Salida",
+      "minArea": "Área Mínima",
+      "minAreaUnit": "px²",
+      "minAreaHint": "Área mínima de máscara a mantener",
+      "confidenceThreshold": "Umbral de Confianza",
+      "confidenceHint": "Confianza mínima para predicciones de máscaras"
+    },
+    "progress": {
+      "title": "Progreso de Conversión",
+      "converting": "Convirtiendo...",
+      "jobId": "ID del Trabajo: {id}"
+    },
+    "actions": {
+      "startConversion": "Iniciar Conversión"
+    },
+    "notifications": {
+      "segmentationComplete": "Segmentación Completa",
+      "segmentationCompleteMsg": "Se encontraron {count} objetos",
+      "segmentationFailed": "Segmentación Fallida",
+      "conversionStarted": "Conversión Iniciada",
+      "conversionStartedMsg": "Trabajo {id} iniciado",
+      "conversionComplete": "Conversión Completa",
+      "conversionCompleteMsg": "Dataset convertido con máscaras SAM3",
+      "conversionFailed": "Conversión Fallida",
+      "missingInput": "Entrada Faltante",
+      "missingInputMsg": "Por favor completa todos los campos requeridos"
+    }
+  },
+  "labelManager": {
+    "title": "Gestor de Etiquetas",
+    "subtitle": "Gestiona y edita etiquetas de categorías en tus datasets",
+    "selectDataset": "Seleccionar Dataset",
+    "categories": "Categorías",
+    "categoryCount": "{count} categorías",
+    "actions": {
+      "rename": "Renombrar",
+      "delete": "Eliminar",
+      "merge": "Fusionar"
+    },
+    "rename": {
+      "title": "Renombrar Categoría",
+      "currentName": "Nombre Actual",
+      "newName": "Nuevo Nombre"
+    },
+    "notifications": {
+      "renamed": "Categoría Renombrada",
+      "renamedMsg": "Renombrada a \"{name}\"",
+      "deleted": "Categoría Eliminada",
+      "failed": "Operación Fallida"
+    }
+  },
+  "objectSizes": {
+    "title": "Tamaños de Objetos",
+    "subtitle": "Analiza y configura distribuciones de tamaños de objetos",
+    "selectDataset": "Seleccionar Dataset",
+    "sizeDistribution": "Distribución de Tamaños",
+    "statistics": {
+      "min": "Mín",
+      "max": "Máx",
+      "avg": "Promedio",
+      "median": "Mediana"
+    },
+    "constraints": {
+      "title": "Restricciones de Tamaño",
+      "minSize": "Tamaño Mínimo",
+      "maxSize": "Tamaño Máximo"
+    }
+  },
+  "postProcessing": {
+    "title": "Post-Procesamiento",
+    "subtitle": "Aplica efectos de post-procesamiento a imágenes generadas",
+    "selectDataset": "Seleccionar Dataset",
+    "effects": {
+      "title": "Efectos",
+      "blur": "Desenfoque",
+      "sharpen": "Nitidez",
+      "noise": "Agregar Ruido",
+      "brightness": "Brillo",
+      "contrast": "Contraste",
+      "saturation": "Saturación"
+    },
+    "preview": "Vista Previa",
+    "actions": {
+      "apply": "Aplicar Efectos",
+      "reset": "Restablecer"
+    },
+    "notifications": {
+      "applied": "Efectos Aplicados",
+      "appliedMsg": "Post-procesamiento completo",
+      "failed": "Procesamiento Fallido"
+    }
+  }
+}

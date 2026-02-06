@@ -35,8 +35,8 @@ class MatchingStrategy(str, Enum):
 
 class JobStatus(str, Enum):
     """Status of async job"""
-    QUEUED = "queued"
-    PROCESSING = "processing"
+    QUEUED = "pending"      # Frontend expects "pending"
+    PROCESSING = "running"  # Frontend expects "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -193,6 +193,7 @@ class ExtractionJobStatus(BaseModel):
     total_objects: int = 0
     extracted_objects: int = 0
     failed_objects: int = 0
+    progress: float = 0.0  # Percentage of completion (0-100)
     current_category: str = ""
     categories_progress: Dict[str, int] = {}
     output_dir: str = ""
@@ -368,6 +369,7 @@ class SAM3ConversionJobStatus(BaseModel):
     converted_annotations: int = 0
     skipped_annotations: int = 0
     failed_annotations: int = 0
+    progress: float = 0.0  # Percentage of completion (0-100)
     current_image: str = ""
     categories_progress: Dict[str, int] = {}
     output_path: str = ""
@@ -574,6 +576,30 @@ class LabelingJobResponse(BaseModel):
     error: Optional[str] = None
 
 
+class LabelingQualityMetrics(BaseModel):
+    """Quality metrics for a labeling job"""
+    avg_confidence: float = Field(
+        default=0.0,
+        description="Average confidence score of all detections"
+    )
+    images_with_detections: int = Field(
+        default=0,
+        description="Number of images that had at least one detection"
+    )
+    images_without_detections: int = Field(
+        default=0,
+        description="Number of images with no detections"
+    )
+    low_confidence_count: int = Field(
+        default=0,
+        description="Number of detections with confidence < 0.5"
+    )
+    total_detections: int = Field(
+        default=0,
+        description="Total number of detections across all images"
+    )
+
+
 class LabelingJobStatus(BaseModel):
     """Status of a labeling job"""
     job_id: str
@@ -581,13 +607,24 @@ class LabelingJobStatus(BaseModel):
     status: JobStatus
     total_images: int = 0
     processed_images: int = 0
-    total_objects_found: int = 0
+    progress: float = 0.0  # Percentage of completion (0-100)
+    annotations_created: int = 0  # Alias for total_objects_found (frontend name)
+    total_objects_found: int = 0  # Keep for backwards compatibility
     objects_by_class: Dict[str, int] = {}
     current_image: str = ""
     output_dir: str = ""
     output_formats: List[str] = []
     errors: List[str] = []
+    warnings: List[str] = Field(
+        default=[],
+        description="Non-fatal warnings (e.g., classes without detections)"
+    )
+    quality_metrics: Optional[LabelingQualityMetrics] = Field(
+        default=None,
+        description="Quality metrics for the labeling job"
+    )
     processing_time_ms: float = 0.0
+    created_at: Optional[str] = None  # When the job was created
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     can_resume: bool = Field(

@@ -2,27 +2,40 @@
 Semantic Scene Analyzer
 =======================
 
-Provides semantic understanding of underwater scenes for intelligent object placement:
-- Scene region classification (water column, seafloor, surface, vegetation)
+Provides semantic understanding of scenes for intelligent object placement.
+Supports multiple domains (underwater, fire/smoke, aerial, custom).
+
+Features:
+- Scene region classification (domain-configurable)
 - Object-scene compatibility validation
 - Text-driven segmentation support (SAM3-ready)
 - Heuristic fallbacks for robust operation
+- Dynamic domain configuration
 
 This is the canonical implementation - used by the Segmentation microservice.
 """
 
 import numpy as np
 import cv2
-from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional, Any
+from dataclasses import dataclass, field
 from enum import Enum
 import logging
+import json
+import os
 
 logger = logging.getLogger(__name__)
 
 
+# ============================================
+# Legacy SceneRegion Enum (for backward compatibility)
+# ============================================
+
 class SceneRegion(Enum):
-    """Types of scene regions in underwater environments"""
+    """Types of scene regions - Legacy enum for backward compatibility.
+
+    New code should use DynamicRegion with domain configuration.
+    """
     OPEN_WATER = "open_water"
     SEAFLOOR = "seafloor"
     SURFACE = "surface"
@@ -31,6 +44,137 @@ class SceneRegion(Enum):
     SANDY = "sandy"
     MURKY = "murky"
     UNKNOWN = "unknown"
+
+
+# ============================================
+# Dynamic Region System
+# ============================================
+
+@dataclass
+class DynamicRegion:
+    """A dynamically defined scene region from domain configuration."""
+    id: str
+    name: str
+    display_name: str
+    color_rgb: List[int] = field(default_factory=lambda: [128, 128, 128])
+    sam3_prompt: Optional[str] = None
+    detection_heuristics: Optional[Dict] = None
+    value: int = 0  # Numeric value for region map
+
+    def to_legacy(self) -> Optional[SceneRegion]:
+        """Convert to legacy SceneRegion if possible."""
+        try:
+            return SceneRegion(self.id)
+        except ValueError:
+            return None
+
+
+class DomainConfig:
+    """Configuration for a specific domain (underwater, fire_smoke, etc.)."""
+
+    def __init__(self, domain_data: Optional[Dict] = None):
+        """Initialize domain config from dict or use underwater defaults."""
+        self.domain_id = "underwater"
+        self.name = "Underwater Marine"
+        self.regions: List[DynamicRegion] = []
+        self.compatibility_matrix: Dict[str, Dict[str, float]] = {}
+        self.region_value_map: Dict[str, int] = {}
+        self.sam3_prompts: List[Tuple[str, str]] = []  # (prompt, region_id)
+
+        if domain_data:
+            self._load_from_dict(domain_data)
+        else:
+            self._load_defaults()
+
+    def _load_from_dict(self, data: Dict):
+        """Load domain configuration from dictionary."""
+        self.domain_id = data.get("domain_id", "underwater")
+        self.name = data.get("name", "Unknown Domain")
+
+        # Load regions
+        self.regions = []
+        for idx, r in enumerate(data.get("regions", []), start=1):
+            region = DynamicRegion(
+                id=r["id"],
+                name=r["name"],
+                display_name=r["display_name"],
+                color_rgb=r.get("color_rgb", [128, 128, 128]),
+                sam3_prompt=r.get("sam3_prompt"),
+                detection_heuristics=r.get("detection_heuristics"),
+                value=idx
+            )
+            self.regions.append(region)
+            self.region_value_map[region.id] = region.value
+            if region.sam3_prompt:
+                self.sam3_prompts.append((region.sam3_prompt, region.id))
+
+        # Ensure unknown region exists
+        if not any(r.id == "unknown" for r in self.regions):
+            self.regions.append(DynamicRegion(
+                id="unknown",
+                name="unknown",
+                display_name="Unknown",
+                value=0
+            ))
+            self.region_value_map["unknown"] = 0
+
+        # Load compatibility matrix
+        self.compatibility_matrix = data.get("compatibility_matrix", {})
+
+    def _load_defaults(self):
+        """Load default underwater configuration."""
+        # Default underwater regions
+        default_regions = [
+            ("open_water", "Open Water", [255, 150, 50], "water"),
+            ("seafloor", "Seafloor", [50, 150, 200], "seafloor"),
+            ("surface", "Water Surface", [255, 255, 200], "water surface"),
+            ("vegetation", "Vegetation", [50, 200, 50], "seaweed"),
+            ("rocky", "Rocky Area", [100, 100, 100], "rock"),
+            ("sandy", "Sandy Bottom", [100, 180, 220], "sand"),
+            ("murky", "Murky Water", [80, 80, 60], None),
+            ("unknown", "Unknown", [128, 128, 128], None),
+        ]
+
+        for idx, (rid, name, color, prompt) in enumerate(default_regions):
+            region = DynamicRegion(
+                id=rid,
+                name=rid,
+                display_name=name,
+                color_rgb=color,
+                sam3_prompt=prompt,
+                value=idx
+            )
+            self.regions.append(region)
+            self.region_value_map[rid] = idx
+            if prompt:
+                self.sam3_prompts.append((prompt, rid))
+
+        # Use the global SCENE_COMPATIBILITY as default
+        # (loaded after this class is defined)
+
+    def get_region_by_id(self, region_id: str) -> Optional[DynamicRegion]:
+        """Get region by ID."""
+        for r in self.regions:
+            if r.id == region_id:
+                return r
+        return None
+
+    def get_region_by_value(self, value: int) -> Optional[DynamicRegion]:
+        """Get region by numeric value."""
+        for r in self.regions:
+            if r.value == value:
+                return r
+        return None
+
+    def get_compatibility(self, object_class: str, region_id: str) -> float:
+        """Get compatibility score for object in region."""
+        if object_class in self.compatibility_matrix:
+            return self.compatibility_matrix[object_class].get(region_id, 0.5)
+        return 0.5  # Default neutral score
+
+    def get_region_colors(self) -> Dict[str, Tuple[int, int, int]]:
+        """Get mapping of region IDs to BGR colors."""
+        return {r.id: tuple(r.color_rgb[::-1]) for r in self.regions}  # RGB to BGR
 
 
 @dataclass
@@ -191,8 +335,9 @@ DEFAULT_COMPATIBILITY = {
 
 class SemanticSceneAnalyzer:
     """
-    Analyzes underwater scenes for semantic understanding.
+    Analyzes scenes for semantic understanding.
 
+    Supports multiple domains (underwater, fire/smoke, aerial, custom).
     This is the canonical implementation used by the Segmentation microservice.
     """
 
@@ -205,12 +350,17 @@ class SemanticSceneAnalyzer:
         device: str = 'cuda',
         debug: bool = False,
         debug_output_dir: Optional[str] = None,
+        domain_config: Optional[Dict] = None,
     ):
         self.use_sam3 = use_sam3
         self.min_compatibility_score = min_compatibility_score
         self.device = device
         self.debug = debug
         self.debug_output_dir = debug_output_dir or "/shared/segmentation/debug"
+
+        # Domain configuration (defaults to underwater for backward compatibility)
+        self.domain = DomainConfig(domain_config)
+        logger.info(f"SemanticSceneAnalyzer using domain: {self.domain.domain_id}")
 
         # SAM3 model (passed from service state)
         self._sam3_model = sam3_model
@@ -225,6 +375,21 @@ class SemanticSceneAnalyzer:
             os.makedirs(self.debug_output_dir, exist_ok=True)
 
         logger.info(f"SemanticSceneAnalyzer initialized (SAM3: {self.use_sam3}, Debug: {self.debug})")
+
+    def set_domain(self, domain_config: Dict) -> None:
+        """Change the active domain configuration at runtime."""
+        self.domain = DomainConfig(domain_config)
+        logger.info(f"Domain changed to: {self.domain.domain_id}")
+
+    def get_domain_info(self) -> Dict[str, Any]:
+        """Get information about the current domain configuration."""
+        return {
+            "domain_id": self.domain.domain_id,
+            "name": self.domain.name,
+            "region_count": len(self.domain.regions),
+            "regions": [r.id for r in self.domain.regions],
+            "sam3_prompts": self.domain.sam3_prompts,
+        }
 
     def analyze_scene(self, image: np.ndarray) -> SceneAnalysis:
         """Analyze scene to identify regions and characteristics."""
@@ -256,7 +421,7 @@ class SemanticSceneAnalyzer:
         )
 
     def _analyze_with_sam3(self, image: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
-        """Analyze scene using SAM3 text-driven segmentation."""
+        """Analyze scene using SAM3 text-driven segmentation with domain-specific prompts."""
         import torch
         from PIL import Image
 
@@ -264,27 +429,19 @@ class SemanticSceneAnalyzer:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
 
-        region_prompts = [
-            ("water", SceneRegion.OPEN_WATER),
-            ("seafloor", SceneRegion.SEAFLOOR),
-            ("water surface", SceneRegion.SURFACE),
-            ("seaweed", SceneRegion.VEGETATION),
-            ("rock", SceneRegion.ROCKY),
-            ("sand", SceneRegion.SANDY),
-        ]
+        # Use prompts from active domain configuration
+        region_prompts = self.domain.sam3_prompts  # List of (prompt, region_id)
 
         region_map = np.zeros((h, w), dtype=np.uint8)
-        region_scores = {region.value: 0.0 for region in SceneRegion}
+        # Initialize scores for all regions in the domain
+        region_scores = {r.id: 0.0 for r in self.domain.regions}
         confidence_map = np.zeros((h, w), dtype=np.float32)
 
-        region_value_map = {
-            SceneRegion.OPEN_WATER: 1, SceneRegion.SEAFLOOR: 2,
-            SceneRegion.SURFACE: 3, SceneRegion.VEGETATION: 4,
-            SceneRegion.ROCKY: 5, SceneRegion.SANDY: 6, SceneRegion.MURKY: 7,
-        }
+        # Use domain's region value map
+        region_value_map = self.domain.region_value_map
 
         try:
-            for prompt, region_type in region_prompts:
+            for prompt, region_id in region_prompts:
                 inputs = self._sam3_processor(
                     images=pil_image, text=prompt, return_tensors="pt"
                 ).to(self.device)
@@ -305,11 +462,11 @@ class SemanticSceneAnalyzer:
                             mask_np = cv2.resize(mask_np, (w, h))
                         combined_mask = np.maximum(combined_mask, mask_np * score_val)
 
-                region_value = region_value_map.get(region_type, 0)
+                region_value = region_value_map.get(region_id, 0)
                 update_mask = (combined_mask > 0.5) & (combined_mask > confidence_map)
                 region_map = np.where(update_mask, region_value, region_map)
                 confidence_map = np.maximum(confidence_map, combined_mask)
-                region_scores[region_type.value] = float((combined_mask > 0.5).sum()) / (h * w)
+                region_scores[region_id] = float((combined_mask > 0.5).sum()) / (h * w)
 
             # Normalize
             total = sum(region_scores.values())

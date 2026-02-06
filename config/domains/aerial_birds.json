@@ -1,0 +1,251 @@
+{
+  "domain_id": "aerial_birds",
+  "name": "Aerial Birds / Wind Farms",
+  "description": "Bird detection over wind farms and open skies. Optimized for monitoring bird activity near wind turbines for wildlife protection.",
+  "version": "1.0.0",
+  "icon": "Bird",
+  "is_builtin": true,
+  "regions": [
+    {
+      "id": "sky_clear",
+      "name": "sky_clear",
+      "display_name": "Clear Sky",
+      "color_rgb": [135, 206, 250],
+      "sam3_prompt": "clear sky blue sky",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.0, "y_max": 0.6},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [100, 30, 150], "max": [130, 255, 255]}
+        ],
+        "brightness_range": {"min": 0.5, "max": 1.0}
+      }
+    },
+    {
+      "id": "sky_cloudy",
+      "name": "sky_cloudy",
+      "display_name": "Cloudy Sky",
+      "color_rgb": [192, 192, 192],
+      "sam3_prompt": "clouds cloudy sky overcast",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.0, "y_max": 0.5},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 150], "max": [180, 40, 255]}
+        ]
+      }
+    },
+    {
+      "id": "turbine_zone",
+      "name": "turbine_zone",
+      "display_name": "Wind Turbine Area",
+      "color_rgb": [70, 70, 70],
+      "sam3_prompt": "wind turbine windmill",
+      "detection_heuristics": {
+        "color_ranges": [
+          {"color_space": "hsv", "min": [0, 0, 180], "max": [180, 30, 255]}
+        ]
+      }
+    },
+    {
+      "id": "ground_far",
+      "name": "ground_far",
+      "display_name": "Distant Ground",
+      "color_rgb": [139, 119, 101],
+      "sam3_prompt": "ground landscape terrain",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.7, "y_max": 1.0},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [20, 20, 30], "max": [50, 150, 180]}
+        ]
+      }
+    },
+    {
+      "id": "horizon",
+      "name": "horizon",
+      "display_name": "Horizon Line",
+      "color_rgb": [176, 196, 222],
+      "sam3_prompt": "horizon skyline",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.5, "y_max": 0.7},
+        "brightness_range": {"min": 0.4, "max": 0.8}
+      }
+    },
+    {
+      "id": "water_body",
+      "name": "water_body",
+      "display_name": "Water Body (Offshore)",
+      "color_rgb": [65, 105, 225],
+      "sam3_prompt": "sea ocean water",
+      "detection_heuristics": {
+        "position_zone": {"y_min": 0.6, "y_max": 1.0},
+        "color_ranges": [
+          {"color_space": "hsv", "min": [90, 50, 50], "max": [130, 255, 200]}
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "unknown",
+      "display_name": "Unknown",
+      "color_rgb": [200, 200, 200],
+      "sam3_prompt": null
+    }
+  ],
+  "objects": [
+    {"class_name": "bird_small", "display_name": "Small Bird", "real_world_size_meters": 0.15, "keywords": ["sparrow", "finch", "small_bird", "pajaro_pequeno"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "bird_medium", "display_name": "Medium Bird", "real_world_size_meters": 0.5, "keywords": ["seagull", "crow", "hawk", "gaviota", "cuervo"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "bird_large", "display_name": "Large Bird", "real_world_size_meters": 1.2, "keywords": ["eagle", "vulture", "large_bird", "aguila", "buitre"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "raptor", "display_name": "Raptor / Bird of Prey", "real_world_size_meters": 0.8, "keywords": ["raptor", "hawk", "falcon", "halcon", "ave_rapaz"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "flock", "display_name": "Bird Flock", "real_world_size_meters": 5.0, "keywords": ["flock", "swarm", "birds", "bandada"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "migrating_birds", "display_name": "Migrating Birds (V-Formation)", "real_world_size_meters": 15.0, "keywords": ["migration", "v_formation", "geese"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "turbine_blade", "display_name": "Turbine Blade", "real_world_size_meters": 50.0, "keywords": ["blade", "rotor", "pala", "aspa"], "physics_properties": {"density_relative": 2.0, "behavior": "static"}},
+    {"class_name": "turbine_nacelle", "display_name": "Turbine Nacelle", "real_world_size_meters": 10.0, "keywords": ["nacelle", "turbine_head"], "physics_properties": {"density_relative": 2.0, "behavior": "static"}},
+    {"class_name": "turbine_tower", "display_name": "Turbine Tower", "real_world_size_meters": 80.0, "keywords": ["tower", "turbine_tower", "torre"], "physics_properties": {"density_relative": 2.5, "behavior": "static"}},
+    {"class_name": "drone", "display_name": "Monitoring Drone", "real_world_size_meters": 0.5, "keywords": ["drone", "uav", "quadcopter"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "aircraft", "display_name": "Aircraft", "real_world_size_meters": 30.0, "keywords": ["plane", "aircraft", "airplane", "avion"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}},
+    {"class_name": "bat", "display_name": "Bat", "real_world_size_meters": 0.15, "keywords": ["bat", "murcielago"], "physics_properties": {"density_relative": 0.001, "behavior": "fly"}}
+  ],
+  "compatibility_matrix": {
+    "bird_small": {"sky_clear": 1.0, "sky_cloudy": 1.0, "turbine_zone": 0.9, "horizon": 0.7, "ground_far": 0.3},
+    "bird_medium": {"sky_clear": 1.0, "sky_cloudy": 1.0, "turbine_zone": 0.85, "horizon": 0.6, "water_body": 0.8, "ground_far": 0.4},
+    "bird_large": {"sky_clear": 1.0, "sky_cloudy": 0.9, "turbine_zone": 0.7, "horizon": 0.5, "ground_far": 0.3},
+    "raptor": {"sky_clear": 1.0, "sky_cloudy": 0.85, "turbine_zone": 0.75, "horizon": 0.6, "ground_far": 0.4},
+    "flock": {"sky_clear": 1.0, "sky_cloudy": 1.0, "horizon": 0.8, "turbine_zone": 0.6},
+    "migrating_birds": {"sky_clear": 1.0, "sky_cloudy": 0.9, "horizon": 0.9},
+    "turbine_blade": {"turbine_zone": 1.0, "sky_clear": 0.8, "sky_cloudy": 0.8},
+    "turbine_nacelle": {"turbine_zone": 1.0},
+    "turbine_tower": {"turbine_zone": 1.0, "ground_far": 0.8, "horizon": 0.6},
+    "drone": {"sky_clear": 1.0, "sky_cloudy": 0.9, "turbine_zone": 0.8},
+    "aircraft": {"sky_clear": 1.0, "sky_cloudy": 0.9, "horizon": 0.7},
+    "bat": {"sky_clear": 0.8, "sky_cloudy": 1.0, "turbine_zone": 0.9, "horizon": 0.5}
+  },
+  "effects": {
+    "domain_specific": [
+      {
+        "effect_id": "atmospheric_haze",
+        "enabled_by_default": true,
+        "parameters": {
+          "intensity": 0.1,
+          "color_rgb": [200, 210, 220],
+          "depth_based": true
+        }
+      },
+      {
+        "effect_id": "depth_fog",
+        "enabled_by_default": true,
+        "parameters": {
+          "start_depth": 0.3,
+          "intensity": 0.2,
+          "color_rgb": [220, 225, 230]
+        }
+      },
+      {
+        "effect_id": "motion_blur_wings",
+        "enabled_by_default": false,
+        "parameters": {
+          "probability": 0.3,
+          "kernel": 7,
+          "direction": "horizontal"
+        }
+      },
+      {
+        "effect_id": "sun_glare",
+        "enabled_by_default": false,
+        "parameters": {
+          "intensity": 0.3,
+          "position": "auto"
+        }
+      }
+    ],
+    "disabled": ["underwater", "caustics", "water_attenuation"],
+    "universal_overrides": {
+      "color_correction": {"color_intensity": 0.05},
+      "lighting": {"lighting_type": "ambient", "lighting_intensity": 0.3},
+      "shadows": {"shadow_opacity": 0.12},
+      "blur_matching": {"blur_strength": 0.2}
+    }
+  },
+  "physics": {
+    "physics_type": "aerial",
+    "medium_density": 0.001,
+    "float_threshold": null,
+    "sink_threshold": null,
+    "surface_zone": null,
+    "bottom_zone": 0.95,
+    "gravity_direction": "down"
+  },
+  "presets": [
+    {
+      "id": "clear_day",
+      "name": "Clear Day",
+      "description": "Bright sunny conditions with minimal haze",
+      "icon": "Sun",
+      "config": {
+        "atmospheric_haze": {"intensity": 0.05},
+        "depth_fog": {"intensity": 0.1},
+        "lighting": {"lighting_intensity": 0.4}
+      }
+    },
+    {
+      "id": "overcast",
+      "name": "Overcast / Cloudy",
+      "description": "Cloudy conditions with diffuse lighting",
+      "icon": "Cloud",
+      "config": {
+        "atmospheric_haze": {"intensity": 0.15},
+        "depth_fog": {"intensity": 0.25},
+        "lighting": {"lighting_intensity": 0.2}
+      }
+    },
+    {
+      "id": "offshore",
+      "name": "Offshore Wind Farm",
+      "description": "Ocean-based wind farms with marine birds",
+      "icon": "Waves",
+      "config": {
+        "atmospheric_haze": {"intensity": 0.12, "color_rgb": [190, 200, 215]},
+        "depth_fog": {"intensity": 0.18}
+      }
+    },
+    {
+      "id": "dusk_dawn",
+      "name": "Dusk / Dawn",
+      "description": "Low light conditions during migration hours",
+      "icon": "Sunset",
+      "config": {
+        "atmospheric_haze": {"intensity": 0.2, "color_rgb": [255, 200, 150]},
+        "lighting": {"lighting_intensity": 0.15},
+        "sun_glare": {"enabled": true, "intensity": 0.4}
+      }
+    }
+  ],
+  "labeling_templates": [
+    {
+      "id": "bird_species",
+      "name": "Bird Species",
+      "description": "Different bird types by size",
+      "icon": "Bird",
+      "classes": ["bird_small", "bird_medium", "bird_large", "raptor", "bat"]
+    },
+    {
+      "id": "bird_groups",
+      "name": "Bird Groups",
+      "description": "Flocks and migrating birds",
+      "icon": "Users",
+      "classes": ["flock", "migrating_birds"]
+    },
+    {
+      "id": "wind_farm_infrastructure",
+      "name": "Wind Farm Infrastructure",
+      "description": "Turbines and related structures",
+      "icon": "Wind",
+      "classes": ["turbine_blade", "turbine_nacelle", "turbine_tower"]
+    },
+    {
+      "id": "aerial_objects",
+      "name": "Aerial Objects",
+      "description": "Drones and aircraft",
+      "icon": "Plane",
+      "classes": ["drone", "aircraft"]
+    }
+  ]
+}
