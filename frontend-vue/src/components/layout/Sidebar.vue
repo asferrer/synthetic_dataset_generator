@@ -20,6 +20,7 @@ import {
   Box,
   Ruler,
   Scale,
+  ScanSearch,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-vue-next'
@@ -55,6 +56,7 @@ const toolItems: NavItem[] = [
   { nameKey: 'nav.tools.labelManager', path: '/tools/label-manager', icon: Tags },
   { nameKey: 'nav.tools.objectSizes', path: '/tools/object-sizes', icon: Ruler },
   { nameKey: 'nav.tools.postProcessing', path: '/tools/post-processing', icon: Scale },
+  { nameKey: 'nav.tools.domainGap', path: '/tools/domain-gap', icon: ScanSearch },
 ]
 
 const isActive = (path: string) => route.path === path

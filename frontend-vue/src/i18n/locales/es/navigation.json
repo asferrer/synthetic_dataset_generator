@@ -22,7 +22,8 @@
     "samSegmentation": "Segmentación SAM",
     "labelManager": "Gestor de Etiquetas",
     "objectSizes": "Tamaños de Objetos",
-    "postProcessing": "Post-Procesamiento"
+    "postProcessing": "Post-Procesamiento",
+    "domainGap": "Domain Gap"
   },
   "titles": {
     "dashboard": "Panel",
@@ -46,6 +47,7 @@
     "labelManager": "Gestor de Etiquetas",
     "objectSizes": "Tamaños de Objetos",
     "postProcessing": "Post-Procesamiento",
+    "domainGap": "Reducción Domain Gap",
     "notFound": "Página No Encontrada"
   },
   "searchPlaceholder": "Buscar páginas...",

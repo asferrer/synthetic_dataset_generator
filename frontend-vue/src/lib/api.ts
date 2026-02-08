@@ -2,9 +2,10 @@
  * API Client for Synthetic Dataset Generator
  *
  * This module provides functions to interact with the backend services.
+ * Includes automatic retry with exponential backoff for failed requests.
  */
 
-import axios from 'axios'
+import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import type {
   HealthStatus,
   Job,
@@ -36,6 +37,89 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const SEGMENTATION_URL = import.meta.env.VITE_SEGMENTATION_URL || 'http://localhost:8002'
 
+// Retry configuration
+const MAX_RETRIES = 3
+const INITIAL_RETRY_DELAY = 1000 // 1 second
+const MAX_RETRY_DELAY = 10000 // 10 seconds
+
+// Extend AxiosRequestConfig to include retry metadata
+interface RetryConfig extends InternalAxiosRequestConfig {
+  _retryCount?: number
+  _isRetry?: boolean
+}
+
+/**
+ * Calculate delay with exponential backoff and jitter
+ */
+function calculateRetryDelay(retryCount: number): number {
+  const delay = Math.min(INITIAL_RETRY_DELAY * Math.pow(2, retryCount), MAX_RETRY_DELAY)
+  // Add jitter (±20%)
+  const jitter = delay * 0.2 * (Math.random() * 2 - 1)
+  return Math.round(delay + jitter)
+}
+
+/**
+ * Check if error is retryable
+ */
+function isRetryableError(error: AxiosError): boolean {
+  // Network errors
+  if (!error.response) return true
+
+  // Server errors (5xx) except 501 Not Implemented
+  const status = error.response.status
+  if (status >= 500 && status !== 501) return true
+
+  // Too Many Requests
+  if (status === 429) return true
+
+  // Request Timeout
+  if (status === 408) return true
+
+  return false
+}
+
+/**
+ * Add retry interceptor to axios instance
+ */
+function addRetryInterceptor(instance: AxiosInstance): void {
+  instance.interceptors.response.use(
+    (response) => response,
+    async (error: AxiosError) => {
+      const config = error.config as RetryConfig
+
+      if (!config) {
+        return Promise.reject(error)
+      }
+
+      // Initialize retry count
+      config._retryCount = config._retryCount ?? 0
+
+      // Check if we should retry
+      if (config._retryCount >= MAX_RETRIES || !isRetryableError(error)) {
+        return Promise.reject(error)
+      }
+
+      // Increment retry count
+      config._retryCount += 1
+      config._isRetry = true
+
+      // Calculate delay
+      const delay = calculateRetryDelay(config._retryCount - 1)
+
+      console.warn(
+        `Request failed (${error.response?.status || 'network error'}), ` +
+        `retrying in ${delay}ms (attempt ${config._retryCount}/${MAX_RETRIES})...`
+      )
+
+      // Wait before retrying
+      await new Promise((resolve) => setTimeout(resolve, delay))
+
+      // Retry the request
+      return instance.request(config)
+    }
+  )
+}
+
 // Create axios instance with default config
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -52,6 +136,10 @@ const segmentationApi = axios.create({
     'Content-Type': 'application/json',
   },
 })
+
+// Add retry interceptors
+addRetryInterceptor(api)
+addRetryInterceptor(segmentationApi)
 
 // ===========================================
 // HEALTH & STATUS
@@ -585,5 +673,240 @@ export async function getDomainSam3Prompts(domainId: string): Promise<{ domain_i
 
 export async function getDomainLabelingTemplates(domainId: string): Promise<{ domain_id: string; labeling_templates: Domain['labeling_templates'] }> {
   const response = await api.get(`/domains/${domainId}/labeling-templates`)
+  return response.data
+}
+
+// ===========================================
+// DOMAIN OVERRIDES (Built-in Domain Customization)
+// ===========================================
+
+export interface BuiltinOverrideRequest {
+  regions?: Domain['regions']
+  objects?: Domain['objects']
+  compatibility_matrix?: Domain['compatibility_matrix']
+  effects?: Domain['effects']
+  physics?: Domain['physics']
+  presets?: Domain['presets']
+  labeling_templates?: Domain['labeling_templates']
+  name?: string
+  description?: string
+  icon?: string
+}
+
+export interface BuiltinOverrideResponse {
+  success: boolean
+  domain_id: string
+  message: string
+  has_override: boolean
+  domain?: Domain
+}
+
+export interface OverrideStatusResponse {
+  domain_id: string
+  has_override: boolean
+  is_builtin: boolean
+  current_version: string
+  original?: Domain
+}
+
+/**
+ * Create or update an override for a built-in domain.
+ * This allows modifying built-in domains (like 'underwater', 'aerial_birds')
+ * by creating a user-space copy that takes precedence over the original.
+ */
+export async function createBuiltinOverride(
+  domainId: string,
+  updates: BuiltinOverrideRequest
+): Promise<BuiltinOverrideResponse> {
+  const response = await api.post(`/domains/${domainId}/override`, updates)
+  return response.data
+}
+
+/**
+ * Reset a built-in domain override to its original configuration.
+ * This removes any user customizations and restores the original settings.
+ */
+export async function resetBuiltinOverride(
+  domainId: string
+): Promise<BuiltinOverrideResponse> {
+  const response = await api.delete(`/domains/${domainId}/override`)
+  return response.data
+}
+
+/**
+ * Check if a domain has a user override.
+ */
+export async function getOverrideStatus(domainId: string): Promise<OverrideStatusResponse> {
+  const response = await api.get(`/domains/${domainId}/override-status`)
+  return response.data
+}
+
+/**
+ * Update SAM3 prompts for a domain's regions.
+ * Convenience function that creates an override with only region updates.
+ */
+export async function updateDomainSam3Prompts(
+  domainId: string,
+  regionPrompts: Array<{ id: string; sam3_prompt: string | null }>
+): Promise<BuiltinOverrideResponse> {
+  // Convert to the full region update format
+  const regions = regionPrompts.map(rp => ({
+    id: rp.id,
+    name: rp.id,
+    display_name: rp.id,
+    sam3_prompt: rp.sam3_prompt,
+  }))
+
+  return createBuiltinOverride(domainId, { regions })
+}
+
+
+// ============================================================================
+// Domain Gap Reduction
+// ============================================================================
+
+/**
+ * Upload reference images to create a new reference set.
+ */
+export async function uploadReferences(
+  files: File[],
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+): Promise<any> {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+  formData.append('name', name)
+  formData.append('description', description)
+  formData.append('domain_id', domainId)
+
+  const response = await api.post('/domain-gap/references/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+  return response.data
+}
+
+/**
+ * List all reference sets.
+ */
+export async function listReferences(domainId?: string): Promise<any> {
+  const params = domainId ? { domain_id: domainId } : {}
+  const response = await api.get('/domain-gap/references', { params })
+  return response.data
+}
+
+/**
+ * Get reference set details.
+ */
+export async function getReference(setId: string): Promise<any> {
+  const response = await api.get(`/domain-gap/references/${setId}`)
+  return response.data
+}
+
+/**
+ * Delete a reference set.
+ */
+export async function deleteReference(setId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/references/${setId}`)
+  return response.data
+}
+
+/**
+ * Compute domain gap metrics between synthetic images and a reference set.
+ */
+export async function computeMetrics(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+  compute_fid?: boolean
+  compute_kid?: boolean
+  compute_color_distribution?: boolean
+}): Promise<any> {
+  const response = await api.post('/domain-gap/metrics/compute', request)
+  return response.data
+}
+
+/**
+ * Compare domain gap metrics before and after processing.
+ */
+export async function compareMetrics(request: {
+  original_synthetic_dir: string
+  processed_synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+}): Promise<any> {
+  const response = await api.post('/domain-gap/metrics/compare', request)
+  return response.data
+}
+
+/**
+ * Full domain gap analysis with metrics, issues, and parameter suggestions.
+ */
+export async function analyzeGap(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+  current_config?: Record<string, any>
+}): Promise<any> {
+  const response = await api.post('/domain-gap/analyze', request)
+  return response.data
+}
+
+/**
+ * Apply domain randomization to a single image.
+ */
+export async function randomizeSingle(request: {
+  image_path: string
+  config: Record<string, any>
+  output_dir: string
+  annotations_path?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/randomize/apply', request)
+  return response.data
+}
+
+/**
+ * Apply domain randomization to a batch (async job).
+ */
+export async function randomizeBatch(request: {
+  images_dir: string
+  config: Record<string, any>
+  output_dir: string
+  annotations_dir?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/randomize/apply-batch', request)
+  return response.data
+}
+
+/**
+ * Get domain gap service info.
+ */
+export async function getDomainGapInfo(): Promise<any> {
+  const response = await api.get('/domain-gap/info')
+  return response.data
+}
+
+/**
+ * List domain gap jobs.
+ */
+export async function listDomainGapJobs(): Promise<any> {
+  const response = await api.get('/domain-gap/jobs')
+  return response.data
+}
+
+/**
+ * Get domain gap job status.
+ */
+export async function getDomainGapJob(jobId: string): Promise<any> {
+  const response = await api.get(`/domain-gap/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * Cancel a domain gap job.
+ */
+export async function cancelDomainGapJob(jobId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/jobs/${jobId}`)
   return response.data
 }

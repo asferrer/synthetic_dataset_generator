@@ -119,6 +119,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/tools/PostProcessingView.vue'),
     meta: { titleKey: 'nav.titles.postProcessing' },
   },
+  {
+    path: '/tools/domain-gap',
+    name: 'domain-gap',
+    component: () => import('@/views/tools/DomainGapView.vue'),
+    meta: { titleKey: 'nav.titles.domainGap' },
+  },
   // Catch-all 404
   {
     path: '/:pathMatch(.*)*',

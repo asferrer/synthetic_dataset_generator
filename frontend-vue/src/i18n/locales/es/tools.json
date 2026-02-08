@@ -274,6 +274,108 @@
       "maxSize": "Tamaño Máximo"
     }
   },
+  "domainGap": {
+    "title": "Reducción Domain Gap",
+    "subtitle": "Mide y reduce el domain gap entre imágenes sintéticas y reales",
+    "tabs": {
+      "references": "Imágenes de Referencia",
+      "validation": "Validación",
+      "randomization": "Domain Randomization",
+      "styleTransfer": "Style Transfer"
+    },
+    "references": {
+      "title": "Conjuntos de Imágenes de Referencia",
+      "description": "Sube conjuntos de imágenes reales de tu dominio objetivo para comparación",
+      "uploadTitle": "Subir Conjunto de Referencia",
+      "name": "Nombre del Conjunto",
+      "namePlaceholder": "ej., Imágenes reales submarinas",
+      "domainId": "Dominio",
+      "setDescription": "Descripción",
+      "descriptionPlaceholder": "Descripción opcional del conjunto de imágenes",
+      "selectImages": "Seleccionar Imágenes",
+      "upload": "Subir",
+      "imageCount": "{count} imágenes",
+      "created": "Creado {date}",
+      "noSets": "Aún no se han subido conjuntos de referencia",
+      "deleteConfirm": "¿Eliminar este conjunto de referencia?",
+      "stats": {
+        "title": "Estadísticas Pre-computadas",
+        "brightness": "Brillo Promedio",
+        "edgeVariance": "Varianza de Bordes Promedio",
+        "colorMeansLab": "Medias LAB",
+        "colorMeansRgb": "Medias RGB"
+      }
+    },
+    "validation": {
+      "title": "Validación de Gap",
+      "description": "Mide el domain gap entre tus imágenes sintéticas y las referencias reales",
+      "syntheticDir": "Directorio de Imágenes Sintéticas",
+      "referenceSet": "Conjunto de Referencia",
+      "selectReferenceSet": "Selecciona un conjunto de referencia...",
+      "maxImages": "Máximo de Imágenes a Analizar",
+      "analyze": "Analizar Gap",
+      "computing": "Calculando métricas...",
+      "results": {
+        "title": "Resultados del Análisis",
+        "gapScore": "Puntuación General de Gap",
+        "gapLevel": "Nivel de Gap",
+        "fidScore": "Puntuación FID",
+        "kidScore": "Puntuación KID",
+        "colorDistribution": "Distribución de Color",
+        "levels": {
+          "low": "Bajo",
+          "medium": "Medio",
+          "high": "Alto",
+          "critical": "Crítico"
+        }
+      },
+      "issues": {
+        "title": "Problemas Detectados",
+        "noIssues": "No se detectaron problemas"
+      },
+      "suggestions": {
+        "title": "Sugerencias de Parámetros",
+        "noSuggestions": "No hay sugerencias disponibles",
+        "currentValue": "Actual",
+        "suggestedValue": "Sugerido",
+        "impact": "Impacto Esperado",
+        "apply": "Aplicar Sugerencia",
+        "applyAll": "Aplicar Todas las Sugerencias"
+      }
+    },
+    "randomization": {
+      "title": "Domain Randomization",
+      "description": "Crea variantes de imágenes sintéticas con aumentaciones aleatorias para incrementar diversidad",
+      "imagesDir": "Directorio de Imágenes",
+      "outputDir": "Directorio de Salida",
+      "config": {
+        "numVariants": "Variantes por Imagen",
+        "intensity": "Intensidad",
+        "colorJitter": "Variación de Color",
+        "noiseIntensity": "Intensidad de Ruido",
+        "histogramMatch": "Fuerza de Histograma",
+        "preserveAnnotations": "Preservar Anotaciones"
+      },
+      "apply": "Aplicar Randomización",
+      "applyBatch": "Aplicar a Lote"
+    },
+    "notifications": {
+      "uploadSuccess": "Conjunto de Referencia Subido",
+      "uploadSuccessMsg": "Se subieron {count} imágenes como \"{name}\"",
+      "uploadFailed": "Error al Subir",
+      "deleteSuccess": "Conjunto de Referencia Eliminado",
+      "deleteFailed": "Error al Eliminar",
+      "analysisComplete": "Análisis Completo",
+      "analysisCompleteMsg": "Puntuación de gap: {score}/100 ({level})",
+      "analysisFailed": "Análisis Fallido",
+      "randomizationStarted": "Randomización Iniciada",
+      "randomizationStartedMsg": "Trabajo {id} iniciado",
+      "randomizationComplete": "Randomización Completa",
+      "randomizationFailed": "Randomización Fallida",
+      "suggestionApplied": "Sugerencia Aplicada",
+      "suggestionAppliedMsg": "Actualizado {path} a {value}"
+    }
+  },
   "postProcessing": {
     "title": "Post-Procesamiento",
     "subtitle": "Aplica efectos de post-procesamiento a imágenes generadas",

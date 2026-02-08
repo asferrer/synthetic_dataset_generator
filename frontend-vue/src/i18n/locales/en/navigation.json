@@ -22,7 +22,8 @@
     "samSegmentation": "SAM Segmentation",
     "labelManager": "Label Manager",
     "objectSizes": "Object Sizes",
-    "postProcessing": "Post-Processing"
+    "postProcessing": "Post-Processing",
+    "domainGap": "Domain Gap"
   },
   "titles": {
     "dashboard": "Dashboard",
@@ -46,6 +47,7 @@
     "labelManager": "Label Manager",
     "objectSizes": "Object Sizes",
     "postProcessing": "Post-Processing",
+    "domainGap": "Domain Gap Reduction",
     "notFound": "Page Not Found"
   },
   "searchPlaceholder": "Search pages...",

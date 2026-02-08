@@ -274,6 +274,108 @@
       "maxSize": "Maximum Size"
     }
   },
+  "domainGap": {
+    "title": "Domain Gap Reduction",
+    "subtitle": "Measure and reduce the domain gap between synthetic and real images",
+    "tabs": {
+      "references": "Reference Images",
+      "validation": "Validation",
+      "randomization": "Domain Randomization",
+      "styleTransfer": "Style Transfer"
+    },
+    "references": {
+      "title": "Reference Image Sets",
+      "description": "Upload sets of real images from your target domain for comparison",
+      "uploadTitle": "Upload Reference Set",
+      "name": "Set Name",
+      "namePlaceholder": "e.g., Real underwater images",
+      "domainId": "Domain",
+      "setDescription": "Description",
+      "descriptionPlaceholder": "Optional description of the image set",
+      "selectImages": "Select Images",
+      "upload": "Upload",
+      "imageCount": "{count} images",
+      "created": "Created {date}",
+      "noSets": "No reference sets uploaded yet",
+      "deleteConfirm": "Delete this reference set?",
+      "stats": {
+        "title": "Pre-computed Statistics",
+        "brightness": "Avg Brightness",
+        "edgeVariance": "Avg Edge Variance",
+        "colorMeansLab": "LAB Means",
+        "colorMeansRgb": "RGB Means"
+      }
+    },
+    "validation": {
+      "title": "Gap Validation",
+      "description": "Measure the domain gap between your synthetic images and real references",
+      "syntheticDir": "Synthetic Images Directory",
+      "referenceSet": "Reference Set",
+      "selectReferenceSet": "Select a reference set...",
+      "maxImages": "Max Images to Analyze",
+      "analyze": "Analyze Gap",
+      "computing": "Computing metrics...",
+      "results": {
+        "title": "Analysis Results",
+        "gapScore": "Overall Gap Score",
+        "gapLevel": "Gap Level",
+        "fidScore": "FID Score",
+        "kidScore": "KID Score",
+        "colorDistribution": "Color Distribution",
+        "levels": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High",
+          "critical": "Critical"
+        }
+      },
+      "issues": {
+        "title": "Detected Issues",
+        "noIssues": "No issues detected"
+      },
+      "suggestions": {
+        "title": "Parameter Suggestions",
+        "noSuggestions": "No suggestions available",
+        "currentValue": "Current",
+        "suggestedValue": "Suggested",
+        "impact": "Expected Impact",
+        "apply": "Apply Suggestion",
+        "applyAll": "Apply All Suggestions"
+      }
+    },
+    "randomization": {
+      "title": "Domain Randomization",
+      "description": "Create variants of synthetic images with randomized augmentations to increase diversity",
+      "imagesDir": "Images Directory",
+      "outputDir": "Output Directory",
+      "config": {
+        "numVariants": "Variants per Image",
+        "intensity": "Intensity",
+        "colorJitter": "Color Jitter",
+        "noiseIntensity": "Noise Intensity",
+        "histogramMatch": "Histogram Match Strength",
+        "preserveAnnotations": "Preserve Annotations"
+      },
+      "apply": "Apply Randomization",
+      "applyBatch": "Apply to Batch"
+    },
+    "notifications": {
+      "uploadSuccess": "Reference Set Uploaded",
+      "uploadSuccessMsg": "Uploaded {count} images as \"{name}\"",
+      "uploadFailed": "Upload Failed",
+      "deleteSuccess": "Reference Set Deleted",
+      "deleteFailed": "Delete Failed",
+      "analysisComplete": "Analysis Complete",
+      "analysisCompleteMsg": "Gap score: {score}/100 ({level})",
+      "analysisFailed": "Analysis Failed",
+      "randomizationStarted": "Randomization Started",
+      "randomizationStartedMsg": "Job {id} started",
+      "randomizationComplete": "Randomization Complete",
+      "randomizationFailed": "Randomization Failed",
+      "suggestionApplied": "Suggestion Applied",
+      "suggestionAppliedMsg": "Updated {path} to {value}"
+    }
+  },
   "postProcessing": {
     "title": "Post-Processing",
     "subtitle": "Apply post-processing effects to generated images",
