@@ -47,6 +47,10 @@ from app.models.schemas import (
     ReferenceUploadResponse,
     ReferenceListResponse,
     ReferenceImageSet,
+    ReferenceCreateResponse,
+    ReferenceBatchResponse,
+    ReferenceFinalizeResponse,
+    ReferenceFromDirectoryRequest,
     # Metrics
     MetricsRequest,
     MetricsResult,
@@ -209,6 +213,17 @@ app.add_middleware(
 # Health & Info
 # =============================================================================
 
+@app.get("/ping", tags=["System"])
+async def ping():
+    """Lightweight liveness probe for Docker health checks.
+
+    Returns immediately even when heavy computations (FID/KID) are
+    running on the event loop, because this endpoint does zero I/O.
+    Use /health for full component status.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     """Health check with component status."""
@@ -325,6 +340,132 @@ async def upload_references(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# --- Chunked upload protocol ---
+
+@app.post("/references/create", response_model=ReferenceCreateResponse, tags=["References"])
+async def create_reference_set(
+    name: str = Form(..., description="Name for this reference set"),
+    description: str = Form("", description="Optional description"),
+    domain_id: str = Form("default", description="Associated domain ID"),
+):
+    """Phase 1 of chunked upload: create an empty reference set shell."""
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+
+    try:
+        set_id, image_dir = state.reference_manager.create_empty_set(name, description, domain_id)
+        return ReferenceCreateResponse(
+            success=True,
+            set_id=set_id,
+            name=name,
+            image_dir=image_dir,
+            message="Reference set created, ready for image batches",
+        )
+    except Exception as e:
+        logger.exception(f"Failed to create reference set shell: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/references/{set_id}/add-batch", response_model=ReferenceBatchResponse, tags=["References"])
+async def add_reference_batch(
+    set_id: str,
+    files: List[UploadFile] = File(..., description="Batch of reference images"),
+):
+    """Phase 2 of chunked upload: add a batch of images to an existing set."""
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+
+    image_dir = state.reference_manager.get_image_dir(set_id)
+    if not image_dir:
+        raise HTTPException(status_code=404, detail=f"Reference set {set_id} not found")
+
+    image_dir_path = Path(image_dir)
+    saved_paths = []
+
+    for f in files:
+        if not f.filename:
+            continue
+        dst = image_dir_path / f.filename
+        # Avoid name collisions
+        if dst.exists():
+            stem = dst.stem
+            suffix = dst.suffix
+            counter = 1
+            while dst.exists():
+                dst = image_dir_path / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        # Write file in chunks to avoid memory spikes
+        with open(str(dst), "wb") as out:
+            while chunk := await f.read(1024 * 1024):  # 1MB chunks
+                out.write(chunk)
+        saved_paths.append(str(dst))
+
+    if not saved_paths:
+        raise HTTPException(status_code=400, detail="No valid files in this batch")
+
+    total = state.reference_manager.add_images_to_set(set_id, saved_paths)
+
+    return ReferenceBatchResponse(
+        success=True,
+        set_id=set_id,
+        images_added=len(saved_paths),
+        total_images=total,
+        message=f"Added {len(saved_paths)} images (total: {total})",
+    )
+
+
+@app.post("/references/{set_id}/finalize", response_model=ReferenceFinalizeResponse, tags=["References"])
+async def finalize_reference_set(set_id: str):
+    """Phase 3 of chunked upload: compute statistics and finalize the set."""
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+
+    try:
+        ref_set = state.reference_manager.finalize_set(set_id)
+        return ReferenceFinalizeResponse(
+            success=True,
+            set_id=ref_set.set_id,
+            name=ref_set.name,
+            image_count=ref_set.image_count,
+            stats=ref_set.stats,
+            message=f"Finalized with {ref_set.image_count} images",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Failed to finalize reference set: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/references/from-directory", response_model=ReferenceUploadResponse, tags=["References"])
+async def create_from_directory(request: ReferenceFromDirectoryRequest):
+    """Create a reference set from images in a server-side directory."""
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+
+    try:
+        ref_set = state.reference_manager.create_from_directory(
+            name=request.name,
+            description=request.description,
+            domain_id=request.domain_id,
+            source_dir=request.directory_path,
+        )
+        return ReferenceUploadResponse(
+            success=True,
+            set_id=ref_set.set_id,
+            name=ref_set.name,
+            image_count=ref_set.image_count,
+            stats=ref_set.stats,
+            message=f"Created from directory with {ref_set.image_count} images",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Failed to create reference set from directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/references", response_model=ReferenceListResponse, tags=["References"])
 async def list_references(domain_id: Optional[str] = None):
     """List all reference sets, optionally filtered by domain."""
@@ -391,7 +532,8 @@ async def compute_metrics(request: MetricsRequest):
         )
 
     try:
-        result = state.metrics_engine.compute_metrics(
+        result = await asyncio.to_thread(
+            state.metrics_engine.compute_metrics,
             synthetic_dir=request.synthetic_dir,
             real_dir=ref_set.image_dir,
             max_images=request.max_images,
@@ -430,12 +572,14 @@ async def compare_metrics(request: MetricsCompareRequest):
     start_time = time.time()
 
     try:
-        before = state.metrics_engine.compute_metrics(
+        before = await asyncio.to_thread(
+            state.metrics_engine.compute_metrics,
             synthetic_dir=request.original_synthetic_dir,
             real_dir=ref_set.image_dir,
             max_images=request.max_images,
         )
-        after = state.metrics_engine.compute_metrics(
+        after = await asyncio.to_thread(
+            state.metrics_engine.compute_metrics,
             synthetic_dir=request.processed_synthetic_dir,
             real_dir=ref_set.image_dir,
             max_images=request.max_images,
@@ -475,14 +619,27 @@ async def compare_metrics(request: MetricsCompareRequest):
 # Full Analysis (Metrics + Issues + Suggestions)
 # =============================================================================
 
-@app.post("/analyze", response_model=GapAnalysis, tags=["Analysis"])
-async def analyze_gap(request: AnalyzeRequest):
+_ANALYSIS_PHASES = {
+    "extracting_features_synthetic": (0, 20),
+    "extracting_features_real": (20, 40),
+    "computing_fid": (40, 50),
+    "computing_kid": (50, 58),
+    "computing_color": (58, 70),
+    "analyzing_color": (70, 76),
+    "analyzing_edges": (76, 82),
+    "analyzing_frequency": (82, 88),
+    "analyzing_texture": (88, 92),
+    "generating_suggestions": (92, 95),
+    "completing": (95, 100),
+}
+
+
+@app.post("/analyze", tags=["Analysis"])
+async def analyze_gap(request: AnalyzeRequest, background_tasks: BackgroundTasks):
     """
     Full domain gap analysis: compute metrics, detect issues, generate suggestions.
 
-    This is the main validation endpoint. It combines FID/KID/color metrics
-    with edge, frequency, and texture analysis to produce actionable
-    parameter adjustment suggestions.
+    Returns a job_id immediately. Poll GET /jobs/{job_id} for progress and results.
     """
     if not state.metrics_engine:
         raise HTTPException(status_code=503, detail="Metrics engine not initialized")
@@ -504,46 +661,32 @@ async def analyze_gap(request: AnalyzeRequest):
             detail=f"Synthetic directory not found: {request.synthetic_dir}"
         )
 
-    start_time = time.time()
+    job_id = f"gap_{uuid.uuid4().hex[:12]}"
 
-    try:
-        # 1. Compute quantitative metrics
-        metrics = state.metrics_engine.compute_metrics(
-            synthetic_dir=request.synthetic_dir,
-            real_dir=ref_set.image_dir,
-            max_images=request.max_images,
-        )
+    state.db.create_job(
+        job_id=job_id,
+        job_type="gap_analysis",
+        service="domain_gap",
+        request_params={
+            "synthetic_dir": request.synthetic_dir,
+            "reference_set_id": request.reference_set_id,
+            "max_images": request.max_images,
+        },
+        total_items=100,
+    )
 
-        # 2. Run advisor analysis (color, edges, frequency, texture)
-        issues, suggestions = state.advisor_engine.analyze(
-            synthetic_dir=request.synthetic_dir,
-            real_dir=ref_set.image_dir,
-            max_images=request.max_images,
-            current_config=request.current_config,
-        )
+    state._active_jobs_cache[job_id] = {"cancelled": False}
 
-        # 3. Collect sample paths for visual comparison
-        syn_samples = _get_sample_paths(request.synthetic_dir, max_count=5)
-        real_samples = _get_sample_paths(ref_set.image_dir, max_count=5)
+    background_tasks.add_task(
+        _run_gap_analysis, job_id, request, ref_set.image_dir
+    )
 
-        processing_time = (time.time() - start_time) * 1000
-
-        return GapAnalysis(
-            gap_score=metrics.overall_gap_score,
-            gap_level=metrics.gap_level,
-            metrics=metrics,
-            issues=issues,
-            suggestions=suggestions,
-            sample_synthetic_paths=syn_samples,
-            sample_real_paths=real_samples,
-            processing_time_ms=processing_time,
-        )
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception(f"Gap analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Gap analysis started",
+    }
 
 
 # =============================================================================
@@ -717,6 +860,7 @@ async def get_job_status(job_id: str):
         result=job.get("result_summary"),
         error=job.get("error_message"),
         created_at=job.get("created_at"),
+        progress_details=job.get("progress_details"),
     )
 
 
@@ -826,6 +970,107 @@ async def _run_randomization_batch(job_id: str, request: RandomizationBatchReque
     except Exception as e:
         processing_time = (time.time() - start_time) * 1000
         logger.exception(f"Randomization batch {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time,
+        )
+    finally:
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+
+
+async def _run_gap_analysis(job_id: str, request: AnalyzeRequest, real_dir: str):
+    """Background task for full domain gap analysis with progress reporting."""
+    start_time = time.time()
+
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
+
+    def _progress_callback(phase: str, fraction: float):
+        """Map (phase, fraction) to global 0-100 percentage and write to DB."""
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            return
+
+        phase_range = _ANALYSIS_PHASES.get(phase)
+        if phase_range:
+            start_pct, end_pct = phase_range
+            global_pct = start_pct + (end_pct - start_pct) * fraction
+        else:
+            global_pct = 0.0
+
+        state.db.update_job_progress(
+            job_id,
+            processed_items=int(global_pct),
+            current_item=phase,
+            progress_details={
+                "phase": phase,
+                "phase_progress": round(fraction * 100, 1),
+                "global_progress": round(global_pct, 1),
+            },
+        )
+
+    try:
+        # 1. Compute quantitative metrics
+        metrics = await asyncio.to_thread(
+            state.metrics_engine.compute_metrics,
+            synthetic_dir=request.synthetic_dir,
+            real_dir=real_dir,
+            max_images=request.max_images,
+            progress_callback=_progress_callback,
+        )
+
+        # Check cancellation
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            state.db.complete_job(job_id, "cancelled")
+            return
+
+        # 2. Run advisor analysis
+        issues, suggestions = await asyncio.to_thread(
+            state.advisor_engine.analyze,
+            synthetic_dir=request.synthetic_dir,
+            real_dir=real_dir,
+            max_images=request.max_images,
+            current_config=request.current_config,
+            progress_callback=_progress_callback,
+        )
+
+        # 3. Collect sample paths
+        _progress_callback("completing", 0.0)
+        syn_samples = _get_sample_paths(request.synthetic_dir, max_count=5)
+        real_samples = _get_sample_paths(real_dir, max_count=5)
+
+        processing_time = (time.time() - start_time) * 1000
+
+        result = GapAnalysis(
+            gap_score=metrics.overall_gap_score,
+            gap_level=metrics.gap_level,
+            metrics=metrics,
+            issues=issues,
+            suggestions=suggestions,
+            sample_synthetic_paths=syn_samples,
+            sample_real_paths=real_samples,
+            processing_time_ms=processing_time,
+        )
+
+        _progress_callback("completing", 1.0)
+
+        cache = state._active_jobs_cache.get(job_id, {})
+        final_status = "cancelled" if cache.get("cancelled") else "completed"
+
+        state.db.complete_job(
+            job_id,
+            final_status,
+            result_summary=result.model_dump(),
+            processing_time_ms=processing_time,
+        )
+
+        logger.info(f"Gap analysis {job_id} {final_status} in {processing_time:.0f}ms")
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"Gap analysis {job_id} failed: {e}")
         state.db.complete_job(
             job_id, "failed",
             error_message=str(e),

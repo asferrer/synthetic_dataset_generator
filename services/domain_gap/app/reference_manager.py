@@ -14,9 +14,10 @@ from shared.job_database import JobDatabase, get_job_db
 
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import cv2
@@ -88,7 +89,7 @@ class ReferenceManager:
             # Avoid name collisions by appending a counter
             if dst.exists():
                 dst = image_dir / f"{src.stem}_{copied}{src.suffix}"
-            shutil.copy2(str(src), str(dst))
+            shutil.move(str(src), str(dst))
             copied += 1
 
         if copied == 0:
@@ -96,7 +97,7 @@ class ReferenceManager:
             shutil.rmtree(str(image_dir), ignore_errors=True)
             raise ValueError("No valid images found in the provided paths")
 
-        logger.info("Copied {} images to {}", copied, image_dir)
+        logger.info("Moved {} images to {}", copied, image_dir)
 
         # Pre-compute statistics
         stats = self._compute_stats(str(image_dir))
@@ -219,6 +220,155 @@ class ReferenceManager:
         return ReferenceImageStats(**json.loads(stats_raw))
 
     # ------------------------------------------------------------------
+    # Chunked upload API
+    # ------------------------------------------------------------------
+
+    def create_empty_set(
+        self, name: str, description: str, domain_id: str
+    ) -> Tuple[str, str]:
+        """Create an empty reference set shell (phase 1 of chunked upload).
+
+        Returns:
+            Tuple of ``(set_id, image_dir_path)``.
+        """
+        set_id = str(uuid4())
+        image_dir = self.base_dir / set_id
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now().isoformat()
+        with self.db._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO reference_sets
+                    (id, name, description, domain_id, image_dir, image_count, stats_json, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, NULL, ?)
+                """,
+                (set_id, name, description, domain_id, str(image_dir), now),
+            )
+
+        logger.info("Created empty reference set '{}' (id={})", name, set_id)
+        return set_id, str(image_dir)
+
+    def get_image_dir(self, set_id: str) -> Optional[str]:
+        """Return the image directory path for a set, or None."""
+        with self.db._cursor() as cursor:
+            cursor.execute(
+                "SELECT image_dir FROM reference_sets WHERE id = ?", (set_id,)
+            )
+            row = cursor.fetchone()
+        return row["image_dir"] if row else None
+
+    def add_images_to_set(self, set_id: str, file_paths: List[str]) -> int:
+        """Add already-saved image files to a set and update the count.
+
+        Args:
+            set_id: The reference set ID.
+            file_paths: Paths to images already written to the set's image_dir.
+
+        Returns:
+            The new total image count for the set.
+        """
+        added = len(file_paths)
+        with self.db._cursor() as cursor:
+            cursor.execute(
+                "UPDATE reference_sets SET image_count = image_count + ? WHERE id = ?",
+                (added, set_id),
+            )
+            cursor.execute(
+                "SELECT image_count FROM reference_sets WHERE id = ?", (set_id,)
+            )
+            row = cursor.fetchone()
+        total = row["image_count"] if row else added
+        logger.info("Added {} images to set {} (total: {})", added, set_id, total)
+        return total
+
+    def finalize_set(self, set_id: str) -> ReferenceImageSet:
+        """Compute stats and mark the set as finalized (phase 3 of chunked upload).
+
+        Returns:
+            The finalized ``ReferenceImageSet``.
+
+        Raises:
+            ValueError: If the set does not exist or has no images.
+        """
+        ref = self.get_set(set_id)
+        if ref is None:
+            raise ValueError(f"Reference set {set_id} not found")
+        if ref.image_count == 0:
+            raise ValueError(f"Reference set {set_id} has no images")
+
+        stats = self._compute_stats(ref.image_dir)
+
+        with self.db._cursor() as cursor:
+            cursor.execute(
+                "UPDATE reference_sets SET stats_json = ?, image_count = ? WHERE id = ?",
+                (json.dumps(stats.model_dump()), stats.image_count, set_id),
+            )
+
+        logger.info("Finalized reference set {} ({} images)", set_id, stats.image_count)
+        return self.get_set(set_id)  # type: ignore[return-value]
+
+    def create_from_directory(
+        self,
+        name: str,
+        description: str,
+        domain_id: str,
+        source_dir: str,
+    ) -> ReferenceImageSet:
+        """Create a reference set from an existing server-side directory.
+
+        Images are copied into the managed storage directory.
+
+        Raises:
+            ValueError: If the directory does not exist or has no images.
+        """
+        src_path = Path(source_dir)
+        if not src_path.is_dir():
+            raise ValueError(f"Directory not found: {source_dir}")
+
+        image_files = sorted(
+            p
+            for p in src_path.rglob("*")
+            if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTENSIONS
+        )
+        if not image_files:
+            raise ValueError(f"No valid images found in {source_dir}")
+
+        set_id = str(uuid4())
+        image_dir = self.base_dir / set_id
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        copied = 0
+        for src in image_files:
+            dst = image_dir / src.name
+            if dst.exists():
+                dst = image_dir / f"{src.stem}_{copied}{src.suffix}"
+            shutil.copy2(str(src), str(dst))
+            copied += 1
+
+        logger.info("Copied {} images from {} to {}", copied, source_dir, image_dir)
+
+        stats = self._compute_stats(str(image_dir))
+
+        now = datetime.now().isoformat()
+        with self.db._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO reference_sets
+                    (id, name, description, domain_id, image_dir, image_count, stats_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    set_id, name, description, domain_id,
+                    str(image_dir), copied,
+                    json.dumps(stats.model_dump()), now,
+                ),
+            )
+
+        logger.info("Created reference set '{}' from directory (id={}, images={})", name, set_id, copied)
+        return self.get_set(set_id)  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -244,21 +394,30 @@ class ReferenceManager:
             )
         logger.debug("reference_sets table initialized")
 
-    def _compute_stats(self, image_dir: str) -> ReferenceImageStats:
+    @staticmethod
+    def _process_single_image(img_path: Path) -> Optional[Dict]:
+        """Compute per-image statistics (thread-safe, no shared state)."""
+        bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        if bgr is None:
+            return None
+
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float64)
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float64)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+        return {
+            "lab_mean": np.array([lab[:, :, c].mean() for c in range(3)]),
+            "lab_std": np.array([lab[:, :, c].std() for c in range(3)]),
+            "rgb_mean": np.array([rgb[:, :, c].mean() for c in range(3)]),
+            "rgb_std": np.array([rgb[:, :, c].std() for c in range(3)]),
+            "lap_var": float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+            "brightness": float(lab[:, :, 0].mean()),
+        }
+
+    def _compute_stats(self, image_dir: str, max_workers: int = 4) -> ReferenceImageStats:
         """Compute aggregate statistics over all images in a directory.
 
-        Statistics computed:
-        - Per-channel mean and std in LAB and RGB colour spaces.
-        - LAB channel histograms (256 bins each) -- stored on the model but
-          not persisted separately since they are embedded in the stats JSON.
-        - Average Laplacian variance (proxy for edge sharpness / blur).
-        - Average brightness (mean of the L channel across all images).
-
-        Args:
-            image_dir: Path to the directory containing images.
-
-        Returns:
-            A populated ``ReferenceImageStats`` instance.
+        Uses a thread pool for parallel image processing.
         """
         dir_path = Path(image_dir)
         image_files = sorted(
@@ -270,55 +429,37 @@ class ReferenceManager:
         if not image_files:
             raise ValueError(f"No valid images found in {image_dir}")
 
-        # Accumulators
-        lab_means: List[np.ndarray] = []
-        lab_stds: List[np.ndarray] = []
-        rgb_means: List[np.ndarray] = []
-        rgb_stds: List[np.ndarray] = []
-        laplacian_variances: List[float] = []
-        brightness_values: List[float] = []
+        results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._process_single_image, p): p
+                for p in image_files
+            }
+            for future in as_completed(futures):
+                img_path = futures[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        results.append(result)
+                    else:
+                        logger.warning("Could not read image, skipping: {}", img_path)
+                except Exception as exc:
+                    logger.warning("Error processing {}: {}", img_path, exc)
 
-        processed = 0
-        for img_path in image_files:
-            bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-            if bgr is None:
-                logger.warning("Could not read image, skipping: {}", img_path)
-                continue
-
-            # Convert colour spaces
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float64)
-            lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float64)
-
-            # Per-channel mean / std
-            lab_means.append(np.array([lab[:, :, c].mean() for c in range(3)]))
-            lab_stds.append(np.array([lab[:, :, c].std() for c in range(3)]))
-            rgb_means.append(np.array([rgb[:, :, c].mean() for c in range(3)]))
-            rgb_stds.append(np.array([rgb[:, :, c].std() for c in range(3)]))
-
-            # Laplacian variance (edge sharpness)
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            laplacian_variances.append(float(lap_var))
-
-            # Brightness (L channel mean)
-            brightness_values.append(float(lab[:, :, 0].mean()))
-
-            processed += 1
-
-        if processed == 0:
+        if not results:
             raise ValueError(f"No images could be read from {image_dir}")
 
         # Aggregate across images
-        channel_means_lab = np.mean(lab_means, axis=0).tolist()
-        channel_stds_lab = np.mean(lab_stds, axis=0).tolist()
-        channel_means_rgb = np.mean(rgb_means, axis=0).tolist()
-        channel_stds_rgb = np.mean(rgb_stds, axis=0).tolist()
-        avg_edge_variance = float(np.mean(laplacian_variances))
-        avg_brightness = float(np.mean(brightness_values))
+        channel_means_lab = np.mean([r["lab_mean"] for r in results], axis=0).tolist()
+        channel_stds_lab = np.mean([r["lab_std"] for r in results], axis=0).tolist()
+        channel_means_rgb = np.mean([r["rgb_mean"] for r in results], axis=0).tolist()
+        channel_stds_rgb = np.mean([r["rgb_std"] for r in results], axis=0).tolist()
+        avg_edge_variance = float(np.mean([r["lap_var"] for r in results]))
+        avg_brightness = float(np.mean([r["brightness"] for r in results]))
 
         logger.info(
             "Computed stats over {} images: avg_brightness={:.1f}, avg_edge_var={:.1f}",
-            processed,
+            len(results),
             avg_brightness,
             avg_edge_variance,
         )
@@ -330,7 +471,7 @@ class ReferenceManager:
             channel_stds_rgb=channel_stds_rgb,
             avg_edge_variance=avg_edge_variance,
             avg_brightness=avg_brightness,
-            image_count=processed,
+            image_count=len(results),
         )
 
     @staticmethod

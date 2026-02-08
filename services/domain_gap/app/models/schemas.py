@@ -102,6 +102,42 @@ class ReferenceListResponse(BaseModel):
     total: int
 
 
+class ReferenceCreateResponse(BaseModel):
+    """Response for the create phase of chunked upload."""
+    success: bool
+    set_id: str
+    name: str
+    image_dir: str = ""
+    message: str = ""
+
+
+class ReferenceBatchResponse(BaseModel):
+    """Response after adding a batch of images to an existing set."""
+    success: bool
+    set_id: str
+    images_added: int
+    total_images: int
+    message: str = ""
+
+
+class ReferenceFinalizeResponse(BaseModel):
+    """Response after finalizing a reference set (stats computed)."""
+    success: bool
+    set_id: str
+    name: str
+    image_count: int
+    stats: Optional[ReferenceImageStats] = None
+    message: str = ""
+
+
+class ReferenceFromDirectoryRequest(BaseModel):
+    """Create a reference set from images in a server-side directory."""
+    name: str
+    description: str = ""
+    domain_id: str = "default"
+    directory_path: str = Field(description="Server-side path containing reference images")
+
+
 # =============================================================================
 # Metrics
 # =============================================================================
@@ -414,6 +450,7 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    progress_details: Optional[Dict[str, Any]] = None
 
 
 class JobListResponse(BaseModel):

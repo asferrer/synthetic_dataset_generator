@@ -9,7 +9,7 @@ color space analysis.
 import os
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -107,6 +107,7 @@ class MetricsEngine:
         compute_fid: bool = True,
         compute_kid: bool = True,
         compute_color: bool = True,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> MetricsResult:
         """
         Compute domain gap metrics between synthetic and real image sets.
@@ -141,34 +142,51 @@ class MetricsEngine:
         synthetic_count = len(synthetic_images)
         real_count = len(real_images)
 
+        # Shorthand for progress reporting
+        def _cb(phase: str, fraction: float) -> None:
+            if progress_callback:
+                progress_callback(phase, fraction)
+
         # Extract Inception features if needed for FID or KID
         synthetic_features: Optional[np.ndarray] = None
         real_features: Optional[np.ndarray] = None
 
         if compute_fid or compute_kid:
             logger.info("Extracting Inception features...")
+            _cb("extracting_features_synthetic", 0.0)
             synthetic_features = self._extract_inception_features(
-                synthetic_dir, max_images
+                synthetic_dir, max_images,
+                progress_callback=lambda p: _cb("extracting_features_synthetic", p),
             )
-            real_features = self._extract_inception_features(real_dir, max_images)
+            _cb("extracting_features_real", 0.0)
+            real_features = self._extract_inception_features(
+                real_dir, max_images,
+                progress_callback=lambda p: _cb("extracting_features_real", p),
+            )
 
             if compute_fid:
                 logger.info("Computing FID...")
+                _cb("computing_fid", 0.0)
                 fid_score = self.compute_fid(synthetic_features, real_features)
+                _cb("computing_fid", 1.0)
                 logger.info("FID score: {:.4f}", fid_score)
 
             if compute_kid:
                 logger.info("Computing KID...")
+                _cb("computing_kid", 0.0)
                 kid_score, kid_std = self.compute_kid(
                     synthetic_features, real_features
                 )
+                _cb("computing_kid", 1.0)
                 logger.info("KID score: {:.6f} +/- {:.6f}", kid_score, kid_std)
 
         if compute_color:
             logger.info("Computing color distribution metrics...")
+            _cb("computing_color", 0.0)
             color_dist = self.compute_color_distribution(
                 synthetic_dir, real_dir, max_images
             )
+            _cb("computing_color", 1.0)
             logger.info("Color EMD total: {:.4f}", color_dist.emd_total)
 
         # Compute overall gap score
@@ -403,6 +421,7 @@ class MetricsEngine:
         self,
         image_dir: str,
         max_images: int,
+        progress_callback: Optional[Callable[[float], None]] = None,
     ) -> np.ndarray:
         """
         Extract 2048-dimensional pool3 features from Inception v3.
@@ -452,6 +471,8 @@ class MetricsEngine:
                         features = features[0]
                     all_features.append(features.cpu().numpy())
                     batch = []
+                    if progress_callback:
+                        progress_callback((i + 1) / len(image_paths))
 
         if skipped > 0:
             logger.warning(

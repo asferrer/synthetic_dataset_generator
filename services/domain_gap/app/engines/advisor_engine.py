@@ -11,7 +11,7 @@ concrete pipeline parameter changes.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -65,6 +65,7 @@ class AdvisorEngine:
         real_dir: str,
         max_images: int = 50,
         current_config: Optional[Dict] = None,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> Tuple[List[GapIssue], List[ParameterSuggestion]]:
         """
         Run full domain gap analysis between synthetic and real image sets.
@@ -119,26 +120,39 @@ class AdvisorEngine:
             len(real_images),
         )
 
+        # Shorthand for progress reporting
+        def _cb(phase: str, fraction: float) -> None:
+            if progress_callback:
+                progress_callback(phase, fraction)
+
         # Run all analysis passes
         issues: List[GapIssue] = []
 
         try:
+            _cb("analyzing_color", 0.0)
             issues.extend(self._analyze_color(synthetic_images, real_images))
+            _cb("analyzing_color", 1.0)
         except Exception as e:
             logger.error("Color analysis failed: {}", e)
 
         try:
+            _cb("analyzing_edges", 0.0)
             issues.extend(self._analyze_edges(synthetic_images, real_images))
+            _cb("analyzing_edges", 1.0)
         except Exception as e:
             logger.error("Edge analysis failed: {}", e)
 
         try:
+            _cb("analyzing_frequency", 0.0)
             issues.extend(self._analyze_frequency(synthetic_images, real_images))
+            _cb("analyzing_frequency", 1.0)
         except Exception as e:
             logger.error("Frequency analysis failed: {}", e)
 
         try:
+            _cb("analyzing_texture", 0.0)
             issues.extend(self._analyze_texture(synthetic_images, real_images))
+            _cb("analyzing_texture", 1.0)
         except Exception as e:
             logger.error("Texture analysis failed: {}", e)
 
@@ -146,7 +160,9 @@ class AdvisorEngine:
         issues.sort(key=lambda i: _SEVERITY_ORDER.get(i.severity, 99))
 
         # Generate suggestions from detected issues
+        _cb("generating_suggestions", 0.0)
         suggestions = self._generate_suggestions(issues, current_config)
+        _cb("generating_suggestions", 1.0)
 
         logger.info(
             "Analysis complete: {} issues detected, {} suggestions generated",
