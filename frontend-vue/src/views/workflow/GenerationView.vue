@@ -39,6 +39,7 @@ import {
   ChevronDown,
   Target,
 } from 'lucide-vue-next'
+import GapValidationPanel from '@/components/domain-gap/GapValidationPanel.vue'
 import type { Job, LabelingJob, ValidationConfig, BatchConfig, LightingEstimationConfig, DatasetMetadata } from '@/types/api'
 
 const router = useRouter()
@@ -720,6 +721,26 @@ onUnmounted(() => {
         :icon="Clock"
       />
     </div>
+
+    <!-- Domain Gap Validation (Step 4.5) -->
+    <GapValidationPanel
+      v-if="currentJob?.status === 'completed' && workflowStore.outputDir"
+      :output-dir="workflowStore.outputDir"
+      @skip="continueToExport"
+      @apply-suggestions="(suggestions) => {
+        // Navigate to configure with suggestions
+        for (const s of suggestions) {
+          const parts = s.parameter_path.split('.')
+          if (parts.length >= 2) {
+            const effectKey = parts[0]
+            const paramKey = parts.slice(1).join('.')
+            workflowStore.updateAdvancedEffect(effectKey, { [paramKey]: s.suggested_value })
+          }
+        }
+        uiStore.showSuccess('Suggestions Applied', `Applied ${suggestions.length} parameter suggestions`)
+        router.push('/configure')
+      }"
+    />
 
     <!-- Action Buttons -->
     <div class="flex justify-between pt-4">

@@ -82,6 +82,9 @@
         "$ref": "#/definitions/LabelingTemplate"
       },
       "description": "Predefined labeling templates for auto-labeling"
+    },
+    "domain_gap": {
+      "$ref": "#/definitions/DomainGapConfig"
     }
   },
   "definitions": {
@@ -307,6 +310,96 @@
           "type": "array",
           "items": {"type": "string"},
           "description": "List of class names for auto-labeling"
+        }
+      }
+    },
+    "DomainGapConfig": {
+      "type": "object",
+      "description": "Domain gap reduction configuration with target metrics and pre-configured profiles",
+      "properties": {
+        "target_metrics": {
+          "type": "object",
+          "description": "Acceptable thresholds for domain gap metrics",
+          "properties": {
+            "max_fid_score": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum acceptable FID score"
+            },
+            "max_kid_score": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum acceptable KID score"
+            },
+            "max_gap_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Maximum acceptable overall gap score (0-100)"
+            }
+          }
+        },
+        "randomization_profiles": {
+          "type": "object",
+          "description": "Pre-configured domain randomization profiles",
+          "additionalProperties": {
+            "$ref": "#/definitions/RandomizationProfile"
+          }
+        },
+        "style_transfer": {
+          "type": "object",
+          "description": "Default style transfer settings for this domain",
+          "properties": {
+            "style_weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "content_weight": {
+              "type": "number",
+              "minimum": 0
+            },
+            "preserve_structure": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "depth_guided": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "RandomizationProfile": {
+      "type": "object",
+      "description": "A named randomization configuration profile",
+      "properties": {
+        "intensity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Overall randomization intensity"
+        },
+        "color_jitter": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "noise_intensity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.5
+        },
+        "histogram_match_strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "num_variants": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
         }
       }
     }
