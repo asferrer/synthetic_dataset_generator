@@ -2,6 +2,10 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   uploadReferences,
+  createReferenceSet,
+  addReferenceBatch,
+  finalizeReferenceSet,
+  createReferenceFromDirectory,
   listReferences,
   getReference,
   deleteReference,
@@ -87,6 +91,15 @@ export interface GapAnalysis {
   sample_real: string[]
 }
 
+export interface UploadProgress {
+  phase: 'creating' | 'uploading' | 'finalizing'
+  currentBatch: number
+  totalBatches: number
+  filesUploaded: number
+  totalFiles: number
+  batchProgress: number // 0-100 for current batch network transfer
+}
+
 export interface DomainGapJob {
   job_id: string
   job_type: string
@@ -95,6 +108,18 @@ export interface DomainGapJob {
   result: any
   created_at: string
   updated_at: string
+  progress_details?: {
+    phase: string
+    phase_progress: number
+    global_progress: number
+  }
+}
+
+export interface AnalysisProgress {
+  jobId: string
+  phase: string
+  phaseProgress: number
+  globalProgress: number
 }
 
 // ============================================
@@ -116,6 +141,13 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   const isUploading = ref(false)
   const isAnalyzing = ref(false)
   const error = ref<string | null>(null)
+
+  // Upload progress tracking
+  const uploadProgress = ref<UploadProgress | null>(null)
+
+  // Analysis progress tracking
+  const analysisProgress = ref<AnalysisProgress | null>(null)
+  let _analysisPollTimer: ReturnType<typeof setInterval> | null = null
 
   // ============================================
   // GETTERS
@@ -174,6 +206,8 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     }
   }
 
+  const BATCH_SIZE = 50
+
   async function uploadReferenceSet(
     name: string,
     description: string,
@@ -182,12 +216,80 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   ): Promise<ReferenceSet | null> {
     isUploading.value = true
     error.value = null
+    uploadProgress.value = null
+
     try {
-      const result = await uploadReferences(files, name, description, domainId)
+      // Small uploads: use single-shot for backward compat
+      if (files.length <= BATCH_SIZE) {
+        const result = await uploadReferences(files, name, description, domainId)
+        await fetchReferenceSets()
+        return result
+      }
+
+      // Large uploads: use 3-phase chunked protocol
+      const totalBatches = Math.ceil(files.length / BATCH_SIZE)
+
+      // Phase 1: Create empty set
+      uploadProgress.value = {
+        phase: 'creating',
+        currentBatch: 0,
+        totalBatches,
+        filesUploaded: 0,
+        totalFiles: files.length,
+        batchProgress: 0,
+      }
+      const createResult = await createReferenceSet(name, description, domainId)
+      const setId = createResult.set_id
+
+      // Phase 2: Upload batches
+      uploadProgress.value.phase = 'uploading'
+      for (let i = 0; i < totalBatches; i++) {
+        const batch = files.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
+        uploadProgress.value.currentBatch = i + 1
+        uploadProgress.value.batchProgress = 0
+
+        await addReferenceBatch(setId, batch, (progressEvent: any) => {
+          if (progressEvent.total && uploadProgress.value) {
+            uploadProgress.value.batchProgress = Math.round(
+              (progressEvent.loaded / progressEvent.total) * 100,
+            )
+          }
+        })
+
+        uploadProgress.value.filesUploaded = Math.min((i + 1) * BATCH_SIZE, files.length)
+      }
+
+      // Phase 3: Finalize (compute stats)
+      uploadProgress.value.phase = 'finalizing'
+      uploadProgress.value.batchProgress = 0
+      const finalResult = await finalizeReferenceSet(setId)
+
+      await fetchReferenceSets()
+      uploadProgress.value = null
+      return finalResult as any
+    } catch (e: any) {
+      error.value = getErrorMessage(e, 'Failed to upload reference set')
+      uploadProgress.value = null
+      return null
+    } finally {
+      isUploading.value = false
+    }
+  }
+
+  async function createReferenceFromDir(
+    name: string,
+    description: string,
+    domainId: string,
+    directoryPath: string,
+  ): Promise<ReferenceSet | null> {
+    isUploading.value = true
+    error.value = null
+    try {
+      const result = await createReferenceFromDirectory(name, description, domainId, directoryPath)
       await fetchReferenceSets()
       return result
     } catch (e: any) {
-      error.value = getErrorMessage(e, 'Failed to upload reference set')
+      error.value = getErrorMessage(e, 'Failed to create reference set from directory')
       return null
     } finally {
       isUploading.value = false
@@ -212,6 +314,13 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     }
   }
 
+  function _stopAnalysisPoll() {
+    if (_analysisPollTimer) {
+      clearInterval(_analysisPollTimer)
+      _analysisPollTimer = null
+    }
+  }
+
   async function runAnalysis(
     syntheticDir: string,
     referenceSetId: string,
@@ -220,20 +329,64 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   ): Promise<GapAnalysis | null> {
     isAnalyzing.value = true
     error.value = null
+    analysisProgress.value = null
+    _stopAnalysisPoll()
+
     try {
-      const result = await analyzeGap({
+      // 1. Start the async job
+      const { job_id } = await analyzeGap({
         synthetic_dir: syntheticDir,
         reference_set_id: referenceSetId,
         max_images: maxImages,
         current_config: currentConfig,
       })
-      latestAnalysis.value = result
-      return result
+
+      analysisProgress.value = {
+        jobId: job_id,
+        phase: 'pending',
+        phaseProgress: 0,
+        globalProgress: 0,
+      }
+
+      // 2. Poll for progress every 2s
+      return await new Promise<GapAnalysis | null>((resolve, reject) => {
+        _analysisPollTimer = setInterval(async () => {
+          try {
+            const job = await getDomainGapJob(job_id)
+
+            // Update progress from job details
+            if (job.progress_details && analysisProgress.value) {
+              analysisProgress.value.phase = job.progress_details.phase
+              analysisProgress.value.phaseProgress = job.progress_details.phase_progress
+              analysisProgress.value.globalProgress = job.progress_details.global_progress
+            } else if (analysisProgress.value) {
+              analysisProgress.value.globalProgress = job.progress ?? 0
+            }
+
+            if (job.status === 'completed') {
+              _stopAnalysisPoll()
+              analysisProgress.value = null
+              isAnalyzing.value = false
+              const result = job.result as GapAnalysis
+              latestAnalysis.value = result
+              resolve(result)
+            } else if (job.status === 'failed' || job.status === 'cancelled') {
+              _stopAnalysisPoll()
+              analysisProgress.value = null
+              isAnalyzing.value = false
+              error.value = job.error || `Analysis ${job.status}`
+              resolve(null)
+            }
+          } catch (pollErr: any) {
+            console.error('Error polling analysis job:', pollErr)
+          }
+        }, 2000)
+      })
     } catch (e: any) {
-      error.value = getErrorMessage(e, 'Failed to analyze gap')
-      return null
-    } finally {
+      error.value = getErrorMessage(e, 'Failed to start analysis')
+      analysisProgress.value = null
       isAnalyzing.value = false
+      return null
     }
   }
 
@@ -373,6 +526,7 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   }
 
   function reset() {
+    _stopAnalysisPoll()
     referenceSets.value = []
     selectedReferenceSetId.value = null
     latestAnalysis.value = null
@@ -381,6 +535,8 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     isUploading.value = false
     isAnalyzing.value = false
     error.value = null
+    uploadProgress.value = null
+    analysisProgress.value = null
   }
 
   // ============================================
@@ -397,6 +553,8 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     isUploading,
     isAnalyzing,
     error,
+    uploadProgress,
+    analysisProgress,
 
     // Getters
     selectedReferenceSet,
@@ -410,6 +568,7 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     fetchReferenceSets,
     fetchReferenceSet,
     uploadReferenceSet,
+    createReferenceFromDir,
     removeReferenceSet,
     runAnalysis,
     runMetrics,

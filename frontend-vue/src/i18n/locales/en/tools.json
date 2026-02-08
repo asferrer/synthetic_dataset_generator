@@ -294,7 +294,21 @@
       "descriptionPlaceholder": "Optional description of the image set",
       "selectImages": "Select Images",
       "upload": "Upload",
+      "createFromDir": "Create from Directory",
+      "filesSelected": "files selected",
       "imageCount": "{count} images",
+      "uploadMode": {
+        "files": "Upload Files",
+        "directory": "From Server Directory"
+      },
+      "directoryLabel": "Images Directory",
+      "directoryHint": "Point to a directory already on the Docker volume — images will be copied, no network transfer needed.",
+      "progress": {
+        "creating": "Creating reference set...",
+        "uploading": "Uploading batches",
+        "finalizing": "Computing statistics...",
+        "files": "files"
+      },
       "created": "Created {date}",
       "noSets": "No reference sets uploaded yet",
       "deleteConfirm": "Delete this reference set?",
@@ -341,6 +355,23 @@
         "impact": "Expected Impact",
         "apply": "Apply Suggestion",
         "applyAll": "Apply All Suggestions"
+      },
+      "progress": {
+        "phases": {
+          "pending": "Starting analysis...",
+          "extracting_features_synthetic": "Extracting features (synthetic)...",
+          "extracting_features_real": "Extracting features (real)...",
+          "computing_fid": "Computing FID score...",
+          "computing_kid": "Computing KID score...",
+          "computing_color": "Computing color distribution...",
+          "analyzing_color": "Analyzing color gaps...",
+          "analyzing_edges": "Analyzing edge sharpness...",
+          "analyzing_frequency": "Analyzing frequency content...",
+          "analyzing_texture": "Analyzing texture complexity...",
+          "generating_suggestions": "Generating suggestions...",
+          "completing": "Finalizing results...",
+          "completed": "Analysis complete"
+        }
       }
     },
     "randomization": {

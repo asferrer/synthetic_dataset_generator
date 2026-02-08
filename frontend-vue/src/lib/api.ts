@@ -788,6 +788,77 @@ export async function uploadReferences(
 }
 
 /**
+ * Create an empty reference set (phase 1 of chunked upload).
+ */
+export async function createReferenceSet(
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+): Promise<{ success: boolean; set_id: string; name: string; image_dir: string; message: string }> {
+  const formData = new FormData()
+  formData.append('name', name)
+  formData.append('description', description)
+  formData.append('domain_id', domainId)
+
+  const response = await api.post('/domain-gap/references/create', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 30000,
+  })
+  return response.data
+}
+
+/**
+ * Add a batch of images to an existing reference set (phase 2 of chunked upload).
+ */
+export async function addReferenceBatch(
+  setId: string,
+  files: File[],
+  onUploadProgress?: (progressEvent: any) => void,
+): Promise<{ success: boolean; set_id: string; images_added: number; total_images: number; message: string }> {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+
+  const response = await api.post(`/domain-gap/references/${setId}/add-batch`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000, // 5 min per batch
+    onUploadProgress,
+  })
+  return response.data
+}
+
+/**
+ * Finalize a reference set: compute stats (phase 3 of chunked upload).
+ */
+export async function finalizeReferenceSet(
+  setId: string,
+): Promise<{ success: boolean; set_id: string; name: string; image_count: number; stats: any; message: string }> {
+  const response = await api.post(`/domain-gap/references/${setId}/finalize`, null, {
+    timeout: 600000, // 10 min for stats
+  })
+  return response.data
+}
+
+/**
+ * Create a reference set from images in a server-side directory (zero network transfer).
+ */
+export async function createReferenceFromDirectory(
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+  directoryPath: string,
+): Promise<any> {
+  const response = await api.post('/domain-gap/references/from-directory', {
+    name,
+    description,
+    domain_id: domainId,
+    directory_path: directoryPath,
+  }, {
+    timeout: 600000, // 10 min
+  })
+  return response.data
+}
+
+/**
  * List all reference sets.
  */
 export async function listReferences(domainId?: string): Promise<any> {
@@ -823,7 +894,9 @@ export async function computeMetrics(request: {
   compute_kid?: boolean
   compute_color_distribution?: boolean
 }): Promise<any> {
-  const response = await api.post('/domain-gap/metrics/compute', request)
+  const response = await api.post('/domain-gap/metrics/compute', request, {
+    timeout: 600000, // 10 min for FID/KID on large sets
+  })
   return response.data
 }
 
@@ -836,19 +909,21 @@ export async function compareMetrics(request: {
   reference_set_id: string
   max_images?: number
 }): Promise<any> {
-  const response = await api.post('/domain-gap/metrics/compare', request)
+  const response = await api.post('/domain-gap/metrics/compare', request, {
+    timeout: 600000, // 10 min — runs metrics twice (before + after)
+  })
   return response.data
 }
 
 /**
- * Full domain gap analysis with metrics, issues, and parameter suggestions.
+ * Start domain gap analysis (async job). Returns job_id for polling.
  */
 export async function analyzeGap(request: {
   synthetic_dir: string
   reference_set_id: string
   max_images?: number
   current_config?: Record<string, any>
-}): Promise<any> {
+}): Promise<{ success: boolean; job_id: string; status: string; message: string }> {
   const response = await api.post('/domain-gap/analyze', request)
   return response.data
 }

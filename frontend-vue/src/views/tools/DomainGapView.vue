@@ -25,8 +25,9 @@ import {
   ArrowRight,
   Info,
   Eye,
+  FolderOpen,
 } from 'lucide-vue-next'
-import type { GapAnalysis, ReferenceSet, ParameterSuggestion } from '@/stores/domainGap'
+import type { GapAnalysis, ReferenceSet, ParameterSuggestion, UploadProgress } from '@/stores/domainGap'
 
 const { t } = useI18n()
 const uiStore = useUiStore()
@@ -55,6 +56,8 @@ const uploadDomainId = ref('')
 const uploadFiles = ref<File[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const showUploadForm = ref(false)
+const uploadMode = ref<'files' | 'directory'>('files')
+const uploadDirectoryPath = ref('')
 
 function onFileSelect(event: Event) {
   const target = event.target as HTMLInputElement
@@ -64,26 +67,40 @@ function onFileSelect(event: Event) {
 }
 
 async function handleUpload() {
-  if (!uploadName.value || !uploadDomainId.value || uploadFiles.value.length === 0) return
+  if (!uploadName.value || !uploadDomainId.value) return
 
-  const result = await store.uploadReferenceSet(
-    uploadName.value,
-    uploadDescription.value,
-    uploadDomainId.value,
-    uploadFiles.value,
-  )
+  let result: any = null
+
+  if (uploadMode.value === 'directory') {
+    if (!uploadDirectoryPath.value) return
+    result = await store.createReferenceFromDir(
+      uploadName.value,
+      uploadDescription.value,
+      uploadDomainId.value,
+      uploadDirectoryPath.value,
+    )
+  } else {
+    if (uploadFiles.value.length === 0) return
+    result = await store.uploadReferenceSet(
+      uploadName.value,
+      uploadDescription.value,
+      uploadDomainId.value,
+      uploadFiles.value,
+    )
+  }
 
   if (result) {
     uiStore.showSuccess(
       t('tools.domainGap.notifications.uploadSuccess'),
       t('tools.domainGap.notifications.uploadSuccessMsg', {
-        count: result.image_count,
-        name: result.name,
+        count: result.image_count ?? result.stats?.image_count ?? 0,
+        name: result.name ?? uploadName.value,
       }),
     )
     uploadName.value = ''
     uploadDescription.value = ''
     uploadFiles.value = []
+    uploadDirectoryPath.value = ''
     showUploadForm.value = false
   } else {
     uiStore.showError(
@@ -91,6 +108,22 @@ async function handleUpload() {
       store.error || undefined,
     )
   }
+}
+
+function getUploadDisabled(): boolean {
+  if (!uploadName.value || !uploadDomainId.value || store.isUploading) return true
+  if (uploadMode.value === 'files') return uploadFiles.value.length === 0
+  return !uploadDirectoryPath.value
+}
+
+function getProgressPercent(progress: UploadProgress): number {
+  if (progress.phase === 'creating') return 2
+  if (progress.phase === 'finalizing') return 95
+  // uploading: weight by files uploaded + current batch progress
+  const batchWeight = 90 / progress.totalBatches
+  const completedBatches = (progress.currentBatch - 1) * batchWeight
+  const currentBatchPct = (progress.batchProgress / 100) * batchWeight
+  return Math.round(5 + completedBatches + currentBatchPct)
 }
 
 async function handleDeleteSet(setId: string) {
@@ -285,6 +318,35 @@ onMounted(async () => {
           <h3 class="text-lg font-semibold text-white mb-4">
             {{ t('tools.domainGap.references.uploadTitle') }}
           </h3>
+
+          <!-- Upload mode toggle -->
+          <div class="flex gap-1 rounded-lg bg-background-secondary p-1 mb-4">
+            <button
+              @click="uploadMode = 'files'"
+              :class="[
+                'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors flex-1 justify-center',
+                uploadMode === 'files'
+                  ? 'bg-primary text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-700/50',
+              ]"
+            >
+              <Upload class="h-4 w-4" />
+              {{ t('tools.domainGap.references.uploadMode.files') }}
+            </button>
+            <button
+              @click="uploadMode = 'directory'"
+              :class="[
+                'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors flex-1 justify-center',
+                uploadMode === 'directory'
+                  ? 'bg-primary text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-700/50',
+              ]"
+            >
+              <FolderOpen class="h-4 w-4" />
+              {{ t('tools.domainGap.references.uploadMode.directory') }}
+            </button>
+          </div>
+
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <BaseInput
               v-model="uploadName"
@@ -304,7 +366,9 @@ onMounted(async () => {
             :placeholder="t('tools.domainGap.references.descriptionPlaceholder')"
             class="mb-4"
           />
-          <div class="mb-4">
+
+          <!-- File upload mode -->
+          <div v-if="uploadMode === 'files'" class="mb-4">
             <label class="block text-sm font-medium text-gray-300 mb-2">
               {{ t('tools.domainGap.references.selectImages') }}
             </label>
@@ -317,19 +381,61 @@ onMounted(async () => {
               class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary file:text-white hover:file:bg-primary/80"
             />
             <p v-if="uploadFiles.length > 0" class="mt-2 text-sm text-gray-400">
-              {{ uploadFiles.length }} files selected
+              {{ uploadFiles.length }} {{ t('tools.domainGap.references.filesSelected') }}
             </p>
           </div>
+
+          <!-- Directory mode -->
+          <div v-else class="mb-4">
+            <DirectoryBrowser
+              v-model="uploadDirectoryPath"
+              :label="t('tools.domainGap.references.directoryLabel')"
+              placeholder="/app/datasets/references"
+              path-mode="input"
+            />
+            <p class="mt-2 text-xs text-gray-500">
+              {{ t('tools.domainGap.references.directoryHint') }}
+            </p>
+          </div>
+
+          <!-- Upload progress -->
+          <div v-if="store.uploadProgress" class="mb-4 rounded-lg bg-background-tertiary p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-medium text-gray-300">
+                <template v-if="store.uploadProgress.phase === 'creating'">
+                  {{ t('tools.domainGap.references.progress.creating') }}
+                </template>
+                <template v-else-if="store.uploadProgress.phase === 'uploading'">
+                  {{ t('tools.domainGap.references.progress.uploading') }}
+                  ({{ store.uploadProgress.currentBatch }}/{{ store.uploadProgress.totalBatches }})
+                </template>
+                <template v-else>
+                  {{ t('tools.domainGap.references.progress.finalizing') }}
+                </template>
+              </span>
+              <span class="text-sm text-gray-400">
+                {{ store.uploadProgress.filesUploaded }}/{{ store.uploadProgress.totalFiles }}
+                {{ t('tools.domainGap.references.progress.files') }}
+              </span>
+            </div>
+            <div class="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-primary transition-all duration-300"
+                :style="{ width: `${getProgressPercent(store.uploadProgress)}%` }"
+              />
+            </div>
+          </div>
+
           <div class="flex gap-3">
             <BaseButton
               @click="handleUpload"
               variant="primary"
-              :disabled="!uploadName || !uploadDomainId || uploadFiles.length === 0 || store.isUploading"
+              :disabled="getUploadDisabled()"
               :loading="store.isUploading"
             >
-              {{ t('tools.domainGap.references.upload') }}
+              {{ uploadMode === 'directory' ? t('tools.domainGap.references.createFromDir') : t('tools.domainGap.references.upload') }}
             </BaseButton>
-            <BaseButton @click="showUploadForm = false" variant="ghost">
+            <BaseButton @click="showUploadForm = false" variant="ghost" :disabled="store.isUploading">
               {{ t('common.actions.cancel') }}
             </BaseButton>
           </div>
@@ -434,6 +540,24 @@ onMounted(async () => {
           <BarChart3 class="h-4 w-4 mr-2" />
           {{ store.isAnalyzing ? t('tools.domainGap.validation.computing') : t('tools.domainGap.validation.analyze') }}
         </BaseButton>
+
+        <!-- Analysis progress bar -->
+        <div v-if="store.analysisProgress" class="mt-4 rounded-lg bg-background-tertiary p-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-sm font-medium text-gray-300">
+              {{ t(`tools.domainGap.validation.progress.phases.${store.analysisProgress.phase}`, store.analysisProgress.phase) }}
+            </span>
+            <span class="text-sm text-gray-400">
+              {{ Math.round(store.analysisProgress.globalProgress) }}%
+            </span>
+          </div>
+          <div class="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+            <div
+              class="h-full bg-primary rounded-full transition-all duration-500"
+              :style="{ width: `${store.analysisProgress.globalProgress}%` }"
+            />
+          </div>
+        </div>
       </div>
 
       <!-- Analysis results -->

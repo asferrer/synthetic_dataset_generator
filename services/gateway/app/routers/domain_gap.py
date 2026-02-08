@@ -21,6 +21,9 @@ router = APIRouter(
 )
 
 DOMAIN_GAP_TIMEOUT = 120.0
+DOMAIN_GAP_BATCH_TIMEOUT = 300.0    # 5 min per batch of ~50 files
+DOMAIN_GAP_COMPUTE_TIMEOUT = 600.0  # 10 min for FID/KID on large image sets
+DOMAIN_GAP_FINALIZE_TIMEOUT = 600.0  # 10 min for stats on 1000+ images
 
 
 def _extract_detail(e: httpx.HTTPStatusError) -> str:
@@ -73,6 +76,93 @@ async def upload_references(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.post("/references/create")
+async def create_reference_set(
+    name: str = Form(...),
+    description: str = Form(""),
+    domain_id: str = Form("default"),
+):
+    """Create an empty reference set (phase 1 of chunked upload)."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/references/create",
+                data={"name": name, "description": description, "domain_id": domain_id},
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to create reference set: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/references/{set_id}/add-batch")
+async def add_reference_batch(
+    set_id: str,
+    files: List[UploadFile] = File(...),
+):
+    """Add a batch of images to an existing reference set (phase 2)."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_BATCH_TIMEOUT) as http:
+            files_data = []
+            for f in files:
+                content = await f.read()
+                files_data.append(("files", (f.filename, content, f.content_type or "image/jpeg")))
+
+            response = await http.post(
+                f"{client.base_url}/references/{set_id}/add-batch",
+                files=files_data,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to add batch to reference set {set_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/references/{set_id}/finalize")
+async def finalize_reference_set(set_id: str):
+    """Finalize a reference set and compute statistics (phase 3)."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_FINALIZE_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/references/{set_id}/finalize",
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to finalize reference set {set_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/references/from-directory")
+async def create_reference_from_directory(request: Dict[str, Any]):
+    """Create a reference set from a server-side directory."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_FINALIZE_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/references/from-directory",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to create reference set from directory: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/references")
 async def list_references(domain_id: Optional[str] = None):
     """List all reference sets."""
@@ -122,7 +212,13 @@ async def compute_metrics(request: Dict[str, Any]):
     """Compute domain gap metrics between synthetic and reference images."""
     client = _get_client()
     try:
-        return await client.post("/metrics/compute", data=request)
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_COMPUTE_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/metrics/compute",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
     except Exception as e:
@@ -135,7 +231,13 @@ async def compare_metrics(request: Dict[str, Any]):
     """Compare metrics before and after processing."""
     client = _get_client()
     try:
-        return await client.post("/metrics/compare", data=request)
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_COMPUTE_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/metrics/compare",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
     except Exception as e:
@@ -149,14 +251,14 @@ async def compare_metrics(request: Dict[str, Any]):
 
 @router.post("/analyze")
 async def analyze_gap(request: Dict[str, Any]):
-    """Full domain gap analysis with metrics, issues, and parameter suggestions."""
+    """Start domain gap analysis (async job). Returns job_id for polling."""
     client = _get_client()
     try:
         return await client.post("/analyze", data=request)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
     except Exception as e:
-        logger.error(f"Failed to analyze gap: {e}")
+        logger.error(f"Failed to start gap analysis: {e}")
         raise HTTPException(status_code=502, detail=str(e))
 
 

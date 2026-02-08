@@ -294,7 +294,21 @@
       "descriptionPlaceholder": "Descripción opcional del conjunto de imágenes",
       "selectImages": "Seleccionar Imágenes",
       "upload": "Subir",
+      "createFromDir": "Crear desde Directorio",
+      "filesSelected": "archivos seleccionados",
       "imageCount": "{count} imágenes",
+      "uploadMode": {
+        "files": "Subir Archivos",
+        "directory": "Desde Directorio del Servidor"
+      },
+      "directoryLabel": "Directorio de Imágenes",
+      "directoryHint": "Apunta a un directorio ya existente en el volumen Docker — las imágenes se copiarán sin transferencia de red.",
+      "progress": {
+        "creating": "Creando conjunto de referencia...",
+        "uploading": "Subiendo lotes",
+        "finalizing": "Calculando estadísticas...",
+        "files": "archivos"
+      },
       "created": "Creado {date}",
       "noSets": "Aún no se han subido conjuntos de referencia",
       "deleteConfirm": "¿Eliminar este conjunto de referencia?",
@@ -341,6 +355,23 @@
         "impact": "Impacto Esperado",
         "apply": "Aplicar Sugerencia",
         "applyAll": "Aplicar Todas las Sugerencias"
+      },
+      "progress": {
+        "phases": {
+          "pending": "Iniciando análisis...",
+          "extracting_features_synthetic": "Extrayendo características (sintéticas)...",
+          "extracting_features_real": "Extrayendo características (reales)...",
+          "computing_fid": "Calculando puntuación FID...",
+          "computing_kid": "Calculando puntuación KID...",
+          "computing_color": "Calculando distribución de color...",
+          "analyzing_color": "Analizando gaps de color...",
+          "analyzing_edges": "Analizando nitidez de bordes...",
+          "analyzing_frequency": "Analizando contenido frecuencial...",
+          "analyzing_texture": "Analizando complejidad de textura...",
+          "generating_suggestions": "Generando sugerencias...",
+          "completing": "Finalizando resultados...",
+          "completed": "Análisis completado"
+        }
       }
     },
     "randomization": {
