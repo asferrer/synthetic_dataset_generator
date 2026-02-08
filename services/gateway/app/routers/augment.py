@@ -6,6 +6,7 @@ Proxies requests to the Augmentor service.
 """
 
 import logging
+import os
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -126,22 +127,43 @@ class ComposeResponse(BaseModel):
 
 
 class ComposeBatchRequest(BaseModel):
-    """Request for batch composition"""
-    backgrounds_dir: str = Field(..., description="Directory with backgrounds")
-    objects_dir: str = Field(..., description="Directory with objects by class")
+    """Request for batch composition.
+
+    Accepts both legacy format (backgrounds_dir + objects_dir + num_images)
+    and frontend format (source_dataset + target_counts + nested configs).
+    """
+    # --- Legacy format (direct augmentor fields) ---
+    backgrounds_dir: Optional[str] = Field(None, description="Directory with backgrounds")
+    objects_dir: Optional[str] = Field(None, description="Directory with objects by class")
+    num_images: Optional[int] = Field(None, ge=1, le=100000)
+
+    # --- Frontend format ---
+    source_dataset: Optional[str] = Field(None, description="Dataset root containing Backgrounds_filtered/ and Objects/")
+    target_counts: Optional[Dict[str, int]] = Field(None, description="Target count per class")
+
+    # --- Common fields ---
     output_dir: str = Field(..., description="Output directory")
-    num_images: int = Field(..., ge=1, le=100000)
     targets_per_class: Optional[Dict[str, int]] = Field(None)
     max_objects_per_image: int = Field(5, ge=1, le=20)
     effects: List[EffectType] = Field(
         default=[EffectType.COLOR_CORRECTION, EffectType.BLUR_MATCHING, EffectType.CAUSTICS]
     )
-    effects_config: EffectsConfig = Field(default_factory=EffectsConfig)
+    effects_config: Optional[Any] = Field(default=None, description="Effects config (flat or nested)")
     depth_aware: bool = Field(True)
     validate_quality: bool = Field(False)
     validate_physics: bool = Field(False)
     reject_invalid: bool = Field(True)
     save_pipeline_debug: bool = Field(False, description="Save intermediate pipeline images for first iteration")
+
+    # --- Frontend-specific nested configs (accepted but transformed) ---
+    placement_config: Optional[Dict[str, Any]] = Field(None)
+    validation_config: Optional[Dict[str, Any]] = Field(None)
+    batch_config: Optional[Dict[str, Any]] = Field(None)
+    lighting_config: Optional[Dict[str, Any]] = Field(None)
+    metadata: Optional[Dict[str, Any]] = Field(None)
+    use_depth: Optional[bool] = Field(None)
+    use_segmentation: Optional[bool] = Field(None)
+    depth_aware_placement: Optional[bool] = Field(None)
 
 
 class ComposeBatchResponse(BaseModel):
@@ -270,17 +292,143 @@ async def compose_batch(request: ComposeBatchRequest):
     Creates multiple synthetic images asynchronously.
     Use GET /augment/jobs/{job_id} to check progress.
     """
-    logger.info(f"Batch compose request: {request.num_images} images")
+    # Resolve backgrounds_dir and objects_dir from source_dataset if needed
+    backgrounds_dir = request.backgrounds_dir
+    objects_dir = request.objects_dir
+    num_images = request.num_images
+
+    if request.source_dataset:
+        if not backgrounds_dir:
+            backgrounds_dir = os.path.join(request.source_dataset, "Backgrounds_filtered")
+        if not objects_dir:
+            objects_dir = os.path.join(request.source_dataset, "Objects")
+
+    if not backgrounds_dir or not objects_dir:
+        raise HTTPException(
+            status_code=422,
+            detail="Either source_dataset or both backgrounds_dir and objects_dir are required"
+        )
+
+    # Derive num_images from target_counts if not provided
+    targets = request.targets_per_class or request.target_counts
+    if num_images is None:
+        if targets:
+            num_images = sum(targets.values())
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Either num_images or target_counts is required"
+            )
+
+    # Resolve depth_aware from frontend flag
+    depth_aware = request.depth_aware
+    if request.depth_aware_placement is not None:
+        depth_aware = request.depth_aware_placement
+
+    # Resolve validation flags from nested config
+    validate_quality = request.validate_quality
+    validate_physics = request.validate_physics
+    reject_invalid = request.reject_invalid
+    if request.validation_config:
+        validate_quality = request.validation_config.get("validate_quality", validate_quality)
+        validate_physics = request.validation_config.get("validate_physics", validate_physics)
+        reject_invalid = request.validation_config.get("reject_invalid", reject_invalid)
+
+    # Resolve batch config
+    save_pipeline_debug = request.save_pipeline_debug
+    parallel = True
+    concurrent_limit = 4
+    vram_threshold = 0.7
+    if request.batch_config:
+        save_pipeline_debug = request.batch_config.get("save_pipeline_debug", save_pipeline_debug)
+        parallel = request.batch_config.get("parallel", parallel)
+        concurrent_limit = request.batch_config.get("concurrent_limit", concurrent_limit)
+        vram_threshold = request.batch_config.get("vram_threshold", vram_threshold)
+
+    # Resolve max_objects_per_image from placement_config
+    max_objects = request.max_objects_per_image
+    if request.placement_config:
+        max_objects = request.placement_config.get("max_objects_per_image", max_objects)
+
+    # Transform effects_config from frontend nested format to flat augmentor format
+    effects_config = {}
+    ec = request.effects_config
+    if isinstance(ec, dict):
+        # Frontend sends nested format with color_correction.enabled, etc.
+        effects_config = {
+            "color_intensity": ec.get("color_correction", {}).get("color_intensity", 0.12) if isinstance(ec.get("color_correction"), dict) else 0.12,
+            "blur_strength": ec.get("blur_matching", {}).get("blur_strength", 0.5) if isinstance(ec.get("blur_matching"), dict) else 0.5,
+            "underwater_intensity": ec.get("underwater", {}).get("underwater_intensity", 0.15) if isinstance(ec.get("underwater"), dict) else 0.15,
+            "caustics_intensity": ec.get("caustics", {}).get("caustics_intensity", 0.10) if isinstance(ec.get("caustics"), dict) else 0.10,
+            "shadow_opacity": ec.get("shadows", {}).get("shadow_opacity", 0.10) if isinstance(ec.get("shadows"), dict) else 0.10,
+            "lighting_type": ec.get("lighting", {}).get("lighting_type", "ambient") if isinstance(ec.get("lighting"), dict) else "ambient",
+            "lighting_intensity": ec.get("lighting", {}).get("lighting_intensity", 0.5) if isinstance(ec.get("lighting"), dict) else 0.5,
+            "motion_blur_probability": ec.get("motion_blur", {}).get("motion_blur_probability", 0.2) if isinstance(ec.get("motion_blur"), dict) else 0.2,
+            "water_clarity": ec.get("underwater", {}).get("water_clarity", "clear") if isinstance(ec.get("underwater"), dict) else "clear",
+        }
+        # If it already has flat keys (legacy format), pass through
+        if "color_intensity" in ec:
+            effects_config = ec
+    elif ec is None:
+        effects_config = {}
+
+    # Build enabled effects list from nested config
+    effects_list = [e.value if hasattr(e, 'value') else e for e in request.effects]
+    if isinstance(request.effects_config, dict) and "color_correction" in request.effects_config:
+        # Derive effects list from nested config enabled flags
+        effects_list = []
+        effect_map = {
+            "color_correction": "color_correction",
+            "blur_matching": "blur_matching",
+            "lighting": "lighting",
+            "underwater": "underwater",
+            "motion_blur": "motion_blur",
+            "shadows": "shadows",
+            "caustics": "caustics",
+            "edge_smoothing": "edge_smoothing",
+        }
+        for key, effect_name in effect_map.items():
+            section = request.effects_config.get(key, {})
+            if isinstance(section, dict) and section.get("enabled", False):
+                effects_list.append(effect_name)
+        # Ensure at least basic effects
+        if not effects_list:
+            effects_list = ["color_correction", "blur_matching", "caustics"]
+
+    # Build the augmentor-compatible request
+    request_data = {
+        "backgrounds_dir": backgrounds_dir,
+        "objects_dir": objects_dir,
+        "output_dir": request.output_dir,
+        "num_images": num_images,
+        "targets_per_class": targets,
+        "max_objects_per_image": max_objects,
+        "effects": effects_list,
+        "effects_config": effects_config,
+        "depth_aware": depth_aware,
+        "validate_quality": validate_quality,
+        "validate_physics": validate_physics,
+        "reject_invalid": reject_invalid,
+        "save_pipeline_debug": save_pipeline_debug,
+        "parallel": parallel,
+        "concurrent_limit": concurrent_limit,
+        "vram_threshold": vram_threshold,
+    }
+
+    # Add metadata if present
+    if request.metadata:
+        request_data["metadata"] = request.metadata
+
+    logger.info(f"Batch compose request: {num_images} images, backgrounds={backgrounds_dir}, objects={objects_dir}")
 
     try:
         registry = get_service_registry()
 
-        # Convert to dict
-        request_data = request.model_dump()
-        request_data['effects'] = [e.value if hasattr(e, 'value') else e for e in request_data['effects']]
-        if 'effects_config' in request_data and 'water_clarity' in request_data['effects_config']:
-            wc = request_data['effects_config']['water_clarity']
-            request_data['effects_config']['water_clarity'] = wc.value if hasattr(wc, 'value') else wc
+        # Ensure water_clarity is a string
+        if 'effects_config' in request_data and isinstance(request_data['effects_config'], dict):
+            wc = request_data['effects_config'].get('water_clarity')
+            if hasattr(wc, 'value'):
+                request_data['effects_config']['water_clarity'] = wc.value
 
         result = await registry.augmentor.post("/compose-batch", request_data)
 
