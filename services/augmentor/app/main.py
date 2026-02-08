@@ -100,7 +100,8 @@ class ServiceState:
             allocated = torch.cuda.memory_allocated(0) / 1024**3
             total = torch.cuda.get_device_properties(0).total_memory / 1024**3
             return f"{allocated:.1f}GB / {total:.1f}GB"
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to get GPU memory info: {e}")
             return None
 
 

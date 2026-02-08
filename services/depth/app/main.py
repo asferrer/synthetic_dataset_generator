@@ -185,9 +185,10 @@ async def estimate_depth_batch(request: BatchEstimateRequest):
     """
     Estimate depth for a batch of images in a directory.
 
-    All images matching the file pattern in the input directory will be processed.
+    All images matching the file pattern in the input directory will be processed,
+    up to max_images limit to prevent OOM errors.
     """
-    logger.info(f"Batch depth estimation for: {request.input_dir}")
+    logger.info(f"Batch depth estimation for: {request.input_dir} (max: {request.max_images} images)")
     start_time = time.time()
 
     try:
@@ -197,6 +198,9 @@ async def estimate_depth_batch(request: BatchEstimateRequest):
         if not input_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
+        output_dir = Path(request.output_dir) if request.output_dir else Path("/shared/depth")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         # Find all matching files
         patterns = request.file_pattern.split(",")
         image_files = []
@@ -205,6 +209,36 @@ async def estimate_depth_batch(request: BatchEstimateRequest):
 
         if not image_files:
             raise ValueError(f"No images found matching pattern: {request.file_pattern}")
+
+        # Filter out images that already have depth maps if skip_existing is enabled
+        if request.skip_existing:
+            filtered_files = []
+            for image_path in image_files:
+                depth_map_path = output_dir / f"{image_path.stem}_depth.npy"
+                if not depth_map_path.exists():
+                    filtered_files.append(image_path)
+            skipped_count = len(image_files) - len(filtered_files)
+            if skipped_count > 0:
+                logger.info(f"Skipping {skipped_count} images with existing depth maps")
+            image_files = filtered_files
+
+        # Apply max_images limit
+        total_found = len(image_files)
+        if total_found > request.max_images:
+            logger.warning(f"Found {total_found} images, limiting to {request.max_images} to prevent OOM")
+            image_files = image_files[:request.max_images]
+
+        if not image_files:
+            return BatchEstimateResponse(
+                success=True,
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                total_images=0,
+                processed=0,
+                failed=0,
+                results=[],
+                total_time_ms=(time.time() - start_time) * 1000
+            )
 
         results = []
         processed = 0

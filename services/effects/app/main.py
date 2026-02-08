@@ -266,7 +266,11 @@ async def apply_effects(request: ApplyEffectsRequest):
 
 @app.post("/blend", response_model=BlendResponse)
 async def blend_images(request: BlendRequest):
-    """Blend foreground onto background."""
+    """Blend foreground onto background.
+
+    The foreground is placed at the specified position while preserving its aspect ratio.
+    If scale is provided, the foreground is scaled while maintaining proportions.
+    """
     logger.info(f"Blend request: method={request.method}")
     start_time = time.time()
 
@@ -280,35 +284,64 @@ async def blend_images(request: BlendRequest):
         if foreground is None:
             raise FileNotFoundError(f"Foreground not found: {request.foreground_path}")
 
+        bg_h, bg_w = background.shape[:2]
+
         # Get mask
         if request.mask_path:
             mask = cv2.imread(request.mask_path, cv2.IMREAD_GRAYSCALE)
-        elif foreground.shape[2] == 4:
+        elif len(foreground.shape) > 2 and foreground.shape[2] == 4:
             mask = foreground[:, :, 3]
             foreground = foreground[:, :, :3]
         else:
             mask = np.ones(foreground.shape[:2], dtype=np.uint8) * 255
 
-        # Resize foreground if needed
-        if foreground.shape[:2] != background.shape[:2]:
-            foreground = cv2.resize(foreground, (background.shape[1], background.shape[0]))
-            mask = cv2.resize(mask, (background.shape[1], background.shape[0]))
+        # Apply optional scale while preserving aspect ratio
+        scale = getattr(request, 'scale', None)
+        if scale and scale != 1.0:
+            fg_h, fg_w = foreground.shape[:2]
+            new_w = int(fg_w * scale)
+            new_h = int(fg_h * scale)
+            # Use INTER_AREA for downscaling, INTER_LANCZOS4 for upscaling
+            interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LANCZOS4
+            foreground = cv2.resize(foreground, (new_w, new_h), interpolation=interpolation)
+            mask = cv2.resize(mask, (new_w, new_h), interpolation=interpolation)
 
-        # Get center for blending
+        fg_h, fg_w = foreground.shape[:2]
+
+        # Get position for blending (center of foreground placement)
         if request.position:
-            center = request.position
+            center_x, center_y = request.position
         else:
-            center = (background.shape[1] // 2, background.shape[0] // 2)
+            center_x, center_y = bg_w // 2, bg_h // 2
+
+        # Calculate placement bounds
+        x1 = max(0, center_x - fg_w // 2)
+        y1 = max(0, center_y - fg_h // 2)
+        x2 = min(bg_w, x1 + fg_w)
+        y2 = min(bg_h, y1 + fg_h)
+
+        # Calculate source region (may be cropped if foreground extends beyond background)
+        src_x1 = max(0, fg_w // 2 - center_x)
+        src_y1 = max(0, fg_h // 2 - center_y)
+        src_x2 = src_x1 + (x2 - x1)
+        src_y2 = src_y1 + (y2 - y1)
+
+        # Create full-size foreground and mask for blending
+        fg_full = np.zeros_like(background)
+        mask_full = np.zeros((bg_h, bg_w), dtype=np.uint8)
+
+        fg_full[y1:y2, x1:x2] = foreground[src_y1:src_y2, src_x1:src_x2]
+        mask_full[y1:y2, x1:x2] = mask[src_y1:src_y2, src_x1:src_x2]
 
         # Apply blending
         if request.method.value == "poisson":
-            result = apply_poisson_blending(foreground, background, mask, center)
+            result = apply_poisson_blending(fg_full, background, mask_full, (center_x, center_y))
         elif request.method.value == "laplacian":
-            result = laplacian_pyramid_blending(foreground, background, mask)
+            result = laplacian_pyramid_blending(fg_full, background, mask_full)
         else:  # alpha
             # Simple alpha blending
-            mask_3c = cv2.merge([mask, mask, mask]).astype(np.float32) / 255.0
-            result = (foreground * mask_3c + background * (1 - mask_3c)).astype(np.uint8)
+            mask_3c = cv2.merge([mask_full, mask_full, mask_full]).astype(np.float32) / 255.0
+            result = (fg_full * mask_3c + background * (1 - mask_3c)).astype(np.uint8)
 
         # Generate output path
         if request.output_path:

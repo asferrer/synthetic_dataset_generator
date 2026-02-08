@@ -214,7 +214,8 @@ async def update_domain(domain_id: str, request: DomainUpdateRequest):
     """
     Update an existing user domain.
 
-    Only non-built-in domains can be modified.
+    Only non-built-in domains can be modified directly.
+    For built-in domains, use the /override endpoint instead.
     """
     registry = get_domain_registry()
 
@@ -222,6 +223,13 @@ async def update_domain(domain_id: str, request: DomainUpdateRequest):
     existing = registry.get_domain(domain_id)
     if not existing:
         raise HTTPException(status_code=404, detail=f"Domain not found: {domain_id}")
+
+    # If it's a built-in domain, redirect to override
+    if existing.is_builtin:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot modify built-in domain directly. Use POST /{domain_id}/override instead."
+        )
 
     # Merge updates with existing
     existing_data = existing.to_dict()
@@ -237,6 +245,141 @@ async def update_domain(domain_id: str, request: DomainUpdateRequest):
         raise HTTPException(status_code=400, detail="Failed to update domain")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class BuiltinOverrideRequest(BaseModel):
+    """Request model for creating/updating a built-in domain override."""
+    regions: Optional[List[RegionInput]] = None
+    objects: Optional[List[ObjectInput]] = None
+    compatibility_matrix: Optional[dict] = None
+    effects: Optional[EffectsInput] = None
+    physics: Optional[PhysicsInput] = None
+    presets: Optional[List[PresetInput]] = None
+    labeling_templates: Optional[List[LabelingTemplateInput]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+
+
+class BuiltinOverrideResponse(BaseModel):
+    """Response after creating/updating a built-in override."""
+    success: bool
+    domain_id: str
+    message: str
+    has_override: bool
+    domain: Optional[dict] = None
+
+
+@router.post("/{domain_id}/override", response_model=BuiltinOverrideResponse)
+async def create_builtin_override(domain_id: str, request: BuiltinOverrideRequest):
+    """
+    Create or update an override for a built-in domain.
+
+    This endpoint allows modifying built-in domains (like 'underwater', 'aerial_birds')
+    by creating a user-space copy that takes precedence over the original.
+
+    Use this to:
+    - Modify SAM3 prompts for scene regions
+    - Add/update object definitions
+    - Adjust compatibility scores
+    - Customize effects or physics settings
+
+    The override can be reset to restore the original built-in configuration.
+    """
+    registry = get_domain_registry()
+
+    # Check domain exists
+    existing = registry.get_domain(domain_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Domain not found: {domain_id}")
+
+    # If not built-in and has override, treat as update
+    if not existing.is_builtin and registry.has_override(domain_id):
+        # This is already an overridden domain, update it
+        pass
+
+    # Get updates as dict
+    updates = request.model_dump(exclude_none=True)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+
+    try:
+        domain = registry.create_builtin_override(domain_id, updates)
+        if domain:
+            return BuiltinOverrideResponse(
+                success=True,
+                domain_id=domain_id,
+                message=f"Override created for domain '{domain_id}'",
+                has_override=True,
+                domain=domain.to_dict()
+            )
+        raise HTTPException(status_code=400, detail="Failed to create override")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/{domain_id}/override")
+async def reset_builtin_override(domain_id: str):
+    """
+    Reset a built-in domain override to its original configuration.
+
+    This removes any user customizations and restores the original
+    built-in domain settings.
+    """
+    registry = get_domain_registry()
+
+    if not registry.has_override(domain_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No override exists for domain: {domain_id}"
+        )
+
+    try:
+        domain = registry.reset_builtin_override(domain_id)
+        if domain:
+            return {
+                "success": True,
+                "domain_id": domain_id,
+                "message": f"Override removed, domain '{domain_id}' restored to original",
+                "has_override": False,
+                "domain": domain.to_dict()
+            }
+        raise HTTPException(status_code=400, detail="Failed to reset override")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{domain_id}/override-status")
+async def get_override_status(domain_id: str):
+    """
+    Check if a domain has a user override.
+
+    Returns information about whether the domain has been customized
+    from its original built-in configuration.
+    """
+    registry = get_domain_registry()
+
+    existing = registry.get_domain(domain_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Domain not found: {domain_id}")
+
+    has_override = registry.has_override(domain_id)
+
+    # Get original if there's an override
+    original = None
+    if has_override:
+        original_domain = registry.get_original_builtin(domain_id)
+        if original_domain:
+            original = original_domain.to_dict()
+
+    return {
+        "domain_id": domain_id,
+        "has_override": has_override,
+        "is_builtin": existing.is_builtin or has_override,
+        "current_version": existing.version,
+        "original": original
+    }
 
 
 @router.delete("/{domain_id}")

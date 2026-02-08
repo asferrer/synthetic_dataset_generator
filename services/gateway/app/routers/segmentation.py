@@ -84,6 +84,12 @@ class SAM3ConvertDatasetRequest(BaseModel):
     confidence_threshold: float = Field(0.8, ge=0, le=1)
 
 
+class AnalyzeDatasetRequest(BaseModel):
+    """Request to analyze a dataset before extraction"""
+    coco_json_path: str = Field(..., description="Path to COCO annotations JSON")
+    images_dir: str = Field(..., description="Directory containing source images")
+
+
 # =============================================================================
 # Object Extraction Endpoints
 # =============================================================================
@@ -122,16 +128,17 @@ async def extract_single_object(request: ExtractSingleObjectRequest):
 
 
 @router.post("/extract/analyze-dataset")
-async def analyze_extraction_dataset(coco_json_path: str, images_dir: str):
-    """Analyze a dataset before extraction."""
-    logger.info(f"Analyze dataset for extraction: {coco_json_path}")
+async def analyze_extraction_dataset(request: AnalyzeDatasetRequest):
+    """Analyze a dataset before extraction.
+
+    Validates the dataset structure and returns statistics about
+    available categories, image counts, and annotation distribution.
+    """
+    logger.info(f"Analyze dataset for extraction: {request.coco_json_path}")
 
     try:
         registry = get_service_registry()
-        result = await registry.segmentation.post("/extract/analyze-dataset", {
-            "coco_json_path": coco_json_path,
-            "images_dir": images_dir
-        })
+        result = await registry.segmentation.post("/extract/analyze-dataset", request.model_dump())
         return result
     except Exception as e:
         logger.error(f"Analyze dataset failed: {e}")
