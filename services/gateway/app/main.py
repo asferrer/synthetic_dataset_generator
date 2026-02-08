@@ -122,6 +122,16 @@ app.include_router(domains.router)
 app.include_router(domain_gap.router)
 
 
+@app.get("/ping")
+async def ping():
+    """Lightweight liveness probe for Docker health checks.
+
+    Returns immediately without checking downstream services.
+    Use /health for full service health with downstream checks.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check health of all services.
