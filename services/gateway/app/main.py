@@ -6,7 +6,7 @@ API Gateway that orchestrates synthetic data generation services.
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, List
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -17,6 +17,28 @@ from app.services.orchestrator import get_orchestrator
 
 # Service URLs
 AUGMENTOR_SERVICE_URL = os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004")
+
+# CORS Configuration
+# In production, set CORS_ORIGINS to a comma-separated list of allowed origins
+# Example: CORS_ORIGINS=http://localhost:3000,https://myapp.com
+CORS_ORIGINS_ENV = os.environ.get("CORS_ORIGINS", "")
+CORS_ALLOW_ALL = os.environ.get("CORS_ALLOW_ALL", "false").lower() == "true"
+
+def get_cors_origins() -> List[str]:
+    """Get list of allowed CORS origins from environment."""
+    if CORS_ALLOW_ALL:
+        return ["*"]
+    if CORS_ORIGINS_ENV:
+        return [origin.strip() for origin in CORS_ORIGINS_ENV.split(",") if origin.strip()]
+    # Default origins for development
+    return [
+        "http://localhost:3000",      # Vue frontend dev server
+        "http://localhost:8501",      # Streamlit frontend
+        "http://localhost:8000",      # Gateway itself (for Swagger UI)
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8501",
+        "http://127.0.0.1:8000",
+    ]
 from app.models.schemas import (
     GenerateImageRequest,
     GenerateImageResponse,
@@ -28,7 +50,7 @@ from app.models.schemas import (
     ServiceStatus,
     AnnotationBox
 )
-from app.routers import augment, segmentation, datasets, filesystem, domains
+from app.routers import augment, segmentation, datasets, filesystem, domains, domain_gap
 from app.services.domain_registry import get_domain_registry
 
 # Configure logging
@@ -79,13 +101,17 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# Note: When using specific origins (not "*"), credentials are allowed.
+# When using "*", credentials must be disabled for security.
+cors_origins = get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=(cors_origins != ["*"]),  # Only allow credentials with specific origins
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
+logger.info(f"CORS configured with origins: {cors_origins}")
 
 # Include routers
 app.include_router(augment.router)
@@ -93,6 +119,7 @@ app.include_router(segmentation.router)
 app.include_router(datasets.router)
 app.include_router(filesystem.router)
 app.include_router(domains.router)
+app.include_router(domain_gap.router)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -176,7 +203,7 @@ async def health_check():
 async def service_info():
     """Get gateway service information."""
     return InfoResponse(
-        available_services=["depth", "effects", "segmentation", "augmentor"],
+        available_services=["depth", "effects", "segmentation", "augmentor", "domain_gap"],
         endpoints=[
             "/health",
             "/info",

@@ -18,6 +18,16 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# Configurable timeouts from environment variables
+DEFAULT_TIMEOUT = float(os.environ.get("SERVICE_TIMEOUT", "60"))
+DEPTH_TIMEOUT = float(os.environ.get("DEPTH_SERVICE_TIMEOUT", "90"))
+EFFECTS_TIMEOUT = float(os.environ.get("EFFECTS_SERVICE_TIMEOUT", "60"))
+SEGMENTATION_TIMEOUT = float(os.environ.get("SEGMENTATION_SERVICE_TIMEOUT", "120"))
+AUGMENTOR_TIMEOUT = float(os.environ.get("AUGMENTOR_SERVICE_TIMEOUT", "180"))
+DOMAIN_GAP_TIMEOUT = float(os.environ.get("DOMAIN_GAP_SERVICE_TIMEOUT", "120"))
+HEALTH_CHECK_TIMEOUT = float(os.environ.get("HEALTH_CHECK_TIMEOUT", "5"))
+MAX_RETRIES = int(os.environ.get("SERVICE_MAX_RETRIES", "3"))
+
 
 class ServiceClient:
     """Async HTTP client for microservice communication."""
@@ -25,8 +35,9 @@ class ServiceClient:
     def __init__(
         self,
         base_url: str,
-        timeout: float = 60.0,
-        max_retries: int = 3
+        timeout: float = DEFAULT_TIMEOUT,
+        max_retries: int = MAX_RETRIES,
+        service_name: str = "unknown"
     ):
         """Initialize service client.
 
@@ -34,10 +45,13 @@ class ServiceClient:
             base_url: Base URL of the service (e.g., http://depth:8001)
             timeout: Request timeout in seconds
             max_retries: Maximum number of retry attempts
+            service_name: Name of the service for logging
         """
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.max_retries = max_retries
+        self.service_name = service_name
+        logger.info(f"ServiceClient initialized for {service_name}: {base_url} (timeout: {timeout}s, retries: {max_retries})")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -120,7 +134,7 @@ class ServiceClient:
 
         start = time.time()
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
                 response = await client.get(f"{self.base_url}/health")
                 latency = (time.time() - start) * 1000
 
@@ -165,17 +179,29 @@ class ServiceRegistry:
     def __init__(self):
         """Initialize service registry from environment variables."""
         self.depth = ServiceClient(
-            os.environ.get("DEPTH_SERVICE_URL", "http://depth:8001")
+            base_url=os.environ.get("DEPTH_SERVICE_URL", "http://depth:8001"),
+            timeout=DEPTH_TIMEOUT,
+            service_name="depth"
         )
         self.effects = ServiceClient(
-            os.environ.get("EFFECTS_SERVICE_URL", "http://effects:8003")
+            base_url=os.environ.get("EFFECTS_SERVICE_URL", "http://effects:8003"),
+            timeout=EFFECTS_TIMEOUT,
+            service_name="effects"
         )
         self.segmentation = ServiceClient(
-            os.environ.get("SEGMENTATION_SERVICE_URL", "http://segmentation:8002")
+            base_url=os.environ.get("SEGMENTATION_SERVICE_URL", "http://segmentation:8002"),
+            timeout=SEGMENTATION_TIMEOUT,
+            service_name="segmentation"
         )
         self.augmentor = ServiceClient(
-            os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004"),
-            timeout=120.0  # Longer timeout for composition
+            base_url=os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004"),
+            timeout=AUGMENTOR_TIMEOUT,
+            service_name="augmentor"
+        )
+        self.domain_gap = ServiceClient(
+            base_url=os.environ.get("DOMAIN_GAP_SERVICE_URL", "http://domain_gap:8005"),
+            timeout=DOMAIN_GAP_TIMEOUT,
+            service_name="domain_gap"
         )
 
     async def check_all_health(self) -> Dict[str, Dict[str, Any]]:
@@ -191,6 +217,7 @@ class ServiceRegistry:
             self.effects.health_check(),
             self.segmentation.health_check(),
             self.augmentor.health_check(),
+            self.domain_gap.health_check(),
             return_exceptions=True
         )
 
@@ -198,7 +225,8 @@ class ServiceRegistry:
             "depth": results[0] if not isinstance(results[0], Exception) else {"healthy": False, "error": str(results[0])},
             "effects": results[1] if not isinstance(results[1], Exception) else {"healthy": False, "error": str(results[1])},
             "segmentation": results[2] if not isinstance(results[2], Exception) else {"healthy": False, "error": str(results[2])},
-            "augmentor": results[3] if not isinstance(results[3], Exception) else {"healthy": False, "error": str(results[3])}
+            "augmentor": results[3] if not isinstance(results[3], Exception) else {"healthy": False, "error": str(results[3])},
+            "domain_gap": results[4] if not isinstance(results[4], Exception) else {"healthy": False, "error": str(results[4])}
         }
 
 
