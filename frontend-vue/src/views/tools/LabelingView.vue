@@ -138,7 +138,7 @@ function clearTemplate() {
 // Form state
 const imageDirectories = ref<string[]>([''])
 const classes = ref<string[]>([''])
-const outputDir = ref('/data/labeled')
+const outputDir = ref('/app/output/labeled')
 const minConfidence = ref(0.3)
 const taskType = ref<LabelingTaskType>('detection')
 const useSam3 = ref(true)
@@ -412,7 +412,7 @@ onUnmounted(() => {
             <DirectoryBrowser
               v-model="imageDirectories[index]"
               :label="index === 0 ? '' : undefined"
-              placeholder="/data/images"
+              placeholder="/app/datasets/images"
               path-mode="input"
               class="flex-1"
             />
@@ -472,7 +472,7 @@ onUnmounted(() => {
           <DirectoryBrowser
             v-model="existingAnnotations"
             :label="t('tools.labeling.relabeling.existingAnnotations')"
-            placeholder="/data/annotations.json"
+            placeholder="/app/datasets/annotations.json"
             :show-files="true"
             file-pattern="*.json"
             path-mode="input"
@@ -488,7 +488,7 @@ onUnmounted(() => {
           <DirectoryBrowser
             v-model="outputDir"
             :label="t('tools.labeling.output.outputDirectory')"
-            placeholder="/data/labeled"
+            placeholder="/app/output/labeled"
             path-mode="output"
           />
 

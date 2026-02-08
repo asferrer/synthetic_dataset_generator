@@ -29,7 +29,7 @@ const loading = ref(false)
 const loadingPreview = ref(false)
 const directories = ref<string[]>([])
 const backgroundsDir = ref(workflowStore.backgroundsDir || '')
-const outputDir = ref(workflowStore.outputDir || '/data/output')
+const outputDir = ref(workflowStore.outputDir || '/app/output')
 const error = ref<string | null>(null)
 
 // Preview state
@@ -277,7 +277,7 @@ loadDirectories()
       <DirectoryBrowser
         v-model="outputDir"
         label="Output Path"
-        placeholder="/data/output/synthetic"
+        placeholder="/app/output/synthetic"
         path-mode="output"
       />
       <p class="text-sm text-gray-500 mt-2">Where the generated dataset will be saved</p>

@@ -33,7 +33,7 @@ const selectedDataset = ref<string | null>(workflowStore.outputDir)
 const selectedImagesDir = ref('')
 const datasetAnalysis = ref<DatasetAnalysis | null>(null)
 const exportFormat = ref<ExportFormat>('yolo')
-const outputDir = ref('/data/exports')
+const outputDir = ref('/app/output/exports')
 const includeImages = ref(true)
 const exportResult = ref<ExportResult | null>(null)
 const error = ref<string | null>(null)
@@ -177,7 +177,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="selectedImagesDir"
             label="Images Directory"
-            placeholder="/data/dataset/images"
+            placeholder="/app/datasets/images"
             path-mode="input"
           />
 
@@ -206,7 +206,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
-            placeholder="/data/exports"
+            placeholder="/app/output/exports"
             path-mode="output"
           />
 

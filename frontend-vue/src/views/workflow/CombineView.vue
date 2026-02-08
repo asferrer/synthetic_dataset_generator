@@ -24,7 +24,7 @@ const loading = ref(false)
 const combining = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDatasets = ref<string[]>([])
-const outputDir = ref('/data/combined')
+const outputDir = ref('/app/output/combined')
 const mergeCategories = ref(true)
 const deduplicate = ref(true)
 const combineResult = ref<CombineResult | null>(null)
@@ -164,7 +164,7 @@ loadDatasets()
         <DirectoryBrowser
           v-model="outputDir"
           label="Output Directory"
-          placeholder="/data/combined"
+          placeholder="/app/output/combined"
           path-mode="output"
         />
 

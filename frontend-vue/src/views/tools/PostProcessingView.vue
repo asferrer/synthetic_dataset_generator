@@ -27,7 +27,7 @@ const balancing = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDataset = ref<string | null>(null)
 const datasetAnalysis = ref<DatasetAnalysis | null>(null)
-const outputDir = ref('/data/balanced')
+const outputDir = ref('/app/output/balanced')
 const error = ref<string | null>(null)
 const balanceResult = ref<{ success: boolean; message: string } | null>(null)
 
@@ -431,7 +431,7 @@ loadDatasets()
         <BaseInput
           v-model="outputDir"
           label="Output Directory"
-          placeholder="/data/balanced"
+          placeholder="/app/output/balanced"
           hint="Where to save the balanced dataset"
         />
 

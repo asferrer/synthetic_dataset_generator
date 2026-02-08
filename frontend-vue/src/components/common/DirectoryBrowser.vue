@@ -36,10 +36,10 @@ const props = withDefaults(defineProps<{
   restrictToMounts?: boolean
 }>(), {
   label: 'Select Directory',
-  placeholder: '/data/...',
+  placeholder: '/app/datasets/...',
   showFiles: false,
   filePattern: '*',
-  basePath: '/data',
+  basePath: '/app/datasets',
   pathMode: 'both',
   showMountPoints: true,
   restrictToMounts: true,

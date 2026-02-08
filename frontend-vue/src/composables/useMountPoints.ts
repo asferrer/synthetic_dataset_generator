@@ -10,8 +10,8 @@ import { getMountPoints, type MountPoint, type MountPointsResponse } from '@/lib
 
 export function useMountPoints() {
   const mountPoints = ref<MountPoint[]>([])
-  const defaultInput = ref('/data')
-  const defaultOutput = ref('/data/output')
+  const defaultInput = ref('/app/datasets')
+  const defaultOutput = ref('/app/output')
   const loading = ref(false)
   const error = ref<string | null>(null)
   const loaded = ref(false)

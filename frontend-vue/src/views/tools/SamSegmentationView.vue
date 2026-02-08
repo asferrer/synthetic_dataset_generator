@@ -36,7 +36,7 @@ const textResult = ref<SegmentationResult | null>(null)
 // Dataset conversion state
 const cocoJsonPath = ref('')
 const imagesDir = ref('')
-const outputDir = ref('/data/sam3_converted')
+const outputDir = ref('/app/output/sam3_converted')
 const minArea = ref(100)
 const confidenceThreshold = ref(0.8)
 const convertLoading = ref(false)
@@ -170,7 +170,7 @@ onUnmounted(() => {
           <DirectoryBrowser
             v-model="imagePath"
             :label="t('tools.samSegmentation.textMode.imagePath')"
-            placeholder="/data/images/example.jpg"
+            placeholder="/app/datasets/images/example.jpg"
             :show-files="true"
             file-pattern="*.jpg,*.png,*.jpeg"
             path-mode="input"
@@ -247,7 +247,7 @@ onUnmounted(() => {
             <DirectoryBrowser
               v-model="cocoJsonPath"
               :label="t('tools.samSegmentation.convertMode.cocoJsonPath')"
-              placeholder="/data/dataset/annotations.json"
+              placeholder="/app/datasets/annotations.json"
               :show-files="true"
               file-pattern="*.json"
               path-mode="input"
@@ -255,7 +255,7 @@ onUnmounted(() => {
             <DirectoryBrowser
               v-model="imagesDir"
               :label="t('tools.samSegmentation.convertMode.imagesDirectory')"
-              placeholder="/data/dataset/images"
+              placeholder="/app/datasets/images"
               path-mode="input"
             />
           </div>
@@ -269,7 +269,7 @@ onUnmounted(() => {
             <DirectoryBrowser
               v-model="outputDir"
               :label="t('tools.samSegmentation.convertMode.outputDirectory')"
-              placeholder="/data/sam3_converted"
+              placeholder="/app/output/sam3_converted"
               path-mode="output"
             />
 

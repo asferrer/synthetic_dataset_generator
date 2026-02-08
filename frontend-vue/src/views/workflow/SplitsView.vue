@@ -28,7 +28,7 @@ const loading = ref(false)
 const splitting = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDataset = ref<string | null>(null)
-const outputDir = ref('/data/splits')
+const outputDir = ref('/app/output/splits')
 
 // Ratio mode options
 const trainRatio = ref(70)
@@ -190,7 +190,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
-            placeholder="/data/splits"
+            placeholder="/app/output/splits"
             path-mode="output"
             class="mt-4"
           />
