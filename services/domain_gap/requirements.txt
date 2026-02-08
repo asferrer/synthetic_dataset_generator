@@ -1,0 +1,30 @@
+# Domain Gap Reduction Service Dependencies
+# FastAPI framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Image processing
+opencv-python>=4.9.0
+numpy>=1.26.0
+Pillow>=10.0.0
+scikit-image>=0.22.0
+
+# Deep learning (metrics: Inception v3, style transfer: VGG-19, CycleGAN)
+torch>=2.0.0
+torchvision>=0.15.0
+lpips>=0.1.4
+
+# Metrics
+scipy>=1.12.0
+scikit-learn>=1.4.0
+
+# Utilities
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+httpx>=0.26.0
+tenacity>=8.2.0
+pyyaml>=6.0.1
+
+# Logging
+loguru>=0.7.0

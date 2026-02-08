@@ -14,6 +14,7 @@ services:
       - SEGMENTATION_SERVICE_URL=http://segmentation:8002
       - EFFECTS_SERVICE_URL=http://effects:8003
       - AUGMENTOR_SERVICE_URL=http://augmentor:8004
+      - DOMAIN_GAP_SERVICE_URL=http://domain_gap:8005
       - PYTHONUNBUFFERED=1
       # Rutas por defecto para datasets
       - BACKGROUNDS_PATH=/app/datasets/Backgrounds_filtered
@@ -229,6 +230,54 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    networks:
+      - synth-network
+    restart: unless-stopped
+
+  # ============================================
+  # Domain Gap - Metrics & Reduction
+  # ============================================
+  domain_gap:
+    build:
+      context: .
+      dockerfile: services/domain_gap/Dockerfile
+    container_name: synth-domain-gap
+    ports:
+      - "8005:8005"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:False,garbage_collection_threshold:0.7
+      - PYTHONUNBUFFERED=1
+      - JOBS_DB_PATH=/shared/db/jobs.db
+      - HF_HOME=/app/checkpoints/huggingface
+      - REFERENCES_DIR=/shared/references
+    volumes:
+      - shared_data:/shared
+      - jobs_db:/shared/db
+      - checkpoints:/app/checkpoints
+      - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+      - ./output:/app/output
+      - ./config:/app/config:ro
+    mem_limit: 16G
+    memswap_limit: 16G
+    cpus: 4
+    shm_size: 4G
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      depth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - synth-network
     restart: unless-stopped
