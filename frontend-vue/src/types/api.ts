@@ -289,7 +289,7 @@ export interface DatasetMetadata {
 // ============================================
 
 export interface GenerationRequest {
-  source_dataset: string
+  source_dataset?: string
   output_dir: string
   target_counts: Record<string, number>
 
@@ -313,6 +313,7 @@ export interface GenerationRequest {
 
   // Paths
   backgrounds_dir?: string
+  objects_dir?: string
 
   // Feature flags
   use_depth: boolean
@@ -351,9 +352,10 @@ export interface LabelingRequest {
   output_dir: string
   min_confidence?: number
   task_type?: LabelingTaskType
-  use_sam3?: boolean
-  box_threshold?: number
-  text_threshold?: number
+  output_formats?: string[]
+  preview_mode?: boolean
+  preview_count?: number
+  deduplication_strategy?: 'confidence' | 'area'
 }
 
 export interface RelabelingRequest {
@@ -362,17 +364,20 @@ export interface RelabelingRequest {
   relabel_mode?: RelabelMode
   new_classes?: string[]
   min_confidence?: number
-  existing_annotations?: string
-  task_type?: LabelingTaskType
-  use_sam3?: boolean
+  coco_json_path?: string
+  output_formats?: string[]
+  preview_mode?: boolean
+  preview_count?: number
+  deduplication_strategy?: 'confidence' | 'area'
 }
 
 export interface LabelingResult {
+  success: boolean
   job_id: string
-  output_path: string
-  labeled_images: number
-  total_annotations: number
-  annotations_per_class: Record<string, number>
+  status?: string
+  message?: string
+  total_images?: number
+  error?: string | null
 }
 
 export interface LabelingQualityMetrics {
@@ -385,24 +390,26 @@ export interface LabelingQualityMetrics {
 
 export interface LabelingJob {
   job_id: string
+  job_type?: string
   status: JobStatus
   progress: number
   current_image?: string
   processed_images: number
   total_images: number
   annotations_created: number
+  total_objects_found?: number
   objects_by_class?: Record<string, number>
+  output_dir?: string
+  output_formats?: string[]
+  errors?: string[]
   warnings?: string[]
   quality_metrics?: LabelingQualityMetrics
+  processing_time_ms?: number
   created_at: string
   started_at?: string
   completed_at?: string
+  can_resume?: boolean
   error?: string
-  config: {
-    classes: string[]
-    task_type: LabelingTaskType
-    min_confidence: number
-  }
 }
 
 // ============================================

@@ -227,7 +227,10 @@ export async function retryJob(jobId: string): Promise<{ success: boolean; messa
 }
 
 export async function deleteJob(jobId: string): Promise<{ success: boolean; message?: string }> {
-  const response = await api.delete(`/augment/jobs/${jobId}`)
+  const response = await api.post(`/augment/jobs/${jobId}/delete`)
+  if (!response.data.success) {
+    throw new Error(response.data.message || 'Failed to delete job')
+  }
   return response.data
 }
 
@@ -424,11 +427,11 @@ export async function listDirectories(path?: string): Promise<string[]> {
   return response.data.directories || []
 }
 
-export async function listFiles(path: string, extensions?: string | string[]): Promise<string[]> {
+export async function listFiles(path: string, pattern?: string | string[]): Promise<string[]> {
   const params: Record<string, any> = { path }
-  if (extensions) {
-    // Accept both string and array formats
-    params.extensions = Array.isArray(extensions) ? extensions.join(',') : extensions
+  if (pattern) {
+    // Backend expects 'pattern' query param (e.g. "*.json", "*.png")
+    params.pattern = Array.isArray(pattern) ? pattern.join(',') : pattern
   }
   const response = await api.get('/filesystem/files', { params })
   return response.data.files || []
@@ -453,12 +456,20 @@ export function getImageUrl(imagePath: string): string {
 
 export async function startLabeling(request: LabelingRequest): Promise<LabelingResult> {
   const response = await segmentationApi.post('/labeling/start', request)
-  return response.data
+  const result = response.data as LabelingResult
+  if (!result.success) {
+    throw new Error(result.error || result.message || 'Failed to start labeling job')
+  }
+  return result
 }
 
 export async function startRelabeling(request: RelabelingRequest): Promise<LabelingResult> {
   const response = await segmentationApi.post('/labeling/relabel', request)
-  return response.data
+  const result = response.data as LabelingResult
+  if (!result.success) {
+    throw new Error(result.error || result.message || 'Failed to start relabeling job')
+  }
+  return result
 }
 
 export async function getLabelingStatus(jobId: string): Promise<LabelingJob> {
@@ -957,6 +968,61 @@ export async function randomizeBatch(request: {
 /**
  * Get domain gap service info.
  */
+/**
+ * Apply style transfer to a single image.
+ */
+export async function styleTransferSingle(request: {
+  image_path: string
+  config: {
+    reference_set_id: string
+    style_weight?: number
+    content_weight?: number
+    depth_guided?: boolean
+    preserve_structure?: number
+    color_only?: boolean
+  }
+  output_path: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/style-transfer/apply', request)
+  return response.data
+}
+
+/**
+ * Apply style transfer to a batch (async job).
+ */
+export async function styleTransferBatch(request: {
+  images_dir: string
+  config: {
+    reference_set_id: string
+    style_weight?: number
+    content_weight?: number
+    depth_guided?: boolean
+    preserve_structure?: number
+    color_only?: boolean
+  }
+  output_dir: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/style-transfer/apply-batch', request)
+  return response.data
+}
+
+/**
+ * Start automatic domain gap optimization (async job).
+ */
+export async function optimizeGap(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  output_dir: string
+  target_gap_score?: number
+  max_iterations?: number
+  max_images?: number
+  techniques?: string[]
+  current_config?: Record<string, any>
+}): Promise<any> {
+  const response = await api.post('/domain-gap/optimize', request)
+  return response.data
+}
+
 export async function getDomainGapInfo(): Promise<any> {
   const response = await api.get('/domain-gap/info')
   return response.data
@@ -983,5 +1049,42 @@ export async function getDomainGapJob(jobId: string): Promise<any> {
  */
 export async function cancelDomainGapJob(jobId: string): Promise<any> {
   const response = await api.delete(`/domain-gap/jobs/${jobId}`)
+  return response.data
+}
+
+
+// ============================================================================
+// Auto-Tune (Closed-Loop Domain Gap Optimization)
+// ============================================================================
+
+/**
+ * Start auto-tune: closed-loop probe → measure → adjust → repeat.
+ */
+export async function startAutoTune(params: Record<string, any>): Promise<any> {
+  const response = await api.post('/auto-tune/start', params)
+  return response.data
+}
+
+/**
+ * Get auto-tune job status.
+ */
+export async function getAutoTuneStatus(jobId: string): Promise<any> {
+  const response = await api.get(`/auto-tune/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * Cancel an auto-tune job.
+ */
+export async function cancelAutoTune(jobId: string): Promise<any> {
+  const response = await api.delete(`/auto-tune/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * List all auto-tune jobs.
+ */
+export async function listAutoTuneJobs(): Promise<any> {
+  const response = await api.get('/auto-tune/jobs')
   return response.data
 }
