@@ -292,16 +292,28 @@ async def compose_batch(request: ComposeBatchRequest):
     Creates multiple synthetic images asynchronously.
     Use GET /augment/jobs/{job_id} to check progress.
     """
+    # Migrate legacy /data/ paths to Docker Compose mount points
+    def _fix_path(p: Optional[str]) -> Optional[str]:
+        if not p:
+            return p
+        if p.startswith("/data/output"):
+            return p.replace("/data/output", "/app/output", 1)
+        if p.startswith("/data/"):
+            return p.replace("/data/", "/app/datasets/", 1)
+        return p
+
     # Resolve backgrounds_dir and objects_dir from source_dataset if needed
-    backgrounds_dir = request.backgrounds_dir
-    objects_dir = request.objects_dir
+    backgrounds_dir = _fix_path(request.backgrounds_dir)
+    objects_dir = _fix_path(request.objects_dir)
+    output_dir = _fix_path(request.output_dir)
+    source_dataset = _fix_path(request.source_dataset)
     num_images = request.num_images
 
-    if request.source_dataset:
+    if source_dataset:
         if not backgrounds_dir:
-            backgrounds_dir = os.path.join(request.source_dataset, "Backgrounds_filtered")
+            backgrounds_dir = os.path.join(source_dataset, "Backgrounds_filtered")
         if not objects_dir:
-            objects_dir = os.path.join(request.source_dataset, "Objects")
+            objects_dir = os.path.join(source_dataset, "Objects")
 
     if not backgrounds_dir or not objects_dir:
         raise HTTPException(
@@ -399,7 +411,7 @@ async def compose_batch(request: ComposeBatchRequest):
     request_data = {
         "backgrounds_dir": backgrounds_dir,
         "objects_dir": objects_dir,
-        "output_dir": request.output_dir,
+        "output_dir": output_dir,
         "num_images": num_images,
         "targets_per_class": targets,
         "max_objects_per_image": max_objects,

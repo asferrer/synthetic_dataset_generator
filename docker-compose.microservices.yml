@@ -36,6 +36,8 @@ services:
       # Dataset con Backgrounds_filtered/ y Objects/
       # Configura DATASET_PATH en .env.microservices
       - ${DATASET_PATH:-./datasets}:/app/datasets:rw
+      # Output dir (needed by auto-tune to verify probe output)
+      - ./output:/app/output
       # Domain configurations (built-in)
       - ./config/domains:/app/config/domains:ro
     # Límites de recursos - hardware potente (96GB RAM, Core Ultra 9 - 24 cores)
