@@ -871,6 +871,81 @@ class APIClient:
             return {"success": False, "error": str(e)}
 
     # =========================================================================
+    # Unified Job Registry Endpoints (Gateway)
+    # =========================================================================
+
+    def list_all_jobs(
+        self,
+        status: Optional[str] = None,
+        service: Optional[str] = None,
+        job_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """List all jobs from unified registry across all services"""
+        try:
+            params: Dict[str, Any] = {"limit": limit}
+            if status:
+                params["status"] = status
+            if service:
+                params["service"] = service
+            if job_type:
+                params["job_type"] = job_type
+
+            response = httpx.get(
+                f"{self.base_url}/jobs/all",
+                params=params,
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"jobs": [], "total": 0, "error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
+
+    def list_active_jobs(self) -> Dict[str, Any]:
+        """List active jobs across all services"""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/jobs/active",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"jobs": [], "total": 0}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
+
+    def get_unified_job(self, job_id: str) -> Dict[str, Any]:
+        """Get a job from the unified registry by ID"""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/jobs/{job_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_auto_tune_jobs(self) -> Dict[str, Any]:
+        """List auto-tune jobs from gateway"""
+        try:
+            response = httpx.get(
+                f"{self.base_url}/auto-tune/jobs",
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Normalize to {jobs: [], total: N} format
+                if isinstance(data, list):
+                    return {"jobs": data, "total": len(data)}
+                return data
+            return {"jobs": [], "total": 0}
+        except Exception as e:
+            return {"jobs": [], "total": 0, "error": str(e)}
+
+    # =========================================================================
     # Labeling Tool Endpoints (Segmentation Service)
     # =========================================================================
 

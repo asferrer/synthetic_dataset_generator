@@ -122,18 +122,18 @@ async def lifespan(app: FastAPI):
         state.db = get_job_db()
         logger.info("Job database initialized")
 
-        # Recover interrupted jobs
-        processing_jobs = state.db.list_jobs(service="augmentor", status="running")
+        # Recover orphaned queued jobs
+        state.db.mark_orphaned_jobs("augmentor")
+
+        # For running jobs, check if they have checkpoints for resume
+        processing_jobs = state.db.list_jobs(service="augmentor", status="interrupted")
         for job in processing_jobs:
             output_path = job.get("output_path", "")
             progress_file = Path(output_path) / "progress.json" if output_path else None
 
             if progress_file and progress_file.exists():
-                # Has checkpoint - mark as resumable
-                state.db.update_job_status(job["id"], "interrupted")
-                logger.info(f"Job {job['id']} marked as interrupted - can be resumed")
+                logger.info(f"Job {job['id']} interrupted with checkpoint - can be resumed")
             else:
-                # No checkpoint - mark as failed
                 state.db.complete_job(
                     job["id"],
                     "failed",

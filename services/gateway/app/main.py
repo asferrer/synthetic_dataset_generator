@@ -5,15 +5,24 @@ API Gateway that orchestrates synthetic data generation services.
 """
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.client import get_service_registry
 from app.services.orchestrator import get_orchestrator
+
+# Add shared module path for job database
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+try:
+    from shared.job_database import get_job_db, JobDatabase
+    JOB_DATABASE_AVAILABLE = True
+except ImportError:
+    JOB_DATABASE_AVAILABLE = False
 
 # Service URLs
 AUGMENTOR_SERVICE_URL = os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004")
@@ -65,6 +74,20 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting Gateway Service...")
+
+    # Initialize job database for unified job registry
+    app.state.db = None
+    if JOB_DATABASE_AVAILABLE:
+        try:
+            app.state.db = get_job_db()
+            logger.info("Job database initialized")
+
+            # Recover orphaned gateway jobs from unclean shutdowns
+            orphaned = app.state.db.mark_orphaned_jobs("gateway")
+            if orphaned:
+                logger.warning(f"Marked {orphaned} orphaned gateway jobs as interrupted")
+        except Exception as e:
+            logger.error(f"Failed to init job database: {e}")
 
     # Initialize service registry
     registry = get_service_registry()
@@ -474,6 +497,59 @@ async def root():
         },
         "documentation": "/docs"
     }
+
+
+# =============================================================================
+# Unified Job Registry Endpoints
+# =============================================================================
+
+@app.get("/jobs/all", tags=["Jobs"])
+async def list_all_jobs(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    service: Optional[str] = Query(None, description="Filter by service"),
+    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List all jobs from all services via the unified job registry."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    jobs = app.state.db.list_jobs(
+        service=service, job_type=job_type, status=status,
+        limit=limit, offset=offset,
+    )
+    active = app.state.db.get_active_jobs()
+
+    return {
+        "jobs": jobs,
+        "total": len(jobs),
+        "active_count": len(active),
+    }
+
+
+@app.get("/jobs/active", tags=["Jobs"])
+async def list_active_jobs(
+    service: Optional[str] = Query(None, description="Filter by service"),
+):
+    """List all active jobs across all services."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    jobs = app.state.db.get_active_jobs(service=service)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/jobs/{job_id}", tags=["Jobs"])
+async def get_job_by_id(job_id: str):
+    """Get a specific job by ID from the unified registry."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    job = app.state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, detail=f"Job {job_id} not found")
+    return job
 
 
 if __name__ == "__main__":

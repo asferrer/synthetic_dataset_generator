@@ -8,10 +8,13 @@ Orchestrates calls to both the Augmentor and Domain Gap services.
 """
 
 import asyncio
+import json
 import logging
 import os
+import sys
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -19,6 +22,11 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from app.services.client import get_service_registry
+
+# Add shared module path (services/ is three levels up from routers/)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+from shared.job_lifecycle import JobLifecycle
+from shared.job_database import get_job_db
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +120,7 @@ class AutoTuneStatusResponse(BaseModel):
     completed_at: Optional[float] = None
 
 
-# In-memory job store (gateway doesn't have a shared DB)
+# In-memory cache for active auto-tune jobs (DB is source of truth)
 _auto_tune_jobs: Dict[str, AutoTuneStatusResponse] = {}
 
 
@@ -330,6 +338,75 @@ def _map_suggestions_to_effects_config(
 
 
 # =============================================================================
+# DB Helper Functions
+# =============================================================================
+
+def _parse_timestamp(ts: Any) -> Optional[float]:
+    """Parse ISO timestamp string to epoch float."""
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except Exception:
+        return None
+
+
+def _db_row_to_autotune_status(row: dict) -> AutoTuneStatusResponse:
+    """Convert a database job row to AutoTuneStatusResponse."""
+    progress = row.get("progress_details") or {}
+    result = row.get("result_summary") or {}
+
+    # Map DB status to auto-tune status
+    status_map = {
+        "running": "running",
+        "processing": "running",
+        "queued": "pending",
+        "completed": "completed",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "interrupted": "interrupted",
+    }
+
+    history: List[AutoTuneIterationResult] = []
+    if isinstance(progress.get("history"), list):
+        for h in progress["history"]:
+            try:
+                history.append(AutoTuneIterationResult(**h))
+            except Exception:
+                pass
+
+    return AutoTuneStatusResponse(
+        job_id=row["id"],
+        status=status_map.get(row.get("status", ""), row.get("status", "unknown")),
+        iteration=progress.get("iteration", 0),
+        max_iterations=progress.get("max_iterations", 0),
+        phase=progress.get("phase", ""),
+        current_gap_score=progress.get("current_gap_score"),
+        target_gap_score=progress.get("target_gap_score", 25.0),
+        improvement_pct=result.get("improvement_pct") or progress.get("improvement_pct", 0),
+        history=history,
+        tuned_effects_config=result.get("tuned_effects_config") or progress.get("tuned_effects_config"),
+        full_generation_job_id=result.get("full_generation_job_id") or progress.get("full_generation_job_id"),
+        error=row.get("error_message"),
+        started_at=_parse_timestamp(row.get("started_at")),
+        completed_at=_parse_timestamp(row.get("completed_at")),
+    )
+
+
+def _save_autotune_checkpoint(output_dir: str, job_id: str, data: dict) -> None:
+    """Save checkpoint for resume capability."""
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, f"autotune_checkpoint_{job_id}.json")
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception:
+        pass
+
+
+# =============================================================================
 # Endpoints
 # =============================================================================
 
@@ -356,6 +433,22 @@ async def start_auto_tune(request: AutoTuneRequest, background_tasks: Background
     )
     _auto_tune_jobs[job_id] = job_status
 
+    # Persist to database
+    try:
+        db = get_job_db()
+        lifecycle = JobLifecycle.create(
+            job_id=job_id,
+            job_type="auto_tune",
+            service="gateway",
+            request_params=request.model_dump(mode="json"),
+            total_items=request.max_tune_iterations,
+            output_path=request.output_dir,
+            db=db,
+        )
+        lifecycle.start("Auto-tune started")
+    except Exception as db_err:
+        logger.warning(f"Auto-tune {job_id}: DB create failed (non-fatal): {db_err}")
+
     background_tasks.add_task(_run_auto_tune, job_id, request)
 
     return job_status
@@ -364,10 +457,22 @@ async def start_auto_tune(request: AutoTuneRequest, background_tasks: Background
 @router.get("/jobs/{job_id}", response_model=AutoTuneStatusResponse)
 async def get_auto_tune_status(job_id: str):
     """Get auto-tune job status."""
-    job = _auto_tune_jobs.get(job_id)
-    if not job:
+    # Check in-memory cache first (has real-time iteration data)
+    if job_id in _auto_tune_jobs:
+        return _auto_tune_jobs[job_id]
+
+    # Fall back to database
+    try:
+        db = get_job_db()
+        job_data = db.get_job(job_id)
+    except Exception as db_err:
+        logger.warning(f"Auto-tune status {job_id}: DB lookup failed: {db_err}")
+        job_data = None
+
+    if not job_data:
         raise HTTPException(status_code=404, detail=f"Auto-tune job {job_id} not found")
-    return job
+
+    return _db_row_to_autotune_status(job_data)
 
 
 @router.delete("/jobs/{job_id}")
@@ -381,16 +486,35 @@ async def cancel_auto_tune(job_id: str):
         return {"success": False, "message": f"Job already {job.status}"}
 
     job.status = "cancelled"
+
+    # Persist cancellation to DB
+    try:
+        db = get_job_db()
+        db.complete_job(job_id, "cancelled")
+    except Exception as db_err:
+        logger.warning(f"Auto-tune {job_id}: DB cancel update failed (non-fatal): {db_err}")
+
     return {"success": True, "job_id": job_id, "message": "Cancellation requested"}
 
 
-@router.get("/jobs")
+@router.get("/jobs", response_model=List[AutoTuneStatusResponse])
 async def list_auto_tune_jobs():
-    """List all auto-tune jobs."""
-    return {
-        "jobs": list(_auto_tune_jobs.values()),
-        "total": len(_auto_tune_jobs),
-    }
+    """List all auto-tune jobs (from database, falling back to in-memory cache)."""
+    try:
+        db = get_job_db()
+        rows = db.list_jobs(service="gateway", job_type="auto_tune", limit=100)
+    except Exception as db_err:
+        logger.warning(f"Auto-tune list: DB query failed (falling back to cache): {db_err}")
+        return list(_auto_tune_jobs.values())
+
+    result: List[AutoTuneStatusResponse] = []
+    for row in rows:
+        # Prefer in-memory cache for active jobs (has richer real-time data)
+        if row["id"] in _auto_tune_jobs:
+            result.append(_auto_tune_jobs[row["id"]])
+        else:
+            result.append(_db_row_to_autotune_status(row))
+    return result
 
 
 # =============================================================================
@@ -438,6 +562,7 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
 
         best_score = float("inf")
         stagnation_count = 0
+        output_dir = request.output_dir
 
         for iteration in range(1, request.max_tune_iterations + 1):
             if job.status == "cancelled":
@@ -447,10 +572,29 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
             job.phase = "probe_generating"
             logger.info(f"Auto-tune {job_id}: iteration {iteration}/{request.max_tune_iterations}")
 
+            # Update DB progress at the start of each iteration
+            try:
+                db = get_job_db()
+                db.update_job_progress(
+                    job_id,
+                    processed_items=iteration - 1,
+                    current_item=f"iteration_{iteration}",
+                    progress_details={
+                        "phase": job.phase,
+                        "iteration": iteration,
+                        "max_iterations": request.max_tune_iterations,
+                        "current_gap_score": job.current_gap_score,
+                        "improvement_pct": job.improvement_pct,
+                        "target_gap_score": request.target_gap_score,
+                    },
+                )
+            except Exception as db_err:
+                logger.debug(f"Auto-tune {job_id}: DB progress update failed (non-fatal): {db_err}")
+
             # ---------------------------------------------------
             # Step 1: Generate probe batch via Augmentor
             # ---------------------------------------------------
-            probe_output_dir = f"{request.output_dir}/probe_iter_{iteration:02d}"
+            probe_output_dir = f"{output_dir}/probe_iter_{iteration:02d}"
             probe_request = {
                 "backgrounds_dir": resolved["backgrounds_dir"],
                 "objects_dir": resolved["objects_dir"],
@@ -596,6 +740,35 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
 
             job.history.append(iteration_result)
 
+            # Save checkpoint and update DB after each completed iteration
+            _save_autotune_checkpoint(output_dir, job_id, {
+                "job_id": job_id,
+                "iteration": iteration,
+                "current_config": current_config,
+                "best_score": best_score,
+                "history": [h.model_dump() for h in job.history],
+            })
+
+            try:
+                db = get_job_db()
+                db.update_job_progress(
+                    job_id,
+                    processed_items=iteration,
+                    current_item=f"iteration_{iteration}",
+                    progress_details={
+                        "phase": job.phase,
+                        "iteration": iteration,
+                        "max_iterations": request.max_tune_iterations,
+                        "current_gap_score": job.current_gap_score,
+                        "improvement_pct": job.improvement_pct,
+                        "target_gap_score": request.target_gap_score,
+                        "history": [h.model_dump() for h in job.history],
+                        "tuned_effects_config": current_config,
+                    },
+                )
+            except Exception as db_err:
+                logger.debug(f"Auto-tune {job_id}: DB iteration checkpoint failed (non-fatal): {db_err}")
+
         # ---------------------------------------------------
         # Compute improvement
         # ---------------------------------------------------
@@ -619,7 +792,7 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
             full_request = {
                 "backgrounds_dir": resolved["backgrounds_dir"],
                 "objects_dir": resolved["objects_dir"],
-                "output_dir": request.output_dir,
+                "output_dir": output_dir,
                 "num_images": resolved["num_images"],
                 "effects": resolved["effects"],
                 "effects_config": current_config,
@@ -650,6 +823,24 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
             f"{job.improvement_pct or 0:.1f}% improvement"
         )
 
+        # Persist final result to DB
+        try:
+            db = get_job_db()
+            db.complete_job(
+                job_id,
+                job.status,
+                result_summary={
+                    "iterations": len(job.history),
+                    "final_gap_score": job.history[-1].gap_score if job.history else None,
+                    "improvement_pct": job.improvement_pct,
+                    "tuned_effects_config": job.tuned_effects_config,
+                    "full_generation_job_id": job.full_generation_job_id,
+                },
+                processing_time_ms=(time.time() - job.started_at) * 1000 if job.started_at else 0,
+            )
+        except Exception as db_err:
+            logger.warning(f"Auto-tune {job_id}: DB completion update failed (non-fatal): {db_err}")
+
     except httpx.HTTPStatusError as e:
         detail = e.response.text[:500] if e.response else ""
         error_msg = f"{e} — Response body: {detail}"
@@ -657,12 +848,22 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
         job.status = "failed"
         job.error = error_msg
         job.completed_at = time.time()
+        try:
+            db = get_job_db()
+            db.complete_job(job_id, "failed", error_message=error_msg)
+        except Exception as db_err:
+            logger.debug(f"Auto-tune {job_id}: DB failure update failed (non-fatal): {db_err}")
     except Exception as e:
         error_msg = str(e) or f"{type(e).__name__}: {e!r}"
         logger.exception(f"Auto-tune {job_id} failed: {error_msg}")
         job.status = "failed"
         job.error = error_msg
         job.completed_at = time.time()
+        try:
+            db = get_job_db()
+            db.complete_job(job_id, "failed", error_message=error_msg)
+        except Exception as db_err:
+            logger.debug(f"Auto-tune {job_id}: DB failure update failed (non-fatal): {db_err}")
 
 
 # =============================================================================

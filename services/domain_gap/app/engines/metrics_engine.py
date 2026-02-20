@@ -424,6 +424,12 @@ class MetricsEngine:
         sigma_s = np.cov(synthetic_features, rowvar=False)
         sigma_r = np.cov(real_features, rowvar=False)
 
+        # Ridge regularization: stabilizes sqrtm when covariance matrices are
+        # near-singular (common with few samples relative to feature dimensions).
+        eps = 1e-6
+        sigma_s += np.eye(sigma_s.shape[0]) * eps
+        sigma_r += np.eye(sigma_r.shape[0]) * eps
+
         diff = mu_s - mu_r
         mean_diff_sq = np.dot(diff, diff)
 
@@ -754,7 +760,11 @@ class MetricsEngine:
         if n_samples >= n_features / 4:
             return features_a, features_b
 
-        effective_dims = min(target_dims, n_samples - 1)
+        # Ensure at least 5 samples per dimension for stable covariance estimation.
+        # The previous formula (n_samples - 1) produced near-singular covariance
+        # matrices, inflating Frechet Distance for small sample sizes.
+        max_stable_dims = max(n_samples // 5, 2)
+        effective_dims = min(target_dims, max_stable_dims)
         if effective_dims < 2:
             logger.warning(
                 "Too few samples ({}) for PCA reduction, skipping", n_samples

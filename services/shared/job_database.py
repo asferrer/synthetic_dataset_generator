@@ -49,6 +49,8 @@ class JobDatabase:
             _local.connection.row_factory = sqlite3.Row
             # Enable foreign keys
             _local.connection.execute("PRAGMA foreign_keys = ON")
+            # WAL mode: allows concurrent readers with one writer (reduces contention)
+            _local.connection.execute("PRAGMA journal_mode=WAL")
         return _local.connection
 
     @contextmanager
@@ -110,6 +112,10 @@ class JobDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_logs_timestamp ON job_logs(timestamp)")
+
+            # Composite indexes for unified multi-service queries
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_service ON jobs(status, service)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC)")
 
             # Dataset metadata table
             cursor.execute("""
@@ -352,8 +358,8 @@ class JobDatabase:
             return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     def get_active_jobs(self, service: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all active (queued or processing) jobs."""
-        conditions = ["status IN ('queued', 'processing')"]
+        """Get all active (queued, processing, or running) jobs."""
+        conditions = ["status IN ('queued', 'processing', 'running')"]
         params = []
 
         if service:
@@ -370,6 +376,23 @@ class JobDatabase:
             """, params)
 
             return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def mark_orphaned_jobs(self, service: str, new_status: str = "interrupted") -> int:
+        """Mark all active jobs for a service as interrupted.
+
+        Call during service startup to handle unclean shutdowns.
+        Returns count of affected jobs.
+        """
+        now = datetime.now().isoformat()
+
+        with self._cursor() as cursor:
+            cursor.execute("""
+                UPDATE jobs
+                SET status = ?, updated_at = ?,
+                    error_message = 'Service restarted before job completed'
+                WHERE service = ? AND status IN ('running', 'processing', 'queued')
+            """, (new_status, now, service))
+            return cursor.rowcount
 
     def get_interrupted_jobs(self, service: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all interrupted jobs that can be resumed."""

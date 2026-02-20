@@ -167,6 +167,10 @@ def render_sidebar():
         st.markdown(f"<hr style='border: none; border-top: 1px solid {c['border']}; margin: 0.75rem 0;'>",
                     unsafe_allow_html=True)
 
+        # Active jobs widget (visible from any tab)
+        from app.components.job_sidebar import render_active_jobs_sidebar
+        render_active_jobs_sidebar()
+
         # Service Status (always visible)
         render_service_status_widget()
 
@@ -238,13 +242,34 @@ def render_service_status_widget():
 def main():
     """Main application entry point"""
 
-    # Initialize session state
+    # Restore persisted state on first load (survives page refreshes)
+    if "_session_restored" not in st.session_state:
+        try:
+            from app.utils.session_persistence import restore_session_state
+            restore_session_state(st.session_state)
+        except Exception:
+            pass
+        st.session_state._session_restored = True
+
+    # Initialize session state defaults
     if "nav_menu" not in st.session_state:
         st.session_state.nav_menu = "🏠 Home"
     if "workflow_step" not in st.session_state:
         st.session_state.workflow_step = 0
     if "workflow_completed" not in st.session_state:
         st.session_state.workflow_completed = []
+
+    # Recover dataset from DB if we have active_dataset_id but lost the data
+    if (st.session_state.get("active_dataset_id")
+            and "generated_dataset" not in st.session_state):
+        try:
+            from app.components.api_client import get_api_client
+            client = get_api_client()
+            result = client.load_dataset_coco(st.session_state.active_dataset_id)
+            if result.get("success"):
+                st.session_state.generated_dataset = result["data"]
+        except Exception:
+            pass
 
     # Render sidebar and get current page
     current_page = render_sidebar()
@@ -292,6 +317,13 @@ def main():
         render_services_page()
     elif current_page == "📚 Docs":
         render_documentation_page()
+
+    # Save persistent state at end of each render cycle
+    try:
+        from app.utils.session_persistence import save_persistent_state
+        save_persistent_state(dict(st.session_state))
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -639,41 +671,48 @@ def render_monitor_tool_page():
         icon="📊"
     )
 
-    # Fetch all jobs from different sources
+    # Fetch all jobs from unified registry (single API call)
     from app.components.api_client import get_api_client
     client = get_api_client()
 
-    # Generation jobs (from augmentor)
-    gen_jobs_response = client.list_jobs()
-    gen_jobs = gen_jobs_response.get("jobs", [])
-    for job in gen_jobs:
-        job["job_type"] = "generation"
+    unified_response = client.list_all_jobs(limit=200)
+    jobs = unified_response.get("jobs", [])
 
-    # Extraction jobs (from segmentation)
-    extract_jobs_response = client.list_extraction_jobs()
-    extract_jobs = extract_jobs_response.get("jobs", [])
+    # Fallback to individual service calls if unified API not available
+    if not jobs and unified_response.get("error"):
+        gen_jobs_response = client.list_jobs()
+        gen_jobs = gen_jobs_response.get("jobs", [])
+        for job in gen_jobs:
+            job["job_type"] = "generation"
 
-    # SAM3 conversion jobs (from segmentation)
-    sam3_jobs_response = client.list_sam3_jobs()
-    sam3_jobs = sam3_jobs_response.get("jobs", [])
+        extract_jobs_response = client.list_extraction_jobs()
+        extract_jobs = extract_jobs_response.get("jobs", [])
 
-    # Labeling/Relabeling jobs (from segmentation)
-    labeling_jobs_response = client.list_labeling_jobs()
-    labeling_jobs = labeling_jobs_response.get("jobs", [])
+        sam3_jobs_response = client.list_sam3_jobs()
+        sam3_jobs = sam3_jobs_response.get("jobs", [])
 
-    # Combine all jobs
-    jobs = gen_jobs + extract_jobs + sam3_jobs + labeling_jobs
+        labeling_jobs_response = client.list_labeling_jobs()
+        labeling_jobs = labeling_jobs_response.get("jobs", [])
+
+        jobs = gen_jobs + extract_jobs + sam3_jobs + labeling_jobs
+
+    # Normalize job format (unified API uses "id", per-service may use "job_id")
+    for job in jobs:
+        if "job_id" not in job and "id" in job:
+            job["job_id"] = job["id"]
+        if "id" not in job and "job_id" in job:
+            job["id"] = job["job_id"]
 
     if not jobs:
         empty_state(
             title="No hay trabajos",
-            message="No hay trabajos en el sistema. Inicia una generacion, extraccion, conversion SAM3 o etiquetado.",
+            message="No hay trabajos en el sistema. Inicia una generacion, extraccion, conversion SAM3, etiquetado o auto-tune.",
             icon="📭"
         )
         return
 
     # Categorize jobs by status
-    active_jobs = [j for j in jobs if j.get("status") in ["processing", "queued", "pending"]]
+    active_jobs = [j for j in jobs if j.get("status") in ["processing", "queued", "pending", "running"]]
     completed_jobs = [j for j in jobs if j.get("status") == "completed"]
     interrupted_jobs = [j for j in jobs if j.get("status") == "interrupted"]
     failed_jobs = [j for j in jobs if j.get("status") in ["failed", "cancelled", "error"]]
@@ -683,6 +722,8 @@ def render_monitor_tool_page():
     extract_count = len([j for j in jobs if j.get("job_type") == "extraction"])
     sam3_count = len([j for j in jobs if j.get("job_type") == "sam3_conversion"])
     labeling_count = len([j for j in jobs if j.get("job_type") in ["labeling", "relabeling"]])
+    autotune_count = len([j for j in jobs if j.get("job_type") == "auto_tune"])
+    domain_count = len([j for j in jobs if j.get("job_type") in ["domain_analysis", "optimization"]])
 
     # Auto-refresh indicator for active jobs
     if active_jobs:
@@ -836,10 +877,15 @@ def render_monitor_tool_page():
             for job in failed_jobs[:5]:
                 _render_job_card_with_actions(job, c, client)
 
-    # Auto-refresh for active jobs (at the end to avoid blocking UI)
+    # Auto-refresh for active jobs
     if active_jobs and not st.session_state.get("monitor_paused"):
-        time.sleep(2)
-        st.rerun()
+        # Use st.fragment if available (Streamlit 1.33+), else fallback
+        try:
+            _auto_refresh_interval = st.session_state.get("monitor_refresh_interval", 3)
+            time.sleep(_auto_refresh_interval)
+            st.rerun()
+        except Exception:
+            pass
     elif st.session_state.get("monitor_paused"):
         st.session_state.pop("monitor_paused", None)
 
@@ -848,7 +894,7 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
     """Render a detailed job card with full progress visualization for active jobs"""
     from datetime import datetime
 
-    job_id = job.get("job_id", "unknown")
+    job_id = job.get("job_id") or job.get("id", "unknown")
     status = job.get("status", "unknown")
     job_type = job.get("job_type", "generation")
 
@@ -889,10 +935,29 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
         # Additional labeling-specific data
         total_objects_found = job.get("total_objects_found", 0)
         objects_by_class = job.get("objects_by_class", {})
+    elif job_type == "auto_tune":
+        type_icon, type_label = "🔧", "Auto-Tune"
+        progress_details = job.get("progress_details") or {}
+        done = progress_details.get("iteration", job.get("processed_items", 0))
+        total = progress_details.get("max_iterations", job.get("total_items", 0))
+        failed = 0
+        pending = max(0, total - done)
+        current_info = progress_details.get("phase", "")
+    elif job_type in ["domain_analysis", "optimization"]:
+        type_icon = "📊" if job_type == "domain_analysis" else "⚡"
+        type_label = "Domain Gap" if job_type == "domain_analysis" else "Optimizacion"
+        done = job.get("processed_items", 0)
+        total = job.get("total_items", 0)
+        failed = job.get("failed_items", 0)
+        pending = max(0, total - done - failed)
+        current_info = job.get("current_item", "")
     else:
-        type_icon, type_label = "❔", "Desconocido"
-        done, failed, pending, total = 0, 0, 0, 0
-        current_info = ""
+        type_icon, type_label = "❔", job_type or "Desconocido"
+        done = job.get("processed_items", 0)
+        total = job.get("total_items", 0)
+        failed = job.get("failed_items", 0)
+        pending = max(0, total - done - failed)
+        current_info = job.get("current_item", "")
 
     progress = done / total if total > 0 else 0
 
@@ -1085,7 +1150,7 @@ def _render_detailed_job_card(job: dict, c: dict, client) -> None:
 
 def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> None:
     """Render a single job card for any job type"""
-    job_id = job.get("job_id", "unknown")
+    job_id = job.get("job_id") or job.get("id", "unknown")
     status = job.get("status", "unknown")
     job_type = job.get("job_type", "generation")
 
@@ -1132,19 +1197,42 @@ def _render_job_card(job: dict, c: dict, client, is_active: bool = False) -> Non
         label1, val1 = "Imagenes", done
         label2, val2 = "Objetos", total_objects
         label3, val3 = "Pendientes", pending
+    elif job_type == "auto_tune":
+        type_icon, type_label = "🔧", "Auto-Tune"
+        progress_details = job.get("progress_details") or {}
+        done = progress_details.get("iteration", job.get("processed_items", 0))
+        total = progress_details.get("max_iterations", job.get("total_items", 0))
+        failed = 0
+        pending = max(0, total - done)
+        label1, val1 = "Iteraciones", done
+        label2, val2 = "Gap Score", f'{progress_details.get("current_gap_score", "?")}'
+        label3, val3 = "Fase", progress_details.get("phase", "?")
+    elif job_type in ["domain_analysis", "optimization"]:
+        type_icon = "📊" if job_type == "domain_analysis" else "⚡"
+        type_label = "Domain Gap" if job_type == "domain_analysis" else "Optimizacion"
+        done = job.get("processed_items", 0)
+        total = job.get("total_items", 0)
+        failed = job.get("failed_items", 0)
+        pending = max(0, total - done - failed)
+        label1, val1 = "Procesados", done
+        label2, val2 = "Fallidos", failed
+        label3, val3 = "Pendientes", pending
     else:
-        type_icon, type_label = "❔", "Desconocido"
-        done, failed, pending, total = 0, 0, 0, 0
-        label1, val1 = "Completados", 0
-        label2, val2 = "Fallidos", 0
-        label3, val3 = "Pendientes", 0
+        type_icon, type_label = "❔", job_type or "Desconocido"
+        done = job.get("processed_items", 0)
+        total = job.get("total_items", 0)
+        failed = job.get("failed_items", 0)
+        pending = max(0, total - done - failed)
+        label1, val1 = "Procesados", done
+        label2, val2 = "Fallidos", failed
+        label3, val3 = "Pendientes", pending
 
     # Status styling
     if status == "completed":
         status_color, status_icon = c['success'], "✅"
-    elif status == "processing":
+    elif status in ("processing", "running"):
         status_color, status_icon = c['warning'], "⏳"
-    elif status == "queued":
+    elif status in ("queued", "pending"):
         status_color, status_icon = c['info'], "📋"
     elif status == "failed":
         status_color, status_icon = c['error'], "❌"
@@ -1427,7 +1515,7 @@ def _render_job_card_with_actions(job: dict, c: dict, client) -> None:
     from app.config.theme import get_colors_dict
     import time
 
-    job_id = job.get("job_id", "unknown")
+    job_id = job.get("job_id") or job.get("id", "unknown")
     status = job.get("status", "unknown")
     job_type = job.get("job_type", "generation")
 
