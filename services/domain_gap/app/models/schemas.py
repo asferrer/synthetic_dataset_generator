@@ -147,9 +147,13 @@ class MetricsRequest(BaseModel):
     synthetic_dir: str = Field(description="Directory with synthetic images")
     reference_set_id: str = Field(description="ID of the real reference image set")
     max_images: int = Field(100, ge=5, le=5000, description="Max images to sample per set")
-    compute_fid: bool = True
-    compute_kid: bool = True
+    compute_radio_mmd: bool = Field(True, description="Compute RADIO-MMD using C-RADIOv4 embeddings (recommended)")
+    compute_fd_radio: bool = Field(True, description="Compute Fréchet Distance on RADIO features")
+    compute_fid: bool = Field(False, description="Compute legacy FID (Inception v3)")
+    compute_kid: bool = Field(False, description="Compute legacy KID (Inception v3)")
     compute_color_distribution: bool = True
+    compute_cmmd: bool = Field(False, description="Compute CLIP-MMD (requires additional VRAM for CLIP model)")
+    compute_prdc: bool = Field(True, description="Compute Precision/Recall/Density/Coverage")
 
 
 class ChannelStats(BaseModel):
@@ -176,9 +180,16 @@ class ColorDistribution(BaseModel):
 
 class MetricsResult(BaseModel):
     """Result of domain gap metric computation."""
+    radio_mmd_score: Optional[float] = Field(None, description="RADIO-MMD using C-RADIOv4 embeddings (lower=better)")
+    fd_radio_score: Optional[float] = Field(None, description="Fréchet Distance on raw RADIO features (lower=better)")
     fid_score: Optional[float] = Field(None, description="Fréchet Inception Distance (lower=better)")
     kid_score: Optional[float] = Field(None, description="Kernel Inception Distance (lower=better)")
     kid_std: Optional[float] = Field(None, description="KID standard deviation")
+    cmmd_score: Optional[float] = Field(None, description="CLIP Maximum Mean Discrepancy (lower=better)")
+    precision: Optional[float] = Field(None, description="PRDC Precision - fidelity (0-1, higher=better)")
+    recall: Optional[float] = Field(None, description="PRDC Recall - coverage of real distribution (0-1, higher=better)")
+    density: Optional[float] = Field(None, description="PRDC Density - concentration quality (higher=better)")
+    coverage: Optional[float] = Field(None, description="PRDC Coverage - diversity (0-1, higher=better)")
     color_distribution: Optional[ColorDistribution] = None
     overall_gap_score: float = Field(
         description="Normalized gap score 0-100 (0=identical, 100=max gap)"
@@ -188,6 +199,28 @@ class MetricsResult(BaseModel):
     real_count: int = Field(description="Number of real images analyzed")
     processing_time_ms: float = 0
     timestamp: datetime = Field(default_factory=datetime.now)
+    # v2.0 fields — diagnostics and perceptual quality
+    sample_size_warning: Optional[str] = Field(
+        None, description="Warning if sample size is too small for reliable FD computation"
+    )
+    metrics_version: str = Field(
+        "2.0", description="Metrics calibration version (2.0 = fixed normalization + recalibrated thresholds)"
+    )
+    pca_applied: bool = Field(
+        False, description="Whether PCA dimensionality reduction was applied for FD stability"
+    )
+    pca_dims: Optional[int] = Field(
+        None, description="Number of PCA components used (if applied)"
+    )
+    sharpness_ratio: Optional[float] = Field(
+        None, description="Synthetic/real sharpness ratio (1.0=matched, <1=synthetic blurrier)"
+    )
+    synthetic_sharpness: Optional[float] = Field(
+        None, description="Mean Laplacian variance of synthetic images"
+    )
+    real_sharpness: Optional[float] = Field(
+        None, description="Mean Laplacian variance of real images"
+    )
 
 
 class MetricsCompareRequest(BaseModel):
@@ -428,6 +461,27 @@ class CycleGANModelsResponse(BaseModel):
 
 
 # =============================================================================
+# Optimization
+# =============================================================================
+
+class OptimizeRequest(BaseModel):
+    """Request for automatic iterative domain gap optimization."""
+    synthetic_dir: str = Field(description="Directory with synthetic images")
+    reference_set_id: str = Field(description="Real reference set for gap measurement")
+    output_dir: str = Field(description="Directory to write optimized images")
+    target_gap_score: float = Field(30.0, ge=0, le=100, description="Stop when gap score falls below this")
+    max_iterations: int = Field(5, ge=1, le=20, description="Maximum optimization iterations")
+    max_images: int = Field(50, ge=5, le=500, description="Images to sample per iteration")
+    techniques: List[str] = Field(
+        default_factory=lambda: ["randomization"],
+        description="Techniques to apply: 'randomization', 'style_transfer'",
+    )
+    current_config: Optional[Dict[str, Any]] = Field(
+        None, description="Current pipeline configuration for advisor context"
+    )
+
+
+# =============================================================================
 # Job Management
 # =============================================================================
 
@@ -481,7 +535,11 @@ class InfoResponse(BaseModel):
     version: str = "1.0.0"
     techniques: List[str] = Field(default_factory=lambda: [t.value for t in DGRTechnique])
     metrics_available: List[str] = Field(
-        default_factory=lambda: ["fid", "kid", "color_distribution", "edge_analysis"]
+        default_factory=lambda: [
+            "radio_mmd", "fd_radio",
+            "fid", "kid", "cmmd", "precision", "recall",
+            "density", "coverage", "color_distribution", "edge_analysis",
+        ]
     )
     gpu_available: bool = False
     max_image_size: int = 1024

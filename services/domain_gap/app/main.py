@@ -63,6 +63,12 @@ from app.models.schemas import (
     RandomizationApplyRequest,
     RandomizationBatchRequest,
     RandomizationResponse,
+    # Style Transfer
+    StyleTransferApplyRequest,
+    StyleTransferBatchRequest,
+    StyleTransferResponse,
+    # Optimization
+    OptimizeRequest,
     # Jobs
     JobStatusResponse,
     JobListResponse,
@@ -71,6 +77,9 @@ from app.models.schemas import (
     InfoResponse,
     DGRTechnique,
 )
+
+# Import routers
+from app.routers import ml_optimizer
 
 
 # =============================================================================
@@ -84,6 +93,7 @@ class ServiceState:
         self.metrics_engine = None
         self.advisor_engine = None
         self.randomization_engine = None
+        self.style_transfer_engine = None
         self.reference_manager = None
         self.gpu_available = False
         self.gpu_name = None
@@ -132,6 +142,14 @@ class ServiceState:
             logger.info("RandomizationEngine initialized")
         except Exception as e:
             logger.error(f"Failed to initialize RandomizationEngine: {e}")
+
+        # Initialize Style Transfer Engine (GPU-accelerated)
+        try:
+            from app.engines.style_transfer_engine import StyleTransferEngine
+            self.style_transfer_engine = StyleTransferEngine(use_gpu=self.gpu_available)
+            logger.info("StyleTransferEngine initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize StyleTransferEngine: {e}")
 
     def get_gpu_memory(self) -> Optional[str]:
         """Get GPU memory usage."""
@@ -208,6 +226,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(ml_optimizer.router)
+
 
 # =============================================================================
 # Health & Info
@@ -231,6 +252,7 @@ async def health_check():
         "metrics": state.metrics_engine is not None,
         "advisor": state.advisor_engine is not None,
         "randomization": state.randomization_engine is not None,
+        "style_transfer": state.style_transfer_engine is not None,
         "reference_manager": state.reference_manager is not None,
     }
 
@@ -267,9 +289,13 @@ async def service_info():
     """Service capabilities."""
     return InfoResponse(
         service="domain_gap",
-        version="1.0.0",
+        version="2.1.0",
         techniques=[t.value for t in DGRTechnique],
-        metrics_available=["fid", "kid", "color_distribution", "edge_analysis"],
+        metrics_available=[
+            "radio_mmd", "fd_radio",
+            "fid", "kid", "cmmd", "precision", "recall",
+            "density", "coverage", "color_distribution", "edge_analysis",
+        ],
         gpu_available=state.gpu_available,
     )
 
@@ -505,6 +531,10 @@ async def delete_reference(set_id: str):
 # Metrics
 # =============================================================================
 
+# GPU semaphore: prevents concurrent RADIO extractions that would OOM the GPU.
+# Only one heavy GPU metrics computation at a time; subsequent requests queue.
+_gpu_metrics_semaphore = asyncio.Semaphore(1)
+
 @app.post("/metrics/compute", response_model=MetricsResult, tags=["Metrics"])
 async def compute_metrics(request: MetricsRequest):
     """
@@ -532,15 +562,21 @@ async def compute_metrics(request: MetricsRequest):
         )
 
     try:
-        result = await asyncio.to_thread(
-            state.metrics_engine.compute_metrics,
-            synthetic_dir=request.synthetic_dir,
-            real_dir=ref_set.image_dir,
-            max_images=request.max_images,
-            compute_fid=request.compute_fid,
-            compute_kid=request.compute_kid,
-            compute_color=request.compute_color_distribution,
-        )
+        async with _gpu_metrics_semaphore:
+            logger.info("GPU semaphore acquired for metrics computation")
+            result = await asyncio.to_thread(
+                state.metrics_engine.compute_metrics,
+                synthetic_dir=request.synthetic_dir,
+                real_dir=ref_set.image_dir,
+                max_images=request.max_images,
+                compute_radio_mmd=request.compute_radio_mmd,
+                compute_fd_radio=request.compute_fd_radio,
+                compute_fid=request.compute_fid,
+                compute_kid=request.compute_kid,
+                compute_color=request.compute_color_distribution,
+                compute_cmmd=request.compute_cmmd,
+                compute_prdc=request.compute_prdc,
+            )
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -620,17 +656,30 @@ async def compare_metrics(request: MetricsCompareRequest):
 # =============================================================================
 
 _ANALYSIS_PHASES = {
-    "extracting_features_synthetic": (0, 20),
-    "extracting_features_real": (20, 40),
-    "computing_fid": (40, 50),
-    "computing_kid": (50, 58),
-    "computing_color": (58, 70),
-    "analyzing_color": (70, 76),
-    "analyzing_edges": (76, 82),
-    "analyzing_frequency": (82, 88),
+    # RADIO backbone phases (primary)
+    "extracting_radio_synthetic": (0, 12),
+    "extracting_radio_real": (12, 24),
+    "computing_radio_mmd": (24, 28),
+    "computing_fd_radio": (28, 32),
+    "computing_prdc": (32, 36),
+    # CLIP phases (optional legacy)
+    "extracting_clip_synthetic": (36, 40),
+    "extracting_clip_real": (40, 44),
+    "computing_cmmd": (44, 46),
+    # Inception phases (optional legacy)
+    "extracting_features_synthetic": (46, 52),
+    "extracting_features_real": (52, 58),
+    "computing_fid": (58, 62),
+    "computing_kid": (62, 66),
+    # Color analysis
+    "computing_color": (66, 72),
+    # Advisor phases
+    "analyzing_color": (72, 78),
+    "analyzing_edges": (78, 83),
+    "analyzing_frequency": (83, 88),
     "analyzing_texture": (88, 92),
-    "generating_suggestions": (92, 95),
-    "completing": (95, 100),
+    "generating_suggestions": (92, 96),
+    "completing": (96, 100),
 }
 
 
@@ -798,6 +847,193 @@ async def randomize_batch(
         "job_id": job_id,
         "status": "pending",
         "message": "Domain randomization batch job started",
+    }
+
+
+# =============================================================================
+# Style Transfer
+# =============================================================================
+
+@app.post("/style-transfer/apply", response_model=StyleTransferResponse, tags=["Style Transfer"])
+async def style_transfer_single(request: StyleTransferApplyRequest):
+    """
+    Apply neural style transfer to a single image (synchronous).
+
+    Transfers the visual style from a reference set to the input image
+    using DA-WCT (Depth-Aware Whitening and Coloring Transform).
+    """
+    if not state.style_transfer_engine:
+        raise HTTPException(status_code=503, detail="Style transfer engine not initialized")
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+
+    # Resolve reference set to directory for style source
+    ref_set = state.reference_manager.get_set(request.config.reference_set_id)
+    if not ref_set:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Reference set {request.config.reference_set_id} not found"
+        )
+
+    if not os.path.isfile(request.image_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Image not found: {request.image_path}"
+        )
+
+    start_time = time.time()
+    try:
+        output_path = await asyncio.to_thread(
+            state.style_transfer_engine.apply_single,
+            content_path=request.image_path,
+            style_dir=ref_set.image_dir,
+            output_path=request.output_path,
+            style_weight=request.config.style_weight,
+            content_weight=request.config.content_weight,
+            preserve_structure=request.config.preserve_structure,
+            color_only=request.config.color_only,
+            depth_guided=request.config.depth_guided,
+        )
+        return StyleTransferResponse(
+            success=True,
+            output_path=output_path,
+            processing_time_ms=(time.time() - start_time) * 1000,
+        )
+    except Exception as e:
+        logger.exception(f"Style transfer failed: {e}")
+        return StyleTransferResponse(
+            success=False,
+            output_path=request.output_path,
+            processing_time_ms=(time.time() - start_time) * 1000,
+            error=str(e),
+        )
+
+
+@app.post("/style-transfer/apply-batch", tags=["Style Transfer"])
+async def style_transfer_batch(
+    request: StyleTransferBatchRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Apply style transfer to all images in a directory (async job).
+
+    Returns a job_id to track progress via GET /jobs/{job_id}.
+    """
+    if not state.style_transfer_engine:
+        raise HTTPException(status_code=503, detail="Style transfer engine not initialized")
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    ref_set = state.reference_manager.get_set(request.config.reference_set_id)
+    if not ref_set:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Reference set {request.config.reference_set_id} not found"
+        )
+
+    if not os.path.isdir(request.images_dir):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Images directory not found: {request.images_dir}"
+        )
+
+    job_id = f"st_{uuid.uuid4().hex[:12]}"
+
+    state.db.create_job(
+        job_id=job_id,
+        job_type="style_transfer",
+        service="domain_gap",
+        request_params={
+            "images_dir": request.images_dir,
+            "output_dir": request.output_dir,
+            "reference_set_id": request.config.reference_set_id,
+            "style_weight": request.config.style_weight,
+            "color_only": request.config.color_only,
+        },
+        total_items=0,
+        output_path=request.output_dir,
+    )
+
+    state._active_jobs_cache[job_id] = {"cancelled": False}
+
+    background_tasks.add_task(
+        _run_style_transfer_batch, job_id, request, ref_set.image_dir
+    )
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Style transfer batch job started",
+    }
+
+
+# =============================================================================
+# Automatic Optimization
+# =============================================================================
+
+@app.post("/optimize", tags=["Optimization"])
+async def optimize_gap(request: OptimizeRequest, background_tasks: BackgroundTasks):
+    """
+    Automatic iterative domain gap optimization.
+
+    Runs a loop: compute metrics → analyze issues → apply technique → repeat
+    until the target gap score is reached or max iterations exhausted.
+    Returns a job_id to track progress via GET /jobs/{job_id}.
+    """
+    if not state.metrics_engine:
+        raise HTTPException(status_code=503, detail="Metrics engine not initialized")
+    if not state.advisor_engine:
+        raise HTTPException(status_code=503, detail="Advisor engine not initialized")
+    if not state.reference_manager:
+        raise HTTPException(status_code=503, detail="Reference manager not initialized")
+    if not state.db:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    ref_set = state.reference_manager.get_set(request.reference_set_id)
+    if not ref_set:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Reference set {request.reference_set_id} not found"
+        )
+
+    if not os.path.isdir(request.synthetic_dir):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Synthetic directory not found: {request.synthetic_dir}"
+        )
+
+    job_id = f"opt_{uuid.uuid4().hex[:12]}"
+
+    state.db.create_job(
+        job_id=job_id,
+        job_type="optimization",
+        service="domain_gap",
+        request_params={
+            "synthetic_dir": request.synthetic_dir,
+            "output_dir": request.output_dir,
+            "reference_set_id": request.reference_set_id,
+            "target_gap_score": request.target_gap_score,
+            "max_iterations": request.max_iterations,
+            "techniques": request.techniques,
+        },
+        total_items=request.max_iterations,
+        output_path=request.output_dir,
+    )
+
+    state._active_jobs_cache[job_id] = {"cancelled": False}
+
+    background_tasks.add_task(
+        _run_optimization, job_id, request, ref_set.image_dir
+    )
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Optimization started",
     }
 
 
@@ -980,6 +1216,138 @@ async def _run_randomization_batch(job_id: str, request: RandomizationBatchReque
             del state._active_jobs_cache[job_id]
 
 
+async def _run_optimization(job_id: str, request: OptimizeRequest, real_dir: str):
+    """Background task for automatic domain gap optimization."""
+    start_time = time.time()
+
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
+
+    def progress_callback(iteration, max_iters, gap_score, phase):
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            return
+        state.db.update_job_progress(
+            job_id,
+            processed_items=iteration,
+            progress_details={
+                "iteration": iteration,
+                "max_iterations": max_iters,
+                "gap_score": gap_score,
+                "phase": phase,
+                "global_progress": round((iteration / max_iters) * 100, 1),
+            },
+        )
+
+    try:
+        from app.engines.optimizer_engine import OptimizerEngine
+
+        optimizer = OptimizerEngine(
+            metrics_engine=state.metrics_engine,
+            advisor_engine=state.advisor_engine,
+            randomization_engine=state.randomization_engine,
+            style_transfer_engine=state.style_transfer_engine,
+        )
+
+        result = await asyncio.to_thread(
+            optimizer.optimize,
+            synthetic_dir=request.synthetic_dir,
+            real_dir=real_dir,
+            output_dir=request.output_dir,
+            current_config=request.current_config,
+            target_gap_score=request.target_gap_score,
+            max_iterations=request.max_iterations,
+            max_images=request.max_images,
+            techniques=request.techniques,
+            reference_set_id=request.reference_set_id,
+            progress_callback=progress_callback,
+        )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        cache = state._active_jobs_cache.get(job_id, {})
+        final_status = "cancelled" if cache.get("cancelled") else "completed"
+
+        state.db.complete_job(
+            job_id,
+            final_status,
+            result_summary=result,
+            processing_time_ms=processing_time,
+        )
+
+        logger.info(f"Optimization {job_id} {final_status}: {result.get('improvement_pct', 0)}% improvement")
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"Optimization {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time,
+        )
+    finally:
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+
+
+async def _run_style_transfer_batch(
+    job_id: str, request: StyleTransferBatchRequest, style_dir: str
+):
+    """Background task for batch style transfer."""
+    start_time = time.time()
+    config = request.config
+
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
+
+    def progress_callback(processed, total):
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            return
+        state.db.update_job_progress(
+            job_id,
+            processed_items=processed,
+            progress_details={"total": total, "processed": processed},
+        )
+
+    try:
+        result = state.style_transfer_engine.apply_batch(
+            images_dir=request.images_dir,
+            style_dir=style_dir,
+            output_dir=request.output_dir,
+            style_weight=config.style_weight,
+            content_weight=config.content_weight,
+            preserve_structure=config.preserve_structure,
+            color_only=config.color_only,
+            depth_guided=config.depth_guided,
+            progress_callback=progress_callback,
+        )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        cache = state._active_jobs_cache.get(job_id, {})
+        final_status = "cancelled" if cache.get("cancelled") else "completed"
+
+        state.db.complete_job(
+            job_id,
+            final_status,
+            result_summary=result,
+            processing_time_ms=processing_time,
+        )
+
+        logger.info(f"Style transfer batch {job_id} {final_status}: {result}")
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"Style transfer batch {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time,
+        )
+    finally:
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+
+
 async def _run_gap_analysis(job_id: str, request: AnalyzeRequest, real_dir: str):
     """Background task for full domain gap analysis with progress reporting."""
     start_time = time.time()
@@ -1011,12 +1379,19 @@ async def _run_gap_analysis(job_id: str, request: AnalyzeRequest, real_dir: str)
         )
 
     try:
-        # 1. Compute quantitative metrics
+        # 1. Compute quantitative metrics (RADIO-primary by default)
         metrics = await asyncio.to_thread(
             state.metrics_engine.compute_metrics,
             synthetic_dir=request.synthetic_dir,
             real_dir=real_dir,
             max_images=request.max_images,
+            compute_radio_mmd=True,
+            compute_fd_radio=True,
+            compute_fid=False,
+            compute_kid=False,
+            compute_color=True,
+            compute_cmmd=False,
+            compute_prdc=True,
             progress_callback=_progress_callback,
         )
 
@@ -1062,7 +1437,7 @@ async def _run_gap_analysis(job_id: str, request: AnalyzeRequest, real_dir: str)
         state.db.complete_job(
             job_id,
             final_status,
-            result_summary=result.model_dump(),
+            result_summary=result.model_dump(mode="json"),
             processing_time_ms=processing_time,
         )
 
