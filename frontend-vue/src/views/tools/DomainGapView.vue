@@ -26,6 +26,8 @@ import {
   Info,
   Eye,
   FolderOpen,
+  Palette,
+  Zap,
 } from 'lucide-vue-next'
 import type { GapAnalysis, ReferenceSet, ParameterSuggestion, UploadProgress } from '@/stores/domainGap'
 
@@ -38,12 +40,13 @@ const domainStore = useDomainStore()
 // Tab management
 // ============================================
 
-const activeTab = ref<'references' | 'validation' | 'randomization'>('references')
+const activeTab = ref<'references' | 'validation' | 'randomization' | 'styleTransfer'>('references')
 
 const tabs = computed(() => [
   { id: 'references' as const, label: t('tools.domainGap.tabs.references'), icon: ImageIcon },
   { id: 'validation' as const, label: t('tools.domainGap.tabs.validation'), icon: BarChart3 },
   { id: 'randomization' as const, label: t('tools.domainGap.tabs.randomization'), icon: Shuffle },
+  { id: 'styleTransfer' as const, label: t('tools.domainGap.tabs.styleTransfer'), icon: Palette },
 ])
 
 // ============================================
@@ -225,6 +228,89 @@ async function handleRandomize() {
   } else {
     uiStore.showError(
       t('tools.domainGap.notifications.randomizationFailed'),
+      store.error || undefined,
+    )
+  }
+}
+
+// ============================================
+// Style Transfer tab state
+// ============================================
+
+const stImagesDir = ref('')
+const stOutputDir = ref('')
+const stReferenceSetId = ref('')
+const stConfig = ref({
+  style_weight: 0.6,
+  content_weight: 1.0,
+  preserve_structure: 0.8,
+  color_only: false,
+  depth_guided: true,
+})
+
+async function handleStyleTransfer() {
+  if (!stImagesDir.value || !stOutputDir.value || !stReferenceSetId.value) return
+
+  const result = await store.applyStyleTransferBatch(
+    stImagesDir.value,
+    stOutputDir.value,
+    {
+      reference_set_id: stReferenceSetId.value,
+      ...stConfig.value,
+    },
+  )
+
+  if (result) {
+    uiStore.showSuccess(
+      t('tools.domainGap.notifications.styleTransferStarted'),
+      t('tools.domainGap.notifications.styleTransferStartedMsg', {
+        id: result.job_id || 'started',
+      }),
+    )
+  } else {
+    uiStore.showError(
+      t('tools.domainGap.notifications.styleTransferFailed'),
+      store.error || undefined,
+    )
+  }
+}
+
+// ============================================
+// Optimization state
+// ============================================
+
+const optOutputDir = ref('')
+const optTargetScore = ref(30)
+const optMaxIterations = ref(5)
+const optTechniques = ref<string[]>(['randomization'])
+const isOptimizing = ref(false)
+
+async function handleOptimize() {
+  if (!syntheticDir.value || !validationReferenceSetId.value || !optOutputDir.value) return
+
+  isOptimizing.value = true
+  const result = await store.runOptimization(
+    syntheticDir.value,
+    validationReferenceSetId.value,
+    optOutputDir.value,
+    {
+      targetGapScore: optTargetScore.value,
+      maxIterations: optMaxIterations.value,
+      techniques: optTechniques.value,
+    },
+  )
+
+  isOptimizing.value = false
+  if (result) {
+    uiStore.showSuccess(
+      t('tools.domainGap.notifications.optimizationStarted'),
+      t('tools.domainGap.notifications.optimizationStartedMsg', {
+        id: result.job_id || 'started',
+      }),
+    )
+  } else {
+    uiStore.showError(
+      t('tools.domainGap.notifications.optimizationFailed'),
       store.error || undefined,
     )
   }
@@ -514,6 +600,7 @@ onMounted(async () => {
           <DirectoryBrowser
             v-model="syntheticDir"
             :label="t('tools.domainGap.validation.syntheticDir')"
+            path-mode="both"
           />
           <BaseSelect
             v-model="validationReferenceSetId"
@@ -562,6 +649,22 @@ onMounted(async () => {
 
       <!-- Analysis results -->
       <div v-if="store.latestAnalysis">
+        <!-- Sample size / PCA warnings -->
+        <AlertBox
+          v-if="store.latestAnalysis.metrics.sample_size_warning"
+          type="warning"
+          class="mb-4"
+        >
+          {{ store.latestAnalysis.metrics.sample_size_warning }}
+        </AlertBox>
+        <AlertBox
+          v-if="store.latestAnalysis.metrics.pca_applied"
+          type="info"
+          class="mb-4"
+        >
+          {{ t('tools.domainGap.validation.results.pcaApplied') }}
+        </AlertBox>
+
         <!-- Gap score overview -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <MetricCard
@@ -576,6 +679,18 @@ onMounted(async () => {
             :icon="Info"
           />
           <MetricCard
+            v-if="store.latestAnalysis.metrics.radio_mmd_score !== null"
+            :title="t('tools.domainGap.validation.results.radioMmdScore')"
+            :value="store.latestAnalysis.metrics.radio_mmd_score.toFixed(4)"
+            :icon="BarChart3"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.fd_radio_score !== null"
+            :title="t('tools.domainGap.validation.results.fdRadioScore')"
+            :value="store.latestAnalysis.metrics.fd_radio_score.toFixed(2)"
+            :icon="BarChart3"
+          />
+          <MetricCard
             v-if="store.latestAnalysis.metrics.fid_score !== null"
             :title="t('tools.domainGap.validation.results.fidScore')"
             :value="store.latestAnalysis.metrics.fid_score.toFixed(2)"
@@ -586,6 +701,53 @@ onMounted(async () => {
             :title="t('tools.domainGap.validation.results.kidScore')"
             :value="store.latestAnalysis.metrics.kid_score.toFixed(4)"
             :icon="BarChart3"
+          />
+        </div>
+
+        <!-- Extended metrics: CMMD and PRDC -->
+        <div
+          v-if="store.latestAnalysis.metrics.cmmd_score !== null || store.latestAnalysis.metrics.precision !== null"
+          class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6"
+        >
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.cmmd_score !== null"
+            :title="t('tools.domainGap.validation.results.cmmdScore')"
+            :value="store.latestAnalysis.metrics.cmmd_score.toFixed(4)"
+            :icon="BarChart3"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.precision !== null"
+            :title="t('tools.domainGap.validation.results.precision')"
+            :value="store.latestAnalysis.metrics.precision.toFixed(3)"
+            :icon="BarChart3"
+            :variant="store.latestAnalysis.metrics.precision >= 0.7 ? 'success' : store.latestAnalysis.metrics.precision >= 0.4 ? 'warning' : 'error'"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.recall !== null"
+            :title="t('tools.domainGap.validation.results.recall')"
+            :value="store.latestAnalysis.metrics.recall.toFixed(3)"
+            :icon="BarChart3"
+            :variant="store.latestAnalysis.metrics.recall >= 0.7 ? 'success' : store.latestAnalysis.metrics.recall >= 0.4 ? 'warning' : 'error'"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.density !== null"
+            :title="t('tools.domainGap.validation.results.density')"
+            :value="store.latestAnalysis.metrics.density.toFixed(3)"
+            :icon="BarChart3"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.coverage !== null"
+            :title="t('tools.domainGap.validation.results.coverage')"
+            :value="store.latestAnalysis.metrics.coverage.toFixed(3)"
+            :icon="BarChart3"
+            :variant="store.latestAnalysis.metrics.coverage >= 0.7 ? 'success' : store.latestAnalysis.metrics.coverage >= 0.4 ? 'warning' : 'error'"
+          />
+          <MetricCard
+            v-if="store.latestAnalysis.metrics.sharpness_ratio !== null"
+            :title="t('tools.domainGap.validation.results.sharpnessRatio')"
+            :value="store.latestAnalysis.metrics.sharpness_ratio.toFixed(3)"
+            :icon="Eye"
+            :variant="Math.abs(1 - store.latestAnalysis.metrics.sharpness_ratio) < 0.3 ? 'success' : Math.abs(1 - store.latestAnalysis.metrics.sharpness_ratio) < 0.6 ? 'warning' : 'error'"
           />
         </div>
 
@@ -671,6 +833,90 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- Optimization panel (within validation tab results) -->
+    <div v-if="activeTab === 'validation' && store.latestAnalysis" class="mt-6">
+      <div class="rounded-xl border border-purple-700/30 bg-background-card p-6">
+        <h3 class="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+          <Zap class="h-5 w-5 text-purple-400" />
+          {{ t('tools.domainGap.optimization.title') }}
+        </h3>
+        <p class="text-sm text-gray-400 mb-4">
+          {{ t('tools.domainGap.optimization.description') }}
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <DirectoryBrowser
+            v-model="optOutputDir"
+            :label="t('tools.domainGap.optimization.outputDir')"
+            path-mode="output"
+          />
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.optimization.targetScore') }}: {{ optTargetScore }}
+            </label>
+            <input
+              v-model.number="optTargetScore"
+              type="range"
+              min="5"
+              max="80"
+              step="5"
+              class="w-full accent-purple-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.optimization.maxIterations') }}: {{ optMaxIterations }}
+            </label>
+            <input
+              v-model.number="optMaxIterations"
+              type="range"
+              min="1"
+              max="20"
+              step="1"
+              class="w-full accent-purple-500"
+            />
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-300 mb-2">
+            {{ t('tools.domainGap.optimization.techniques') }}
+          </label>
+          <div class="flex gap-4">
+            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                value="randomization"
+                v-model="optTechniques"
+                class="h-4 w-4 accent-purple-500"
+              />
+              {{ t('tools.domainGap.tabs.randomization') }}
+            </label>
+            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                value="style_transfer"
+                v-model="optTechniques"
+                class="h-4 w-4 accent-purple-500"
+              />
+              {{ t('tools.domainGap.tabs.styleTransfer') }}
+            </label>
+          </div>
+        </div>
+
+        <BaseButton
+          @click="handleOptimize"
+          variant="primary"
+          :disabled="!optOutputDir || isOptimizing || optTechniques.length === 0"
+          :loading="isOptimizing"
+          class="bg-purple-600 hover:bg-purple-700"
+        >
+          <Zap class="h-4 w-4 mr-2" />
+          {{ t('tools.domainGap.optimization.run') }}
+        </BaseButton>
+      </div>
+    </div>
+
     <!-- ============================================ -->
     <!-- TAB: Randomization -->
     <!-- ============================================ -->
@@ -687,10 +933,12 @@ onMounted(async () => {
           <DirectoryBrowser
             v-model="randImagesDir"
             :label="t('tools.domainGap.randomization.imagesDir')"
+            path-mode="both"
           />
           <DirectoryBrowser
             v-model="randOutputDir"
             :label="t('tools.domainGap.randomization.outputDir')"
+            path-mode="output"
           />
         </div>
 
@@ -791,6 +1039,120 @@ onMounted(async () => {
         >
           <Shuffle class="h-4 w-4 mr-2" />
           {{ t('tools.domainGap.randomization.applyBatch') }}
+        </BaseButton>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- TAB: Style Transfer -->
+    <!-- ============================================ -->
+    <div v-if="activeTab === 'styleTransfer'">
+      <div class="rounded-xl border border-gray-700/50 bg-background-card p-6">
+        <h3 class="text-lg font-semibold text-white mb-2">
+          {{ t('tools.domainGap.styleTransfer.title') }}
+        </h3>
+        <p class="text-sm text-gray-400 mb-6">
+          {{ t('tools.domainGap.styleTransfer.description') }}
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <DirectoryBrowser
+            v-model="stImagesDir"
+            :label="t('tools.domainGap.styleTransfer.imagesDir')"
+            path-mode="both"
+          />
+          <DirectoryBrowser
+            v-model="stOutputDir"
+            :label="t('tools.domainGap.styleTransfer.outputDir')"
+            path-mode="output"
+          />
+        </div>
+
+        <div class="mb-6">
+          <BaseSelect
+            v-model="stReferenceSetId"
+            :label="t('tools.domainGap.styleTransfer.referenceSet')"
+            :options="referenceSetOptions"
+            :placeholder="t('tools.domainGap.validation.selectReferenceSet')"
+          />
+          <p class="text-xs text-gray-500 mt-1">
+            {{ t('tools.domainGap.styleTransfer.referenceSetHint') }}
+          </p>
+        </div>
+
+        <!-- Config sliders -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.styleTransfer.config.styleWeight') }}: {{ stConfig.style_weight.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="stConfig.style_weight"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.styleTransfer.config.contentWeight') }}: {{ stConfig.content_weight.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="stConfig.content_weight"
+              type="range"
+              min="0"
+              max="2"
+              step="0.1"
+              class="w-full accent-primary"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.styleTransfer.config.preserveStructure') }}: {{ stConfig.preserve_structure.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="stConfig.preserve_structure"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+          </div>
+          <div class="flex items-center gap-3">
+            <input
+              v-model="stConfig.color_only"
+              type="checkbox"
+              id="st-color-only"
+              class="h-4 w-4 accent-primary"
+            />
+            <label for="st-color-only" class="text-sm font-medium text-gray-300">
+              {{ t('tools.domainGap.styleTransfer.config.colorOnly') }}
+            </label>
+          </div>
+          <div class="flex items-center gap-3">
+            <input
+              v-model="stConfig.depth_guided"
+              type="checkbox"
+              id="st-depth-guided"
+              class="h-4 w-4 accent-primary"
+            />
+            <label for="st-depth-guided" class="text-sm font-medium text-gray-300">
+              {{ t('tools.domainGap.styleTransfer.config.depthGuided') }}
+            </label>
+          </div>
+        </div>
+
+        <BaseButton
+          @click="handleStyleTransfer"
+          variant="primary"
+          :disabled="!stImagesDir || !stOutputDir || !stReferenceSetId || store.isLoading"
+          :loading="store.isLoading"
+        >
+          <Palette class="h-4 w-4 mr-2" />
+          {{ t('tools.domainGap.styleTransfer.applyBatch') }}
         </BaseButton>
       </div>
     </div>

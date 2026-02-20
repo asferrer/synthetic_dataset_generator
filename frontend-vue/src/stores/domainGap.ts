@@ -14,6 +14,9 @@ import {
   analyzeGap,
   randomizeSingle,
   randomizeBatch,
+  styleTransferSingle,
+  styleTransferBatch,
+  optimizeGap,
   getDomainGapInfo,
   listDomainGapJobs,
   getDomainGapJob,
@@ -73,14 +76,29 @@ export interface ColorDistribution {
 }
 
 export interface MetricsResult {
+  radio_mmd_score: number | null
+  fd_radio_score: number | null
   fid_score: number | null
   kid_score: number | null
   kid_std: number | null
+  cmmd_score: number | null
+  precision: number | null
+  recall: number | null
+  density: number | null
+  coverage: number | null
   overall_gap_score: number
   gap_level: string
   color_distribution: ColorDistribution | null
   synthetic_count: number
   real_count: number
+  // v2.0 diagnostics
+  sample_size_warning: string | null
+  metrics_version: string
+  pca_applied: boolean
+  pca_dims: number | null
+  sharpness_ratio: number | null
+  synthetic_sharpness: number | null
+  real_sharpness: number | null
 }
 
 export interface GapAnalysis {
@@ -484,6 +502,99 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     }
   }
 
+  async function applyStyleTransfer(
+    imagePath: string,
+    outputPath: string,
+    config: {
+      reference_set_id: string
+      style_weight?: number
+      content_weight?: number
+      depth_guided?: boolean
+      preserve_structure?: number
+      color_only?: boolean
+    },
+  ) {
+    isLoading.value = true
+    error.value = null
+    try {
+      return await styleTransferSingle({
+        image_path: imagePath,
+        config,
+        output_path: outputPath,
+      })
+    } catch (e: any) {
+      error.value = getErrorMessage(e, 'Failed to apply style transfer')
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function applyStyleTransferBatch(
+    imagesDir: string,
+    outputDir: string,
+    config: {
+      reference_set_id: string
+      style_weight?: number
+      content_weight?: number
+      depth_guided?: boolean
+      preserve_structure?: number
+      color_only?: boolean
+    },
+  ) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const result = await styleTransferBatch({
+        images_dir: imagesDir,
+        config,
+        output_dir: outputDir,
+      })
+      await fetchJobs()
+      return result
+    } catch (e: any) {
+      error.value = getErrorMessage(e, 'Failed to start style transfer batch')
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function runOptimization(
+    syntheticDir: string,
+    referenceSetId: string,
+    outputDir: string,
+    options?: {
+      targetGapScore?: number
+      maxIterations?: number
+      maxImages?: number
+      techniques?: string[]
+      currentConfig?: Record<string, any>
+    },
+  ) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const result = await optimizeGap({
+        synthetic_dir: syntheticDir,
+        reference_set_id: referenceSetId,
+        output_dir: outputDir,
+        target_gap_score: options?.targetGapScore,
+        max_iterations: options?.maxIterations,
+        max_images: options?.maxImages,
+        techniques: options?.techniques,
+        current_config: options?.currentConfig,
+      })
+      await fetchJobs()
+      return result
+    } catch (e: any) {
+      error.value = getErrorMessage(e, 'Failed to start optimization')
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function fetchJobs() {
     try {
       jobs.value = await listDomainGapJobs()
@@ -575,6 +686,9 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     runCompare,
     applyRandomization,
     applyRandomizationBatch,
+    applyStyleTransfer,
+    applyStyleTransferBatch,
+    runOptimization,
     fetchJobs,
     fetchJob,
     cancelJob,
