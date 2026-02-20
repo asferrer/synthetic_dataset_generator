@@ -293,6 +293,59 @@ async def randomize_batch(request: Dict[str, Any]):
 
 
 # =============================================================================
+# Style Transfer
+# =============================================================================
+
+@router.post("/style-transfer/apply")
+async def style_transfer_single(request: Dict[str, Any]):
+    """Apply neural style transfer to a single image."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_COMPUTE_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/style-transfer/apply",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to apply style transfer: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/style-transfer/apply-batch")
+async def style_transfer_batch(request: Dict[str, Any]):
+    """Apply style transfer to a batch (async job)."""
+    client = _get_client()
+    try:
+        return await client.post("/style-transfer/apply-batch", data=request)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to start style transfer batch: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# =============================================================================
+# Optimization
+# =============================================================================
+
+@router.post("/optimize")
+async def optimize(request: Dict[str, Any]):
+    """Start automatic domain gap optimization (async job)."""
+    client = _get_client()
+    try:
+        return await client.post("/optimize", data=request)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to start optimization: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# =============================================================================
 # Jobs
 # =============================================================================
 

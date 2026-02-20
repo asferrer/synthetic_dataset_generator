@@ -50,7 +50,7 @@ from app.models.schemas import (
     ServiceStatus,
     AnnotationBox
 )
-from app.routers import augment, segmentation, datasets, filesystem, domains, domain_gap
+from app.routers import augment, segmentation, datasets, filesystem, domains, domain_gap, auto_tune, ml_optimize
 from app.services.domain_registry import get_domain_registry
 
 # Configure logging
@@ -120,6 +120,8 @@ app.include_router(datasets.router)
 app.include_router(filesystem.router)
 app.include_router(domains.router)
 app.include_router(domain_gap.router)
+app.include_router(auto_tune.router)
+app.include_router(ml_optimize.router)
 
 
 @app.get("/ping")
