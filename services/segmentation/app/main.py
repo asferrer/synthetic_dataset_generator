@@ -172,8 +172,8 @@ thread_pool = ThreadPoolExecutor(max_workers=2)
 # Concurrency control for labeling jobs
 # Note: SAM3 uses ~4-6GB VRAM per job. Adjust based on available GPU memory.
 # Conservative settings to prevent GPU overheating and leave memory headroom.
-# 32GB VRAM -> 4 concurrent jobs (~24GB used, 8GB reserved)
-MAX_CONCURRENT_LABELING_JOBS = 4
+# Set to 1 to prevent resource saturation with large datasets (13k+ images)
+MAX_CONCURRENT_LABELING_JOBS = 1
 MAX_CONCURRENT_IMAGES_PER_JOB = 4
 labeling_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LABELING_JOBS)
 
@@ -211,6 +211,36 @@ def init_object_extractor():
         device=state.device
     )
     logger.info(f"ObjectExtractor initialized (SAM3: {state.sam3_available})")
+
+
+def _calculate_iou(bbox1: List[float], bbox2: List[float]) -> float:
+    """
+    Calculate Intersection over Union (IoU) between two bounding boxes.
+    Bbox format: [x, y, width, height] (COCO format)
+    """
+    x1, y1, w1, h1 = bbox1
+    x2, y2, w2, h2 = bbox2
+
+    # Calculate intersection
+    x_left = max(x1, x2)
+    y_top = max(y1, y2)
+    x_right = min(x1 + w1, x2 + w2)
+    y_bottom = min(y1 + h1, y2 + h2)
+
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+    # Calculate union
+    bbox1_area = w1 * h1
+    bbox2_area = w2 * h2
+    union_area = bbox1_area + bbox2_area - intersection_area
+
+    if union_area == 0:
+        return 0.0
+
+    return intersection_area / union_area
 
 
 def init_gpu():
@@ -1994,6 +2024,17 @@ async def start_labeling_job(request: StartLabelingRequest):
                 error="No images found in specified directories"
             )
 
+        # Handle preview mode (limit to N images for testing)
+        if request.preview_mode:
+            preview_limit = min(request.preview_count, total_images)
+            all_image_paths = all_image_paths[:preview_limit]
+            total_images = preview_limit
+            logger.info(f"[LABEL] Preview mode enabled: processing first {total_images} images")
+        else:
+            # Warn about large datasets (may take hours/days to process)
+            if total_images > 1000:
+                logger.warning(f"[LABEL] Large dataset detected: {total_images} images. Processing may take several hours. Consider using preview mode first.")
+
         # Create output directory
         output_dir = Path(request.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2037,6 +2078,8 @@ async def start_labeling_job(request: StartLabelingRequest):
             "_save_visualizations": request.save_visualizations,
             "_class_mapping": request.class_mapping,  # Maps prompts to final class names
             "_padding": request.padding,  # Pixels of padding around bboxes
+            "_preview_mode": request.preview_mode,  # If True, this is a preview/test run
+            "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
 
         # Persist job to database for durability
@@ -2157,6 +2200,31 @@ async def start_relabeling_job(request: StartRelabelingRequest):
         )
 
     try:
+        # If coco_json_path is provided but coco_data is not, read and parse the JSON file
+        if request.coco_json_path and not request.coco_data:
+            coco_path = Path(request.coco_json_path)
+            if coco_path.exists():
+                import json as json_module
+                try:
+                    with open(coco_path, "r", encoding="utf-8") as f:
+                        request.coco_data = json_module.load(f)
+                    logger.info(f"[RELABEL] Loaded COCO data from {coco_path}: "
+                                f"{len(request.coco_data.get('images', []))} images, "
+                                f"{len(request.coco_data.get('categories', []))} categories, "
+                                f"{len(request.coco_data.get('annotations', []))} annotations")
+                except Exception as e:
+                    logger.error(f"[RELABEL] Failed to read COCO JSON from {coco_path}: {e}")
+                    return LabelingJobResponse(
+                        success=False,
+                        error=f"Failed to read COCO JSON file: {e}"
+                    )
+            else:
+                logger.warning(f"[RELABEL] COCO JSON path not found: {coco_path}")
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"COCO JSON file not found: {coco_path}"
+                )
+
         # Get image paths from directories and/or existing dataset
         all_image_paths = []
         image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
@@ -2171,6 +2239,13 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                         image_lookup[img_path.name] = str(img_path)
                     for img_path in dir_obj.glob(f"*{ext.upper()}"):
                         image_lookup[img_path.name] = str(img_path)
+
+        # Build image ID mapping from original COCO data (preserves original IDs)
+        image_id_map = {}  # filename -> original_image_id
+        if request.coco_data:
+            for img in request.coco_data.get("images", []):
+                filename = img.get("file_name", "")
+                image_id_map[filename] = img.get("id")
 
         # If we have COCO data, get images from there
         if request.coco_data:
@@ -2192,12 +2267,25 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                 error="No images found in specified directories"
             )
 
+        # Handle preview mode (limit to N images for testing)
+        if request.preview_mode:
+            preview_limit = min(request.preview_count, total_images)
+            all_image_paths = all_image_paths[:preview_limit]
+            total_images = preview_limit
+            logger.info(f"[RELABEL] Preview mode enabled: processing first {total_images} images")
+        else:
+            # Warn about large datasets (may take hours/days to process)
+            if total_images > 1000:
+                logger.warning(f"[RELABEL] Large dataset detected: {total_images} images in mode '{request.relabel_mode}'. Processing may take several hours.")
+
         # Determine classes to label
         classes_to_label = request.new_classes if request.new_classes else []
 
-        if request.relabel_mode == "improve_segmentation" and request.coco_data:
-            # Get classes from existing dataset
+        if not classes_to_label and request.coco_data:
+            # Fall back to classes from existing dataset (for improve_segmentation,
+            # or add/replace when user didn't specify new classes)
             classes_to_label = [c["name"] for c in request.coco_data.get("categories", [])]
+            logger.info(f"[RELABEL] Using {len(classes_to_label)} classes from existing COCO data: {classes_to_label}")
 
         # Create output directory
         output_dir = Path(request.output_dir)
@@ -2224,11 +2312,14 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             # Store request params
             "_image_paths": all_image_paths,
             "_image_lookup": image_lookup,
+            "_image_id_map": image_id_map,  # filename -> original_image_id
             "_classes": classes_to_label,
             "_relabel_mode": request.relabel_mode,
             "_coco_data": request.coco_data,
             "_min_confidence": request.min_confidence,
             "_simplify_polygons": request.simplify_polygons,
+            "_preview_mode": request.preview_mode,  # If True, this is a preview/test run
+            "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
 
         # Start background task with concurrency control
@@ -2528,7 +2619,8 @@ async def get_labeling_job_previews(job_id: str, limit: int = 10):
             previews.append({
                 "filename": preview_file.name,
                 "path": str(preview_file),
-                "data": f"data:image/jpeg;base64,{img_data}",
+                "image_data": img_data,  # Base64 without prefix
+                "timestamp": str(preview_file.stat().st_mtime),
                 "size_kb": preview_file.stat().st_size / 1024,
             })
         except Exception as e:
@@ -3017,6 +3109,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     task_type = job["_task_type"]
     padding = job.get("_padding", 0)  # Pixels of padding around bboxes
     save_visualizations = job.get("_save_visualizations", True)  # Save preview images
+    deduplication_strategy = job.get("_deduplication_strategy", "confidence")  # Deduplication strategy
     output_dir = Path(job["output_dir"])
     checkpoint_path = output_dir / "checkpoint.json"
     checkpoint_interval = 10  # Save checkpoint every N images
@@ -3116,151 +3209,169 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
         job["current_image"] = Path(img_path).name
         job["processed_images"] = img_idx
 
+        # Log progress every 10 images
+        if img_idx == 0 or (img_idx + 1) % 10 == 0:
+            logger.info(f"[LABEL] Job {job_id}: Processing image {img_idx + 1}/{len(image_paths)} ({100*(img_idx+1)/len(image_paths):.1f}%)")
+
         try:
-            # Load image
-            image = cv2.imread(img_path)
-            if image is None:
-                job["errors"].append(f"Failed to load: {img_path}")
-                continue
-
-            h, w = image.shape[:2]
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            pil_image = PILImage.fromarray(image_rgb)
-
-            # Add image to COCO
-            image_id = img_idx + 1
-            coco_result["images"].append({
-                "id": image_id,
-                "file_name": Path(img_path).name,
-                "width": w,
-                "height": h
-            })
-
-            # Track annotations added for this image (for deduplication)
-            image_annotations_start_idx = len(coco_result["annotations"])
-
-            # Process each class (cls is the search prompt)
-            for cls in classes:
-                # Get final class name (may be different if mapping exists)
-                final_class = class_mapping.get(cls, cls) if class_mapping else cls
-
-                # Get optimized prompt for better detection
-                optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
-
-                # Run SAM3 text prompt segmentation using optimized prompt
-                inputs = state.sam3_processor(
-                    images=pil_image,
-                    text=optimized_prompt,  # Use optimized prompt for detection
-                    return_tensors="pt"
-                ).to(state.device)
-
-                with torch.no_grad():
-                    outputs = state.sam3_model(**inputs)
-
-                # Post-process results
-                target_sizes = inputs.get("original_sizes")
-                if target_sizes is not None:
-                    target_sizes = target_sizes.tolist()
-                else:
-                    target_sizes = [(h, w)]
-
-                results = state.sam3_processor.post_process_instance_segmentation(
-                    outputs,
-                    threshold=min_confidence,
-                    mask_threshold=min_confidence,
-                    target_sizes=target_sizes
-                )[0]
-
-                if 'masks' not in results or len(results['masks']) == 0:
+            # Timeout per image to prevent indefinite blocking (30 seconds)
+            async with asyncio.timeout(30.0):
+                # Load image with validation
+                image = cv2.imread(img_path)
+                if image is None:
+                    job["errors"].append(f"Failed to load: {img_path}")
+                    consecutive_errors += 1
                     continue
 
-                # Process each detected instance
-                instances_added = 0
-                for mask, score in zip(results['masks'], results['scores']):
-                    if instances_added >= max_instances:
-                        break
+                h, w = image.shape[:2]
 
-                    score_val = score.cpu().item()
-                    if score_val < min_confidence:
+                # Validate image dimensions (skip if too small or too large)
+                if h < 10 or w < 10:
+                    job["errors"].append(f"Image too small ({w}x{h}): {img_path}")
+                    consecutive_errors += 1
+                    continue
+                if h > 8192 or w > 8192:
+                    job["errors"].append(f"Image too large ({w}x{h}), may cause OOM: {img_path}")
+                    consecutive_errors += 1
+                    continue
+
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_image = PILImage.fromarray(image_rgb)
+
+                # Add image to COCO
+                image_id = img_idx + 1
+                coco_result["images"].append({
+                    "id": image_id,
+                    "file_name": Path(img_path).name,
+                    "width": w,
+                    "height": h
+                })
+
+                # Track annotations added for this image (for deduplication)
+                image_annotations_start_idx = len(coco_result["annotations"])
+
+                # Process each class (cls is the search prompt)
+                for cls in classes:
+                    # Get final class name (may be different if mapping exists)
+                    final_class = class_mapping.get(cls, cls) if class_mapping else cls
+
+                    # Get optimized prompt for better detection
+                    optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
+
+                    # Run SAM3 text prompt segmentation using optimized prompt
+                    inputs = state.sam3_processor(
+                        images=pil_image,
+                        text=optimized_prompt,  # Use optimized prompt for detection
+                        return_tensors="pt"
+                    ).to(state.device)
+
+                    with torch.no_grad():
+                        outputs = state.sam3_model(**inputs)
+
+                    # Post-process results
+                    target_sizes = inputs.get("original_sizes")
+                    if target_sizes is not None:
+                        target_sizes = target_sizes.tolist()
+                    else:
+                        target_sizes = [(h, w)]
+
+                    results = state.sam3_processor.post_process_instance_segmentation(
+                        outputs,
+                        threshold=min_confidence,
+                        mask_threshold=min_confidence,
+                        target_sizes=target_sizes
+                    )[0]
+
+                    if 'masks' not in results or len(results['masks']) == 0:
                         continue
 
-                    mask_np = mask.cpu().numpy().astype(np.uint8)
-                    if mask_np.shape != (h, w):
-                        mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+                    # Process each detected instance
+                    instances_added = 0
+                    for mask, score in zip(results['masks'], results['scores']):
+                        if instances_added >= max_instances:
+                            break
 
-                    # Calculate area
-                    area = int(np.sum(mask_np > 0))
-                    if area < min_area:
-                        continue
+                        score_val = score.cpu().item()
+                        if score_val < min_confidence:
+                            continue
 
-                    # Get bounding box
-                    contours, _ = cv2.findContours(
-                        (mask_np * 255).astype(np.uint8),
-                        cv2.RETR_EXTERNAL,
-                        cv2.CHAIN_APPROX_SIMPLE
-                    )
+                        mask_np = mask.cpu().numpy().astype(np.uint8)
+                        if mask_np.shape != (h, w):
+                            mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
 
-                    if not contours:
-                        continue
+                        # Calculate area
+                        area = int(np.sum(mask_np > 0))
+                        if area < min_area:
+                            continue
 
-                    x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
-                    bbox = [float(x), float(y), float(bw), float(bh)]
-
-                    # Validate detection using DetectionValidator
-                    is_valid, rejection_reason, adjusted_score = detection_validator.validate_detection(
-                        mask=mask_np,
-                        bbox=bbox,
-                        class_name=final_class,
-                        image_size=(w, h),
-                        score=score_val,
-                    )
-
-                    if not is_valid:
-                        logger.debug(f"Rejected detection for '{final_class}': {rejection_reason}")
-                        continue
-
-                    # Track quality metrics
-                    all_scores.append(adjusted_score)
-                    if adjusted_score < 0.5:
-                        low_confidence_count += 1
-
-                    # Apply padding if configured
-                    if padding > 0:
-                        bbox = _apply_padding_to_bbox(bbox, padding, w, h)
-
-                    # Build annotation (use final_class for category lookup)
-                    annotation = {
-                        "id": annotation_id,
-                        "image_id": image_id,
-                        "category_id": category_map[final_class],
-                        "bbox": bbox,
-                        "area": area,
-                        "iscrowd": 0,
-                        "_score": adjusted_score,  # Track score for potential dedup
-                    }
-
-                    # Add segmentation if task requires it
-                    if task_type in ["segmentation", "both"]:
-                        polygons = state.object_extractor.mask_to_polygon(
+                        # Get bounding box
+                        contours, _ = cv2.findContours(
                             (mask_np * 255).astype(np.uint8),
-                            simplify=simplify_polygons,
-                            tolerance=simplify_tolerance
+                            cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE
                         )
-                        if polygons:
-                            annotation["segmentation"] = polygons
 
-                    coco_result["annotations"].append(annotation)
-                    annotation_id += 1
-                    instances_added += 1
+                        if not contours:
+                            continue
 
-                    # Track by final class name
-                    job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
-                    job["total_objects_found"] += 1
+                        x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
+                        bbox = [float(x), float(y), float(bw), float(bh)]
+
+                        # Validate detection using DetectionValidator
+                        is_valid, rejection_reason, adjusted_score = detection_validator.validate_detection(
+                            mask=mask_np,
+                            bbox=bbox,
+                            class_name=final_class,
+                            image_size=(w, h),
+                            score=score_val,
+                        )
+
+                        if not is_valid:
+                            logger.debug(f"Rejected detection for '{final_class}': {rejection_reason}")
+                            continue
+
+                        # Track quality metrics
+                        all_scores.append(adjusted_score)
+                        if adjusted_score < 0.5:
+                            low_confidence_count += 1
+
+                        # Apply padding if configured
+                        if padding > 0:
+                            bbox = _apply_padding_to_bbox(bbox, padding, w, h)
+
+                        # Build annotation (use final_class for category lookup)
+                        annotation = {
+                            "id": annotation_id,
+                            "image_id": image_id,
+                            "category_id": category_map[final_class],
+                            "bbox": bbox,
+                            "area": area,
+                            "iscrowd": 0,
+                            "_score": adjusted_score,  # Track score for potential dedup
+                        }
+
+                        # Add segmentation if task requires it
+                        if task_type in ["segmentation", "both"]:
+                            polygons = state.object_extractor.mask_to_polygon(
+                                (mask_np * 255).astype(np.uint8),
+                                simplify=simplify_polygons,
+                                tolerance=simplify_tolerance
+                            )
+                            if polygons:
+                                annotation["segmentation"] = polygons
+
+                        coco_result["annotations"].append(annotation)
+                        annotation_id += 1
+                        instances_added += 1
+
+                        # Track by final class name
+                        job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
+                        job["total_objects_found"] += 1
 
             # Deduplicate annotations for this image (remove overlapping detections)
             image_annotations = coco_result["annotations"][image_annotations_start_idx:]
             if len(image_annotations) > 1:
-                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.7)
+                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.7, strategy=deduplication_strategy)
                 removed_count = len(image_annotations) - len(deduped)
                 if removed_count > 0:
                     # Update the annotations list
@@ -3282,7 +3393,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             consecutive_errors = 0
 
             # Save preview image if this image had detections
-            if save_visualizations and instances_added > 0:
+            if save_visualizations and current_image_detections > 0:
                 images_with_detections += 1
                 # Save preview periodically (every N images with detections, up to max_previews)
                 if images_with_detections % preview_interval == 0 and preview_count < max_previews:
@@ -3311,6 +3422,19 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     img_idx + 1, job["objects_by_class"]
                 )
                 logger.debug(f"Saved checkpoint at image {img_idx + 1}")
+
+                # Clear retry count on successful processing
+                if "_retry_count" in job and img_path in job["_retry_count"]:
+                    del job["_retry_count"][img_path]
+
+                # Update quality metrics in real-time (so frontend can display them)
+                job["quality_metrics"] = {
+                    "avg_confidence": sum(all_scores) / len(all_scores) if all_scores else 0.0,
+                    "images_with_detections": images_with_detections,
+                    "images_without_detections": images_without_detections,
+                    "low_confidence_count": low_confidence_count,
+                    "total_detections": len(all_scores),
+                }
 
                 # Update progress in database
                 if state.db:
@@ -3346,9 +3470,20 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     stats = vram_monitor.get_vram_stats()
                     logger.debug(f"VRAM cleanup at image {img_idx + 1}: {stats.get('allocated_gb', 0):.2f}GB")
 
-            # Yield to event loop to allow health checks and other operations
-            if (img_idx + 1) % yield_interval == 0:
-                await asyncio.sleep(0)
+                # Yield to event loop to allow health checks and other operations
+                if (img_idx + 1) % yield_interval == 0:
+                    await asyncio.sleep(0)
+
+        except asyncio.TimeoutError:
+            # Image processing took too long (>30s), skip it
+            consecutive_errors += 1
+            error_msg = f"Timeout processing {img_path} (>30s), skipping"
+            job["errors"].append(error_msg)
+            logger.warning(f"Job {job_id}: {error_msg}")
+            # Clean up
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         except torch.cuda.OutOfMemoryError as e:
             # OOM: Clean memory and retry with exponential backoff
@@ -3490,9 +3625,11 @@ async def _process_relabeling_job(job_id: str):
     coco_data = job.get("_coco_data")
     image_paths = job["_image_paths"]
     image_lookup = job["_image_lookup"]
+    image_id_map = job.get("_image_id_map", {})  # filename -> original_image_id
     classes = job["_classes"]
     min_confidence = job["_min_confidence"]
     simplify_polygons = job["_simplify_polygons"]
+    deduplication_strategy = job.get("_deduplication_strategy", "confidence")  # Deduplication strategy
     output_dir = Path(job["output_dir"])
     gc_interval = 5  # Run garbage collection every N images
 
@@ -3524,6 +3661,7 @@ async def _process_relabeling_job(job_id: str):
         annotation_id = 1
 
     category_map = {c["name"]: c["id"] for c in coco_result.get("categories", [])}
+    prompt_optimizer = get_prompt_optimizer()
     logger.info(f"[RELABEL] Category map: {category_map}")
     logger.info(f"[RELABEL] Starting to process {len(image_paths)} images")
 
@@ -3532,32 +3670,37 @@ async def _process_relabeling_job(job_id: str):
         job["current_image"] = Path(img_path).name
         job["processed_images"] = img_idx
 
-        if img_idx == 0 or img_idx % 100 == 0:
-            logger.info(f"[RELABEL] Processing image {img_idx + 1}/{len(image_paths)}: {Path(img_path).name}")
+        if img_idx == 0 or (img_idx + 1) % 10 == 0:
+            logger.info(f"[RELABEL] Job {job_id}: Processing image {img_idx + 1}/{len(image_paths)} ({100*(img_idx+1)/len(image_paths):.1f}%) - {Path(img_path).name}")
 
         try:
-            image = cv2.imread(img_path)
-            if image is None:
-                continue
+            # Timeout per image to prevent indefinite blocking (30 seconds)
+            async with asyncio.timeout(30.0):
+                image = cv2.imread(img_path)
+                if image is None:
+                    continue
 
             h, w = image.shape[:2]
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             pil_image = PILImage.fromarray(image_rgb)
 
-            image_id = img_idx + 1
+            # Use original image ID if available, otherwise generate sequential ID
+            filename = Path(img_path).name
+            image_id = image_id_map.get(filename, img_idx + 1)
 
-            # Add image if not in replace mode with existing data
-            if relabel_mode != "add":
+            # Add image if not already in coco_result
+            existing_image_ids = {img["id"] for img in coco_result.get("images", [])}
+            if image_id not in existing_image_ids:
                 coco_result["images"].append({
                     "id": image_id,
-                    "file_name": Path(img_path).name,
+                    "file_name": filename,
                     "width": w,
                     "height": h
                 })
 
             # Handle improve_segmentation mode differently
             if relabel_mode == "improve_segmentation" and coco_data:
-                # Get existing annotations for this image
+                # Get existing annotations for this image (bbox-only annotations)
                 img_anns = [a for a in coco_data.get("annotations", [])
                            if a.get("image_id") == image_id and not a.get("segmentation")]
 
@@ -3603,14 +3746,21 @@ async def _process_relabeling_job(job_id: str):
                                 job["total_objects_found"] += 1
 
             else:
+                # Get existing annotations for this image (for deduplication in "add" mode)
+                existing_anns_for_image = []
+                if relabel_mode == "add" and coco_data:
+                    existing_anns_for_image = [a for a in coco_data.get("annotations", [])
+                                               if a.get("image_id") == image_id]
+
                 # Regular labeling with text prompts
                 for cls in classes:
                     if cls not in category_map:
                         continue
 
+                    optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
                     inputs = state.sam3_processor(
                         images=pil_image,
-                        text=cls,
+                        text=optimized_prompt,
                         return_tensors="pt"
                     ).to(state.device)
 
@@ -3670,21 +3820,44 @@ async def _process_relabeling_job(job_id: str):
                         if polygons:
                             annotation["segmentation"] = polygons
 
-                        coco_result["annotations"].append(annotation)
-                        annotation_id += 1
+                        # Check for duplicates in "add" mode (IoU threshold 0.5)
+                        is_duplicate = False
+                        if relabel_mode == "add" and existing_anns_for_image:
+                            new_bbox = annotation["bbox"]
+                            for exist_ann in existing_anns_for_image:
+                                exist_bbox = exist_ann.get("bbox", [])
+                                if len(exist_bbox) == 4:
+                                    # Calculate IoU
+                                    iou = _calculate_iou(new_bbox, exist_bbox)
+                                    if iou > 0.5:
+                                        is_duplicate = True
+                                        break
 
-                        job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
-                        job["total_objects_found"] += 1
+                        if not is_duplicate:
+                            coco_result["annotations"].append(annotation)
+                            annotation_id += 1
 
-            # Garbage collection and yielding
-            if (img_idx + 1) % gc_interval == 0:
-                del image, image_rgb, pil_image
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                gc.collect()
+                            job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
+                            job["total_objects_found"] += 1
 
-            # Yield to event loop
-            await asyncio.sleep(0)
+                # Garbage collection and yielding
+                if (img_idx + 1) % gc_interval == 0:
+                    del image, image_rgb, pil_image
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                # Yield to event loop
+                await asyncio.sleep(0)
+
+        except asyncio.TimeoutError:
+            # Image processing took too long (>30s), skip it
+            error_msg = f"[RELABEL] Timeout processing {img_path} (>30s), skipping"
+            job["errors"].append(error_msg)
+            logger.warning(error_msg)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         except Exception as e:
             job["errors"].append(f"Error processing {img_path}: {str(e)}")

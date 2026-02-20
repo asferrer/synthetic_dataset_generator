@@ -292,6 +292,7 @@ class DetectionValidator:
 def deduplicate_annotations(
     annotations: List[Dict],
     iou_threshold: float = 0.7,
+    strategy: str = "confidence",
 ) -> List[Dict]:
     """
     Remove duplicate annotations based on bbox IoU.
@@ -299,6 +300,9 @@ def deduplicate_annotations(
     Args:
         annotations: List of COCO-format annotations
         iou_threshold: IoU threshold for considering duplicates
+        strategy: Deduplication strategy:
+            - "confidence": Prioritize detections with higher confidence scores (_score field)
+            - "area": Prioritize detections with larger area (legacy behavior)
 
     Returns:
         Deduplicated list of annotations
@@ -306,12 +310,22 @@ def deduplicate_annotations(
     if len(annotations) <= 1:
         return annotations
 
-    # Sort by area (larger first) to keep more complete detections
-    sorted_anns = sorted(
-        annotations,
-        key=lambda a: a.get("area", 0),
-        reverse=True
-    )
+    # Sort annotations based on selected strategy
+    if strategy == "area":
+        # Legacy: Sort by area (larger first) to keep more complete detections
+        sorted_anns = sorted(
+            annotations,
+            key=lambda a: a.get("area", 0),
+            reverse=True
+        )
+    else:  # Default to "confidence"
+        # Sort by confidence score (higher first) to keep more confident detections
+        # Fallback to area if score is not available
+        sorted_anns = sorted(
+            annotations,
+            key=lambda a: (a.get("_score", 0.5), a.get("area", 0)),
+            reverse=True
+        )
 
     keep = []
     for ann in sorted_anns:
@@ -327,7 +341,8 @@ def deduplicate_annotations(
 
     removed_count = len(annotations) - len(keep)
     if removed_count > 0:
-        logger.debug(f"Deduplicated {removed_count} annotations (IoU > {iou_threshold})")
+        strategy_desc = "confidence" if strategy != "area" else "area"
+        logger.debug(f"Deduplicated {removed_count} annotations (IoU > {iou_threshold}, prioritized by {strategy_desc})")
 
     return keep
 

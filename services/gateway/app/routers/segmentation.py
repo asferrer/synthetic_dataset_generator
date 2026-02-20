@@ -43,26 +43,36 @@ class ExtractSingleObjectRequest(BaseModel):
 
 
 class LabelingStartRequest(BaseModel):
-    """Request to start a labeling job"""
-    images_dir: str = Field(..., description="Directory containing images to label")
-    output_dir: str = Field(..., description="Output directory for labels")
-    categories: List[str] = Field(..., description="Categories to label")
-    model: str = Field("auto", description="Detection model to use")
-    confidence_threshold: float = Field(0.5, ge=0, le=1)
-    use_sam3: bool = Field(True, description="Use SAM3 for segmentation")
-    generate_masks: bool = Field(True, description="Generate segmentation masks")
-    min_area: int = Field(100, description="Minimum annotation area")
-    max_overlap: float = Field(0.5, ge=0, le=1, description="Maximum allowed overlap")
+    """Request to start a labeling job - mirrors segmentation service StartLabelingRequest"""
+    image_directories: List[str] = Field(..., min_length=1, description="List of directories containing images to label")
+    classes: List[str] = Field(..., min_length=1, description="List of class names to detect and label")
+    class_mapping: Optional[Dict[str, str]] = Field(default=None, description="Optional mapping from search prompts to final class names")
+    output_dir: str = Field(..., description="Output directory for labeled dataset")
+    output_formats: List[str] = Field(default=["coco"], description="Output formats: coco, yolo, voc")
+    task_type: str = Field(default="segmentation", description="Task type: segmentation, detection, or both")
+    min_confidence: float = Field(default=0.5, ge=0.1, le=1.0, description="Minimum confidence threshold")
+    min_area: int = Field(default=100, ge=10, description="Minimum object area in pixels")
+    max_instances_per_image: int = Field(default=100, ge=1, le=1000, description="Maximum instances per image")
+    simplify_polygons: bool = Field(default=True, description="Whether to simplify segmentation polygons")
+    save_visualizations: bool = Field(default=True, description="Save preview images with annotations")
+    padding: int = Field(default=0, ge=0, le=50, description="Pixels of padding around bounding boxes")
+    preview_mode: bool = Field(default=False, description="If True, process only preview_count images for testing")
+    preview_count: int = Field(default=20, ge=5, le=100, description="Number of images to process in preview mode")
 
 
 class RelabelingRequest(BaseModel):
-    """Request to relabel existing annotations"""
-    coco_json_path: str = Field(..., description="Path to existing COCO JSON")
-    images_dir: str = Field(..., description="Directory containing images")
-    output_dir: str = Field(..., description="Output directory")
-    categories: Optional[List[str]] = Field(None, description="Categories to relabel")
-    confidence_threshold: float = Field(0.5, ge=0, le=1)
-    use_sam3: bool = Field(True)
+    """Request to relabel existing annotations - mirrors segmentation service StartRelabelingRequest"""
+    coco_data: Optional[Dict[str, Any]] = Field(default=None, description="Existing COCO dataset to relabel (parsed JSON)")
+    coco_json_path: Optional[str] = Field(default=None, description="Path to COCO JSON file to relabel (alternative to coco_data)")
+    image_directories: List[str] = Field(..., min_length=1, description="List of directories to search for images")
+    new_classes: List[str] = Field(default=[], description="New class names to detect")
+    relabel_mode: str = Field(default="add", description="Mode: add, replace, or improve_segmentation")
+    output_dir: str = Field(..., description="Output directory for relabeled dataset")
+    output_formats: List[str] = Field(default=["coco"], description="Output formats: coco, yolo, voc")
+    min_confidence: float = Field(default=0.5, ge=0.1, le=1.0, description="Minimum confidence threshold")
+    simplify_polygons: bool = Field(default=True, description="Whether to simplify segmentation polygons")
+    preview_mode: bool = Field(default=False, description="If True, process only preview_count images for testing")
+    preview_count: int = Field(default=20, ge=5, le=100, description="Number of images to process in preview mode")
 
 
 class SAM3SegmentRequest(BaseModel):
@@ -205,7 +215,7 @@ async def start_labeling(request: LabelingStartRequest):
     Uses detection models to automatically annotate images.
     Returns a job_id for tracking progress.
     """
-    logger.info(f"Start labeling: {request.images_dir}")
+    logger.info(f"Start labeling: {request.image_directories}")
 
     try:
         registry = get_service_registry()
@@ -223,7 +233,7 @@ async def relabel_dataset(request: RelabelingRequest):
 
     Updates annotations using improved models or parameters.
     """
-    logger.info(f"Relabel dataset: {request.coco_json_path}")
+    logger.info(f"Relabel dataset: {request.image_directories}, mode: {request.relabel_mode}")
 
     try:
         registry = get_service_registry()
