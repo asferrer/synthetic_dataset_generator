@@ -128,7 +128,29 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // Paths
   const backgroundsDir = ref<string | null>(null)
+  const objectsDir = ref<string | null>(null)
   const outputDir = ref<string | null>(null)
+
+  // Migrate legacy /data/ paths to /app/ (persisted values from old config)
+  function _migrateLegacyPath(p: string | null): string | null {
+    if (!p) return p
+    if (p.startsWith('/data/output')) return p.replace('/data/output', '/app/output')
+    if (p.startsWith('/data/')) return p.replace('/data/', '/app/datasets/')
+    return p
+  }
+
+  // Auto-migrate persisted legacy paths on store hydration
+  function _migratePersistedPaths() {
+    backgroundsDir.value = _migrateLegacyPath(backgroundsDir.value)
+    objectsDir.value = _migrateLegacyPath(objectsDir.value)
+    outputDir.value = _migrateLegacyPath(outputDir.value)
+    sourceDatasetPath.value = _migrateLegacyPath(sourceDatasetPath.value)
+  }
+  _migratePersistedPaths()
+
+  // Custom objects mode (no COCO dataset)
+  const customObjectsMode = ref(false)
+  const manualCategories = ref<string[]>([])
 
   // Feature flags
   const useDepth = ref(true)
@@ -137,6 +159,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // Active job
   const activeJobId = ref<string | null>(null)
+
+  // Auto-tune state
+  const autoTuneEnabled = ref(false)
+  const autoTuneJobId = ref<string | null>(null)
+  const autoTuneStatus = ref<any | null>(null)
+  const autoTuneReferenceSetId = ref<string | null>(null)
+  const autoTuneTargetScore = ref(25)
+  const autoTuneMaxIterations = ref(5)
+  const autoTuneProbeSize = ref(30)
 
   // ============================================
   // GETTERS
@@ -149,10 +180,24 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return completedSteps.value.includes(step - 1)
   })
 
-  const hasSourceDataset = computed(() => sourceDatasetPath.value !== null || datasetAnalysis.value !== null)
+  const hasSourceDataset = computed(() =>
+    sourceDatasetPath.value !== null || datasetAnalysis.value !== null || customObjectsMode.value
+  )
 
-  // Use categories from datasetAnalysis (set by analyzeDataset API call)
-  const categories = computed(() => datasetAnalysis.value?.categories || [])
+  // Use categories from datasetAnalysis or manual categories in custom objects mode
+  const categories = computed(() => {
+    if (datasetAnalysis.value?.categories?.length) {
+      return datasetAnalysis.value.categories
+    }
+    if (customObjectsMode.value && manualCategories.value.length > 0) {
+      return manualCategories.value.map((name, idx) => ({
+        id: idx + 1,
+        name,
+        count: 0,
+      }))
+    }
+    return []
+  })
 
   const totalTargetImages = computed(() =>
     Object.values(balancingTargets.value).reduce((sum, val) => sum + val, 0)
@@ -264,12 +309,51 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   // Paths
+  // Custom objects mode
+  function enableCustomObjectsMode() {
+    customObjectsMode.value = true
+    sourceDatasetPath.value = null
+    datasetAnalysis.value = null
+    sourceDataset.value = null
+  }
+
+  function disableCustomObjectsMode() {
+    customObjectsMode.value = false
+    manualCategories.value = []
+  }
+
+  function setManualCategories(cats: string[]) {
+    manualCategories.value = cats
+    // Initialize balancing targets for new categories
+    const targets: Record<string, number> = {}
+    for (const cat of cats) {
+      targets[cat] = balancingTargets.value[cat] ?? 100
+    }
+    balancingTargets.value = targets
+  }
+
+  function addManualCategory(name: string) {
+    if (!manualCategories.value.includes(name)) {
+      manualCategories.value.push(name)
+      balancingTargets.value[name] = 100
+    }
+  }
+
+  function removeManualCategory(name: string) {
+    manualCategories.value = manualCategories.value.filter(c => c !== name)
+    delete balancingTargets.value[name]
+  }
+
   function setBackgroundsDir(dir: string | null) {
-    backgroundsDir.value = dir
+    backgroundsDir.value = _migrateLegacyPath(dir)
+  }
+
+  function setObjectsDir(dir: string | null) {
+    objectsDir.value = _migrateLegacyPath(dir)
   }
 
   function setOutputDir(dir: string) {
-    outputDir.value = dir
+    outputDir.value = _migrateLegacyPath(dir)
   }
 
   // Feature flags
@@ -297,6 +381,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     sourceDataset.value = null
     sourceDatasetPath.value = null
     datasetAnalysis.value = null
+    customObjectsMode.value = false
+    manualCategories.value = []
     effectsConfig.value = JSON.parse(JSON.stringify(defaultEffectsConfig))
     placementConfig.value = JSON.parse(JSON.stringify(defaultPlacementConfig))
     validationConfig.value = JSON.parse(JSON.stringify(defaultValidationConfig))
@@ -305,6 +391,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     metadata.value = JSON.parse(JSON.stringify(defaultMetadata))
     balancingTargets.value = {}
     backgroundsDir.value = null
+    objectsDir.value = null
     outputDir.value = null
     useDepth.value = true
     useSegmentation.value = true
@@ -347,11 +434,21 @@ export const useWorkflowStore = defineStore('workflow', () => {
     metadata,
     balancingTargets,
     backgroundsDir,
+    objectsDir,
     outputDir,
+    customObjectsMode,
+    manualCategories,
     useDepth,
     useSegmentation,
     depthAwarePlacement,
     activeJobId,
+    autoTuneEnabled,
+    autoTuneJobId,
+    autoTuneStatus,
+    autoTuneReferenceSetId,
+    autoTuneTargetScore,
+    autoTuneMaxIterations,
+    autoTuneProbeSize,
 
     // Getters
     isStepCompleted,
@@ -375,7 +472,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     updateMetadata,
     updateBalancingTarget,
     setAllTargets,
+    enableCustomObjectsMode,
+    disableCustomObjectsMode,
+    setManualCategories,
+    addManualCategory,
+    removeManualCategory,
     setBackgroundsDir,
+    setObjectsDir,
     setOutputDir,
     setUseDepth,
     setUseSegmentation,

@@ -39,6 +39,8 @@ import {
   Lightbulb,
 } from 'lucide-vue-next'
 import type { EffectsConfig, ObjectPlacementConfig } from '@/types/api'
+import { useI18n } from 'vue-i18n'
+import { useDomainGapStore } from '@/stores/domainGap'
 import {
   Bookmark,
   Fish,
@@ -52,6 +54,8 @@ import {
 const router = useRouter()
 const workflowStore = useWorkflowStore()
 const uiStore = useUiStore()
+const domainGapStore = useDomainGapStore()
+const { t } = useI18n()
 
 // ============================================
 // PRESETS SYSTEM
@@ -267,6 +271,9 @@ function deleteSavedPreset(presetId: string) {
 
 // Load saved presets on mount
 loadSavedPresets()
+
+// Load reference sets for auto-tune selector
+domainGapStore.fetchReferenceSets()
 
 // Deep copy of effects config
 const effectsConfig = ref<EffectsConfig>(JSON.parse(JSON.stringify(workflowStore.effectsConfig)))
@@ -1184,6 +1191,71 @@ const enabledAdvancedEffectsCount = computed(() => {
         </TabPanel>
       </TabPanels>
     </TabGroup>
+
+    <!-- Auto-Tune Effects -->
+    <div class="card overflow-hidden">
+      <div class="flex items-center justify-between p-6">
+        <div class="flex items-center gap-3">
+          <Zap class="h-5 w-5 text-primary" />
+          <div>
+            <h3 class="text-lg font-semibold text-white">{{ t('workflow.configure.autoTune.title') }}</h3>
+            <p class="text-sm text-gray-400">{{ t('workflow.configure.autoTune.description') }}</p>
+          </div>
+        </div>
+        <Switch
+          v-model="workflowStore.autoTuneEnabled"
+          :class="[workflowStore.autoTuneEnabled ? 'bg-primary' : 'bg-gray-600', 'relative inline-flex h-6 w-11 items-center rounded-full transition-colors']"
+        >
+          <span :class="[workflowStore.autoTuneEnabled ? 'translate-x-6' : 'translate-x-1', 'inline-block h-4 w-4 transform rounded-full bg-white transition-transform']" />
+        </Switch>
+      </div>
+
+      <div v-if="workflowStore.autoTuneEnabled" class="px-6 pb-6 space-y-4 border-t border-gray-700 pt-4">
+        <!-- Reference Set -->
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-1">{{ t('workflow.configure.autoTune.referenceSet') }}</label>
+          <select
+            v-model="workflowStore.autoTuneReferenceSetId"
+            class="input w-full"
+          >
+            <option :value="null" disabled>{{ t('workflow.configure.autoTune.selectReferenceSet') }}</option>
+            <option v-for="rs in domainGapStore.referenceSets" :key="rs.set_id" :value="rs.set_id">
+              {{ rs.name }} ({{ rs.image_count }} {{ t('workflow.configure.autoTune.images') }})
+            </option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">{{ t('workflow.configure.autoTune.referenceSetHint') }}</p>
+        </div>
+
+        <div class="grid gap-4 md:grid-cols-3">
+          <!-- Target Score -->
+          <div>
+            <label class="text-sm text-gray-400 flex justify-between mb-1">
+              <span>{{ t('workflow.configure.autoTune.targetScore') }}</span>
+              <span class="text-white font-mono">{{ workflowStore.autoTuneTargetScore }}</span>
+            </label>
+            <input type="range" v-model.number="workflowStore.autoTuneTargetScore" min="5" max="50" step="5" class="w-full accent-primary" />
+          </div>
+
+          <!-- Max Iterations -->
+          <div>
+            <label class="text-sm text-gray-400 flex justify-between mb-1">
+              <span>{{ t('workflow.configure.autoTune.maxIterations') }}</span>
+              <span class="text-white font-mono">{{ workflowStore.autoTuneMaxIterations }}</span>
+            </label>
+            <input type="range" v-model.number="workflowStore.autoTuneMaxIterations" min="1" max="10" step="1" class="w-full accent-primary" />
+          </div>
+
+          <!-- Probe Size -->
+          <div>
+            <label class="text-sm text-gray-400 flex justify-between mb-1">
+              <span>{{ t('workflow.configure.autoTune.probeSize') }}</span>
+              <span class="text-white font-mono">{{ workflowStore.autoTuneProbeSize }}</span>
+            </label>
+            <input type="range" v-model.number="workflowStore.autoTuneProbeSize" min="10" max="100" step="10" class="w-full accent-primary" />
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Navigation Buttons -->
     <div class="flex justify-between pt-4">
