@@ -39,11 +39,23 @@
   },
   "analysis": {
     "title": "Análisis de Dataset",
-    "subtitle": "Sube y analiza tu dataset en formato COCO",
+    "subtitle": "Sube un dataset COCO o salta para usar objetos personalizados con fondos",
     "uploadDataset": "Subir Dataset",
-    "selectDataset": "Seleccionar Dataset",
+    "selectDataset": "Seleccionar Archivo",
+    "selectExisting": "O Seleccionar Dataset Existente",
+    "selectDatasetPlaceholder": "Elige un dataset...",
+    "analyzeButton": "Analizar Dataset",
+    "continueButton": "Continuar a Configuración",
+    "noDatasets": "No se encontraron datasets. Sube un dataset para empezar.",
     "dropzone": "Arrastra tu archivo JSON COCO aquí o haz clic para explorar",
     "analyzing": "Analizando dataset...",
+    "orSeparator": "o usa un dataset COCO",
+    "categoryDistribution": "Distribución de Categorías",
+    "customMode": {
+      "title": "Generar Sin Dataset COCO",
+      "description": "¿No tienes un dataset COCO? No hay problema. Puedes generar imágenes sintéticas usando solo imágenes de fondo y recortes de objetos organizados por carpeta de clase.",
+      "button": "Saltar a Objetos Personalizados"
+    },
     "results": {
       "title": "Resultados del Análisis",
       "totalImages": "Total de Imágenes",
@@ -59,7 +71,9 @@
       "analysisCompleteMsg": "Dataset analizado exitosamente",
       "analysisFailed": "Error de Análisis",
       "invalidFile": "Archivo Inválido",
-      "invalidFileMsg": "Por favor sube un archivo JSON COCO"
+      "invalidFileMsg": "Por favor sube un archivo JSON COCO",
+      "customModeEnabled": "Modo Objetos Personalizados",
+      "customModeEnabledMsg": "Ahora puedes seleccionar fondos y clases de objetos manualmente."
     }
   },
   "configure": {
@@ -75,22 +89,73 @@
       "moderate": "Moderado",
       "strong": "Fuerte",
       "custom": "Personalizado"
+    },
+    "autoTune": {
+      "title": "Auto-Ajuste de Efectos",
+      "description": "Ajusta automáticamente los efectos para minimizar la brecha de dominio antes de la generación",
+      "referenceSet": "Conjunto de Imágenes de Referencia",
+      "selectReferenceSet": "Selecciona un conjunto de referencia...",
+      "referenceSetHint": "Imágenes reales usadas para medir la brecha de dominio contra la salida sintética",
+      "images": "imágenes",
+      "targetScore": "Puntuación Objetivo",
+      "maxIterations": "Máx. Iteraciones",
+      "probeSize": "Tamaño del Lote de Prueba"
     }
   },
   "sourceSelection": {
     "title": "Selección de Fuentes",
     "subtitle": "Selecciona imágenes de fondo y fuentes de objetos",
     "backgroundImages": "Imágenes de Fondo",
+    "backgroundImagesDesc": "Selecciona un directorio con imágenes de fondo para composición",
+    "backgroundsPath": "Ruta de Fondos",
+    "backgroundsHint": "Deja vacío para usar fondos de color sólido",
+    "selected": "Seleccionado",
+    "showPreview": "Previsualizar",
+    "hidePreview": "Ocultar",
+    "loadingPreviews": "Cargando previsualizaciones...",
     "objectSources": "Fuentes de Objetos",
+    "objectSourcesDesc": "Selecciona un directorio con imágenes de objetos organizadas por clase",
+    "objectSourcesHint": "Deja vacío para usar los objetos del dataset analizado",
+    "objectSourcesHintCustom": "Cada subcarpeta se trata como una clase de objeto (ej. Objects/pez/, Objects/coral/)",
+    "required": "Requerido",
     "selectDirectory": "Seleccionar Directorio",
     "imagesFound": "{count} imágenes encontradas",
-    "noImagesFound": "No se encontraron imágenes en el directorio seleccionado"
+    "noImagesFound": "No se encontraron imágenes en el directorio seleccionado",
+    "customModeActive": "Modo Objetos Personalizados Activo",
+    "customModeActiveMsg": "Estás generando sin dataset COCO. Selecciona un directorio de objetos y elige las clases a incluir.",
+    "outputDirectory": "Directorio de Salida",
+    "outputPath": "Ruta de Salida",
+    "outputHint": "Donde se guardará el dataset generado",
+    "continueButton": "Continuar a Generación",
+    "classSelection": {
+      "title": "Selección de Clases de Objetos",
+      "description": "Selecciona qué clases de objetos incluir en el dataset sintético",
+      "detecting": "Detectando clases de objetos...",
+      "noClasses": "No se encontraron clases. Asegúrate de que el directorio contiene subcarpetas con imágenes.",
+      "selectedCount": "{selected} de {total} clases seleccionadas",
+      "selectAll": "Seleccionar Todo",
+      "deselectAll": "Deseleccionar Todo",
+      "images": "imágenes"
+    },
+    "errors": {
+      "outputRequired": "Salida Requerida",
+      "outputRequiredMsg": "Por favor especifica un directorio de salida",
+      "objectsRequired": "Directorio de Objetos Requerido",
+      "objectsRequiredMsg": "En modo objetos personalizados, debes seleccionar un directorio de objetos",
+      "classesRequired": "Clases Requeridas",
+      "classesRequiredMsg": "Por favor selecciona al menos una clase de objetos"
+    },
+    "notifications": {
+      "saved": "Configuración Guardada",
+      "savedMsg": "Selección de fuentes guardada"
+    }
   },
   "generation": {
     "title": "Generar Datos Sintéticos",
     "subtitle": "Configura objetivos de generación, validación y opciones de procesamiento.",
     "configRequired": "Configuración Requerida",
     "configRequiredMsg": "Por favor completa los pasos de Análisis y Selección de Fuentes antes de generar.",
+    "configRequiredCustomMsg": "Por favor selecciona un directorio de objetos y un directorio de salida en el paso de Selección de Fuentes.",
     "activeLabelingJobs": "Trabajos de Etiquetado Activos",
     "labelingJobsMsg": "{count} trabajo(s) de etiquetado en ejecución.",
     "tabs": {
@@ -207,6 +272,37 @@
     "actions": {
       "startGeneration": "Iniciar Generación",
       "continueToExport": "Continuar a Exportar"
+    },
+    "autoTune": {
+      "title": "Auto-Ajuste de Efectos",
+      "description": "Ajusta automáticamente los efectos para minimizar la brecha de dominio antes de la generación completa",
+      "referenceSet": "Conjunto de Imágenes de Referencia",
+      "selectReferenceSet": "Selecciona un conjunto de referencia...",
+      "referenceSetHint": "Imágenes reales usadas para medir la brecha de dominio contra la salida sintética",
+      "images": "imágenes",
+      "targetScore": "Puntuación Objetivo",
+      "maxIterations": "Máx. Iteraciones",
+      "probeSize": "Tamaño del Lote de Prueba",
+      "missingRefSet": "Conjunto de Referencia Requerido",
+      "missingRefSetMsg": "Por favor selecciona un conjunto de imágenes de referencia para el auto-ajuste",
+      "actions": {
+        "startAutoTune": "Auto-Ajuste + Generar"
+      },
+      "progress": {
+        "title": "Progreso del Auto-Ajuste",
+        "iteration": "Iteración {current} / {max}",
+        "currentScore": "Puntuación de Brecha Actual",
+        "history": "Historial de Iteraciones",
+        "iterationLabel": "Iteración #{n}",
+        "adjustments": "ajustes"
+      },
+      "notifications": {
+        "started": "Auto-Ajuste Iniciado",
+        "startedMsg": "Ajustando efectos para minimizar la brecha de dominio...",
+        "completed": "Auto-Ajuste Completo",
+        "completedMsg": "La puntuación de brecha convergió a {score}",
+        "failed": "Auto-Ajuste Fallido"
+      }
     },
     "notifications": {
       "started": "Generación Iniciada",

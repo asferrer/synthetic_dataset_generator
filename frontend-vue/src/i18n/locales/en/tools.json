@@ -133,8 +133,16 @@
         "both": "Both Detection & Segmentation"
       },
       "minConfidence": "Min Confidence",
-      "useSam3": "Use SAM3 for Segmentation",
-      "useSam3Desc": "Generate precise segmentation masks"
+      "outputFormats": "Output Formats",
+      "previewMode": "Preview Mode (Test Run)",
+      "previewModeDesc": "Process only a small sample of images to test accuracy before running on the full dataset",
+      "previewCount": "Preview Images",
+      "images": "images",
+      "deduplicationStrategy": "Deduplication Strategy",
+      "confidenceStrategy": "Confidence Priority",
+      "confidenceStrategyDesc": "Prioritize detections with higher confidence scores",
+      "areaStrategy": "Area Priority",
+      "areaStrategyDesc": "Prioritize detections with larger bounding boxes"
     },
     "relabeling": {
       "mode": "Relabel Mode",
@@ -149,7 +157,8 @@
       "title": "Current Job Progress",
       "processing": "Processing...",
       "imagesProcessed": "{processed}/{total} images",
-      "annotationsCreated": "{count} annotations"
+      "annotationsCreated": "{count} annotations",
+      "byClass": "Detections by Class"
     },
     "metrics": {
       "avgConfidence": "Avg Confidence",
@@ -165,7 +174,8 @@
     },
     "actions": {
       "startLabeling": "Start Labeling",
-      "startRelabeling": "Start Relabeling"
+      "startRelabeling": "Start Relabeling",
+      "cancel": "Cancel"
     },
     "notifications": {
       "templateApplied": "Template Applied",
@@ -177,7 +187,12 @@
       "failed": "Labeling Failed",
       "missingInput": "Missing Input",
       "missingDirectories": "Please specify at least one image directory",
-      "missingClasses": "Please specify at least one class to detect"
+      "missingClasses": "Please specify at least one class to detect",
+      "cancelled": "Labeling job cancelled",
+      "cancelFailed": "Failed to cancel job",
+      "pollingError": "Connection Issue",
+      "pollingErrorMsg": "Having trouble connecting to the backend. Retrying...",
+      "connectionLost": "Connection lost to backend after multiple retries. Please check if the service is running."
     },
     "activeJobs": "Active Jobs",
     "activeJobsMsg": "{count} labeling job(s) are currently running."
@@ -333,9 +348,21 @@
         "title": "Analysis Results",
         "gapScore": "Overall Gap Score",
         "gapLevel": "Gap Level",
+        "radioMmdScore": "RADIO-MMD Score",
+        "fdRadioScore": "FD-RADIO Score",
         "fidScore": "FID Score",
         "kidScore": "KID Score",
         "colorDistribution": "Color Distribution",
+        "cmmdScore": "CMMD Score",
+        "precision": "Precision",
+        "recall": "Recall",
+        "density": "Density",
+        "coverage": "Coverage",
+        "sharpnessRatio": "Sharpness Ratio",
+        "syntheticSharpness": "Synthetic Sharpness",
+        "realSharpness": "Real Sharpness",
+        "sampleSizeWarning": "Sample size is too small for reliable metrics",
+        "pcaApplied": "PCA was applied for numerical stability due to small sample size",
         "levels": {
           "low": "Low",
           "medium": "Medium",
@@ -359,8 +386,12 @@
       "progress": {
         "phases": {
           "pending": "Starting analysis...",
-          "extracting_features_synthetic": "Extracting features (synthetic)...",
-          "extracting_features_real": "Extracting features (real)...",
+          "extracting_radio_synthetic": "Extracting RADIO features (synthetic)...",
+          "extracting_radio_real": "Extracting RADIO features (real)...",
+          "computing_radio_mmd": "Computing RADIO-MMD score...",
+          "computing_fd_radio": "Computing FD-RADIO score...",
+          "extracting_features_synthetic": "Extracting Inception features (synthetic)...",
+          "extracting_features_real": "Extracting Inception features (real)...",
           "computing_fid": "Computing FID score...",
           "computing_kid": "Computing KID score...",
           "computing_color": "Computing color distribution...",
@@ -369,6 +400,10 @@
           "analyzing_frequency": "Analyzing frequency content...",
           "analyzing_texture": "Analyzing texture complexity...",
           "generating_suggestions": "Generating suggestions...",
+          "extracting_clip_synthetic": "Extracting CLIP features (synthetic)...",
+          "extracting_clip_real": "Extracting CLIP features (real)...",
+          "computing_cmmd": "Computing CMMD score...",
+          "computing_prdc": "Computing Precision/Recall/Density/Coverage...",
           "completing": "Finalizing results...",
           "completed": "Analysis complete"
         }
@@ -390,6 +425,31 @@
       "apply": "Apply Randomization",
       "applyBatch": "Apply to Batch"
     },
+    "styleTransfer": {
+      "title": "Style Transfer",
+      "description": "Transfer the visual style of real reference images onto synthetic images to reduce domain gap",
+      "imagesDir": "Synthetic Images Directory",
+      "outputDir": "Output Directory",
+      "referenceSet": "Style Reference Set",
+      "referenceSetHint": "Real images from this set will be used as the style source",
+      "config": {
+        "styleWeight": "Style Weight",
+        "contentWeight": "Content Weight",
+        "preserveStructure": "Preserve Structure",
+        "colorOnly": "Color Transfer Only",
+        "depthGuided": "Depth-Guided Transfer"
+      },
+      "applyBatch": "Apply Style Transfer"
+    },
+    "optimization": {
+      "title": "Automatic Optimization",
+      "description": "Iteratively apply techniques to minimize the domain gap automatically",
+      "outputDir": "Output Directory",
+      "targetScore": "Target Gap Score",
+      "maxIterations": "Max Iterations",
+      "techniques": "Techniques to Apply",
+      "run": "Run Optimization"
+    },
     "notifications": {
       "uploadSuccess": "Reference Set Uploaded",
       "uploadSuccessMsg": "Uploaded {count} images as \"{name}\"",
@@ -404,7 +464,13 @@
       "randomizationComplete": "Randomization Complete",
       "randomizationFailed": "Randomization Failed",
       "suggestionApplied": "Suggestion Applied",
-      "suggestionAppliedMsg": "Updated {path} to {value}"
+      "suggestionAppliedMsg": "Updated {path} to {value}",
+      "styleTransferStarted": "Style Transfer Started",
+      "styleTransferStartedMsg": "Job {id} started",
+      "styleTransferFailed": "Style Transfer Failed",
+      "optimizationStarted": "Optimization Started",
+      "optimizationStartedMsg": "Job {id} started",
+      "optimizationFailed": "Optimization Failed"
     }
   },
   "postProcessing": {

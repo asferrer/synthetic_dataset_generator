@@ -133,8 +133,16 @@
         "both": "Ambos: Detección y Segmentación"
       },
       "minConfidence": "Confianza Mínima",
-      "useSam3": "Usar SAM3 para Segmentación",
-      "useSam3Desc": "Genera máscaras de segmentación precisas"
+      "outputFormats": "Formatos de Salida",
+      "previewMode": "Modo Preview (Prueba)",
+      "previewModeDesc": "Procesar solo una muestra pequeña de imágenes para probar la precisión antes de ejecutar en el dataset completo",
+      "previewCount": "Imágenes de Preview",
+      "images": "imágenes",
+      "deduplicationStrategy": "Estrategia de Deduplicación",
+      "confidenceStrategy": "Prioridad por Confianza",
+      "confidenceStrategyDesc": "Prioriza detecciones con mayor puntuación de confianza",
+      "areaStrategy": "Prioridad por Área",
+      "areaStrategyDesc": "Prioriza detecciones con cajas delimitadoras más grandes"
     },
     "relabeling": {
       "mode": "Modo de Re-etiquetado",
@@ -149,7 +157,8 @@
       "title": "Progreso del Trabajo Actual",
       "processing": "Procesando...",
       "imagesProcessed": "{processed}/{total} imágenes",
-      "annotationsCreated": "{count} anotaciones"
+      "annotationsCreated": "{count} anotaciones",
+      "byClass": "Detecciones por Clase"
     },
     "metrics": {
       "avgConfidence": "Confianza Promedio",
@@ -165,7 +174,8 @@
     },
     "actions": {
       "startLabeling": "Iniciar Etiquetado",
-      "startRelabeling": "Iniciar Re-etiquetado"
+      "startRelabeling": "Iniciar Re-etiquetado",
+      "cancel": "Cancelar"
     },
     "notifications": {
       "templateApplied": "Plantilla Aplicada",
@@ -177,7 +187,12 @@
       "failed": "Etiquetado Fallido",
       "missingInput": "Entrada Faltante",
       "missingDirectories": "Por favor especifica al menos un directorio de imágenes",
-      "missingClasses": "Por favor especifica al menos una clase a detectar"
+      "missingClasses": "Por favor especifica al menos una clase a detectar",
+      "cancelled": "Trabajo de etiquetado cancelado",
+      "cancelFailed": "Error al cancelar el trabajo",
+      "pollingError": "Problema de Conexión",
+      "pollingErrorMsg": "Teniendo problemas para conectar con el backend. Reintentando...",
+      "connectionLost": "Conexión perdida con el backend tras múltiples reintentos. Por favor verifica que el servicio esté ejecutándose."
     },
     "activeJobs": "Trabajos Activos",
     "activeJobsMsg": "{count} trabajo(s) de etiquetado en ejecución."
@@ -333,9 +348,21 @@
         "title": "Resultados del Análisis",
         "gapScore": "Puntuación General de Gap",
         "gapLevel": "Nivel de Gap",
+        "radioMmdScore": "Puntuación RADIO-MMD",
+        "fdRadioScore": "Puntuación FD-RADIO",
         "fidScore": "Puntuación FID",
         "kidScore": "Puntuación KID",
         "colorDistribution": "Distribución de Color",
+        "cmmdScore": "Puntuación CMMD",
+        "precision": "Precisión",
+        "recall": "Recall",
+        "density": "Densidad",
+        "coverage": "Cobertura",
+        "sharpnessRatio": "Ratio de Nitidez",
+        "syntheticSharpness": "Nitidez Sintética",
+        "realSharpness": "Nitidez Real",
+        "sampleSizeWarning": "El tamaño de muestra es muy pequeño para métricas fiables",
+        "pcaApplied": "Se aplicó PCA para estabilidad numérica por muestra pequeña",
         "levels": {
           "low": "Bajo",
           "medium": "Medio",
@@ -359,8 +386,12 @@
       "progress": {
         "phases": {
           "pending": "Iniciando análisis...",
-          "extracting_features_synthetic": "Extrayendo características (sintéticas)...",
-          "extracting_features_real": "Extrayendo características (reales)...",
+          "extracting_radio_synthetic": "Extrayendo características RADIO (sintéticas)...",
+          "extracting_radio_real": "Extrayendo características RADIO (reales)...",
+          "computing_radio_mmd": "Calculando puntuación RADIO-MMD...",
+          "computing_fd_radio": "Calculando puntuación FD-RADIO...",
+          "extracting_features_synthetic": "Extrayendo características Inception (sintéticas)...",
+          "extracting_features_real": "Extrayendo características Inception (reales)...",
           "computing_fid": "Calculando puntuación FID...",
           "computing_kid": "Calculando puntuación KID...",
           "computing_color": "Calculando distribución de color...",
@@ -369,6 +400,10 @@
           "analyzing_frequency": "Analizando contenido frecuencial...",
           "analyzing_texture": "Analizando complejidad de textura...",
           "generating_suggestions": "Generando sugerencias...",
+          "extracting_clip_synthetic": "Extrayendo características CLIP (sintéticas)...",
+          "extracting_clip_real": "Extrayendo características CLIP (reales)...",
+          "computing_cmmd": "Calculando puntuación CMMD...",
+          "computing_prdc": "Calculando Precisión/Recall/Densidad/Cobertura...",
           "completing": "Finalizando resultados...",
           "completed": "Análisis completado"
         }
@@ -390,6 +425,31 @@
       "apply": "Aplicar Randomización",
       "applyBatch": "Aplicar a Lote"
     },
+    "styleTransfer": {
+      "title": "Transferencia de Estilo",
+      "description": "Transfiere el estilo visual de imágenes reales de referencia a imágenes sintéticas para reducir el domain gap",
+      "imagesDir": "Directorio de Imágenes Sintéticas",
+      "outputDir": "Directorio de Salida",
+      "referenceSet": "Conjunto de Referencia de Estilo",
+      "referenceSetHint": "Las imágenes reales de este conjunto se usarán como fuente de estilo",
+      "config": {
+        "styleWeight": "Peso del Estilo",
+        "contentWeight": "Peso del Contenido",
+        "preserveStructure": "Preservar Estructura",
+        "colorOnly": "Solo Transferencia de Color",
+        "depthGuided": "Transferencia Guiada por Profundidad"
+      },
+      "applyBatch": "Aplicar Transferencia de Estilo"
+    },
+    "optimization": {
+      "title": "Optimización Automática",
+      "description": "Aplica técnicas iterativamente para minimizar el domain gap de forma automática",
+      "outputDir": "Directorio de Salida",
+      "targetScore": "Puntuación Objetivo de Gap",
+      "maxIterations": "Máximo de Iteraciones",
+      "techniques": "Técnicas a Aplicar",
+      "run": "Ejecutar Optimización"
+    },
     "notifications": {
       "uploadSuccess": "Conjunto de Referencia Subido",
       "uploadSuccessMsg": "Se subieron {count} imágenes como \"{name}\"",
@@ -404,7 +464,13 @@
       "randomizationComplete": "Randomización Completa",
       "randomizationFailed": "Randomización Fallida",
       "suggestionApplied": "Sugerencia Aplicada",
-      "suggestionAppliedMsg": "Actualizado {path} a {value}"
+      "suggestionAppliedMsg": "Actualizado {path} a {value}",
+      "styleTransferStarted": "Transferencia de Estilo Iniciada",
+      "styleTransferStartedMsg": "Trabajo {id} iniciado",
+      "styleTransferFailed": "Transferencia de Estilo Fallida",
+      "optimizationStarted": "Optimización Iniciada",
+      "optimizationStartedMsg": "Trabajo {id} iniciado",
+      "optimizationFailed": "Optimización Fallida"
     }
   },
   "postProcessing": {

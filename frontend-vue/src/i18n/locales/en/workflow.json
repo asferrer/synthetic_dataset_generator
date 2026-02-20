@@ -39,11 +39,23 @@
   },
   "analysis": {
     "title": "Dataset Analysis",
-    "subtitle": "Upload and analyze your COCO format dataset",
+    "subtitle": "Upload a COCO dataset or skip to use custom objects with backgrounds",
     "uploadDataset": "Upload Dataset",
-    "selectDataset": "Select Dataset",
+    "selectDataset": "Select File",
+    "selectExisting": "Or Select Existing Dataset",
+    "selectDatasetPlaceholder": "Choose a dataset...",
+    "analyzeButton": "Analyze Dataset",
+    "continueButton": "Continue to Configuration",
+    "noDatasets": "No datasets found. Upload a dataset to get started.",
     "dropzone": "Drop your COCO JSON file here or click to browse",
     "analyzing": "Analyzing dataset...",
+    "orSeparator": "or use a COCO dataset",
+    "categoryDistribution": "Category Distribution",
+    "customMode": {
+      "title": "Generate Without COCO Dataset",
+      "description": "Don't have a COCO dataset? No problem. You can generate synthetic images using just background images and object cutouts organized by class folder.",
+      "button": "Skip to Custom Objects"
+    },
     "results": {
       "title": "Analysis Results",
       "totalImages": "Total Images",
@@ -59,7 +71,9 @@
       "analysisCompleteMsg": "Dataset analyzed successfully",
       "analysisFailed": "Analysis Failed",
       "invalidFile": "Invalid File",
-      "invalidFileMsg": "Please upload a COCO JSON file"
+      "invalidFileMsg": "Please upload a COCO JSON file",
+      "customModeEnabled": "Custom Objects Mode",
+      "customModeEnabledMsg": "You can now select backgrounds and object classes manually."
     }
   },
   "configure": {
@@ -75,22 +89,73 @@
       "moderate": "Moderate",
       "strong": "Strong",
       "custom": "Custom"
+    },
+    "autoTune": {
+      "title": "Auto-Tune Effects",
+      "description": "Automatically adjust effects to minimize domain gap before full generation",
+      "referenceSet": "Reference Image Set",
+      "selectReferenceSet": "Select a reference set...",
+      "referenceSetHint": "Real images used to measure domain gap against synthetic output",
+      "images": "images",
+      "targetScore": "Target Gap Score",
+      "maxIterations": "Max Iterations",
+      "probeSize": "Probe Batch Size"
     }
   },
   "sourceSelection": {
     "title": "Source Selection",
     "subtitle": "Select background images and object sources",
     "backgroundImages": "Background Images",
+    "backgroundImagesDesc": "Select a directory containing background images for composition",
+    "backgroundsPath": "Backgrounds Path",
+    "backgroundsHint": "Leave empty to use solid color backgrounds",
+    "selected": "Selected",
+    "showPreview": "Preview",
+    "hidePreview": "Hide",
+    "loadingPreviews": "Loading previews...",
     "objectSources": "Object Sources",
+    "objectSourcesDesc": "Select a directory containing object images organized by class",
+    "objectSourcesHint": "Leave empty to use objects from the analyzed dataset",
+    "objectSourcesHintCustom": "Each subfolder is treated as an object class (e.g. Objects/fish/, Objects/coral/)",
+    "required": "Required",
     "selectDirectory": "Select Directory",
     "imagesFound": "{count} images found",
-    "noImagesFound": "No images found in selected directory"
+    "noImagesFound": "No images found in selected directory",
+    "customModeActive": "Custom Objects Mode Active",
+    "customModeActiveMsg": "You're generating without a COCO dataset. Select an objects directory and choose which classes to include.",
+    "outputDirectory": "Output Directory",
+    "outputPath": "Output Path",
+    "outputHint": "Where the generated dataset will be saved",
+    "continueButton": "Continue to Generation",
+    "classSelection": {
+      "title": "Object Class Selection",
+      "description": "Select which object classes to include in the synthetic dataset",
+      "detecting": "Detecting object classes...",
+      "noClasses": "No object classes found. Make sure the directory contains subfolders with images.",
+      "selectedCount": "{selected} of {total} classes selected",
+      "selectAll": "Select All",
+      "deselectAll": "Deselect All",
+      "images": "images"
+    },
+    "errors": {
+      "outputRequired": "Output Required",
+      "outputRequiredMsg": "Please specify an output directory",
+      "objectsRequired": "Objects Directory Required",
+      "objectsRequiredMsg": "In custom objects mode, you must select an objects directory",
+      "classesRequired": "Classes Required",
+      "classesRequiredMsg": "Please select at least one object class"
+    },
+    "notifications": {
+      "saved": "Configuration Saved",
+      "savedMsg": "Source selection saved"
+    }
   },
   "generation": {
     "title": "Generate Synthetic Data",
     "subtitle": "Configure generation targets, validation, and processing options.",
     "configRequired": "Configuration Required",
     "configRequiredMsg": "Please complete the Analysis and Source Selection steps before generating.",
+    "configRequiredCustomMsg": "Please select an objects directory and output directory in the Source Selection step.",
     "activeLabelingJobs": "Active Labeling Jobs",
     "labelingJobsMsg": "{count} labeling job(s) are currently running.",
     "tabs": {
@@ -207,6 +272,37 @@
     "actions": {
       "startGeneration": "Start Generation",
       "continueToExport": "Continue to Export"
+    },
+    "autoTune": {
+      "title": "Auto-Tune Effects",
+      "description": "Automatically adjust effects to minimize domain gap before full generation",
+      "referenceSet": "Reference Image Set",
+      "selectReferenceSet": "Select a reference set...",
+      "referenceSetHint": "Real images used to measure domain gap against synthetic output",
+      "images": "images",
+      "targetScore": "Target Gap Score",
+      "maxIterations": "Max Iterations",
+      "probeSize": "Probe Batch Size",
+      "missingRefSet": "Reference Set Required",
+      "missingRefSetMsg": "Please select a reference image set for auto-tune",
+      "actions": {
+        "startAutoTune": "Auto-Tune + Generate"
+      },
+      "progress": {
+        "title": "Auto-Tune Progress",
+        "iteration": "Iteration {current} / {max}",
+        "currentScore": "Current Gap Score",
+        "history": "Iteration History",
+        "iterationLabel": "Iteration #{n}",
+        "adjustments": "adjustments"
+      },
+      "notifications": {
+        "started": "Auto-Tune Started",
+        "startedMsg": "Tuning effects to minimize domain gap...",
+        "completed": "Auto-Tune Complete",
+        "completedMsg": "Gap score converged to {score}",
+        "failed": "Auto-Tune Failed"
+      }
     },
     "notifications": {
       "started": "Generation Started",
