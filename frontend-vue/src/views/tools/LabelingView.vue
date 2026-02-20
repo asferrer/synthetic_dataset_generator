@@ -7,6 +7,7 @@ import {
   startRelabeling,
   getLabelingStatus,
   getActiveLabelingJobs,
+  cancelLabelingJob,
   listDirectories,
   getLabelingPreviews,
   type LabelingPreview,
@@ -27,6 +28,7 @@ import {
   RefreshCw,
   Settings,
   Sparkles,
+  StopCircle,
   Fish,
   Car,
   Users,
@@ -141,9 +143,14 @@ const classes = ref<string[]>([''])
 const outputDir = ref('/app/output/labeled')
 const minConfidence = ref(0.3)
 const taskType = ref<LabelingTaskType>('detection')
-const useSam3 = ref(true)
-const boxThreshold = ref(0.25)
-const textThreshold = ref(0.25)
+const outputFormats = ref<string[]>(['coco'])
+
+// Preview mode state
+const previewMode = ref(false)
+const previewCount = ref(20)
+
+// Deduplication strategy
+const deduplicationStrategy = ref<'confidence' | 'area'>('confidence')
 
 // Relabeling state
 const isRelabeling = ref(false)
@@ -152,6 +159,7 @@ const existingAnnotations = ref('')
 
 // UI state
 const loading = ref(false)
+let pollingErrorCount = 0
 const directories = ref<string[]>([])
 const activeJobs = ref<LabelingJob[]>([])
 const currentJob = ref<LabelingJob | null>(null)
@@ -234,9 +242,11 @@ async function startJob() {
         relabel_mode: relabelMode.value,
         new_classes: validClasses.length > 0 ? validClasses : undefined,
         min_confidence: minConfidence.value,
-        existing_annotations: existingAnnotations.value || undefined,
-        task_type: taskType.value,
-        use_sam3: useSam3.value,
+        coco_json_path: existingAnnotations.value || undefined,
+        output_formats: outputFormats.value,
+        preview_mode: previewMode.value,
+        preview_count: previewCount.value,
+        deduplication_strategy: deduplicationStrategy.value,
       })
     } else {
       response = await startLabeling({
@@ -245,9 +255,10 @@ async function startJob() {
         output_dir: outputDir.value,
         min_confidence: minConfidence.value,
         task_type: taskType.value,
-        use_sam3: useSam3.value,
-        box_threshold: boxThreshold.value,
-        text_threshold: textThreshold.value,
+        output_formats: outputFormats.value,
+        preview_mode: previewMode.value,
+        preview_count: previewCount.value,
+        deduplication_strategy: deduplicationStrategy.value,
       })
     }
 
@@ -265,6 +276,7 @@ async function pollJobStatus(jobId: string) {
   try {
     const job = await getLabelingStatus(jobId)
     currentJob.value = job
+    pollingErrorCount = 0 // Reset on successful poll
 
     if (job.status === 'completed' || job.status === 'failed') {
       stopPolling()
@@ -274,8 +286,20 @@ async function pollJobStatus(jobId: string) {
         uiStore.showError(t('tools.labeling.notifications.failed'), job.error || t('common.errors.generic'))
       }
     }
-  } catch (e) {
-    // Ignore polling errors
+  } catch (e: any) {
+    pollingErrorCount++
+    if (pollingErrorCount >= 3) {
+      // After 3 consecutive errors, show warning to user
+      uiStore.showWarning(
+        t('tools.labeling.notifications.pollingError'),
+        t('tools.labeling.notifications.pollingErrorMsg')
+      )
+      // Stop polling after 10 consecutive failures
+      if (pollingErrorCount >= 10) {
+        stopPolling()
+        uiStore.showError(t('tools.labeling.notifications.connectionLost'))
+      }
+    }
   }
 }
 
@@ -294,6 +318,18 @@ function startPolling(jobId: string) {
   previewPollingInterval = setInterval(() => pollPreviews(jobId), 5000)
   // Initial preview load
   pollPreviews(jobId)
+}
+
+async function cancelCurrentJob() {
+  if (!currentJob.value) return
+  try {
+    await cancelLabelingJob(currentJob.value.job_id)
+    stopPolling()
+    currentJob.value.status = 'cancelled'
+    uiStore.showInfo(t('tools.labeling.notifications.cancelled'))
+  } catch (e: any) {
+    uiStore.showError(t('tools.labeling.notifications.cancelFailed'), e.message)
+  }
 }
 
 function stopPolling() {
@@ -513,17 +549,86 @@ onUnmounted(() => {
             />
           </div>
 
-          <label class="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="useSam3"
-              class="h-5 w-5 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
-            />
-            <div>
-              <span class="text-gray-300">{{ t('tools.labeling.output.useSam3') }}</span>
-              <p class="text-sm text-gray-500">{{ t('tools.labeling.output.useSam3Desc') }}</p>
+          <div>
+            <label class="text-sm text-gray-400 mb-2 block">{{ t('tools.labeling.output.outputFormats') }}</label>
+            <div class="flex gap-4">
+              <label
+                v-for="fmt in ['coco', 'yolo', 'voc']"
+                :key="fmt"
+                class="flex items-center gap-2 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  :value="fmt"
+                  v-model="outputFormats"
+                  class="h-4 w-4 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
+                />
+                <span class="text-gray-300 text-sm uppercase">{{ fmt }}</span>
+              </label>
             </div>
-          </label>
+          </div>
+
+          <!-- Deduplication Strategy -->
+          <div>
+            <label class="text-sm text-gray-400 mb-2 block">{{ t('tools.labeling.output.deduplicationStrategy') }}</label>
+            <div class="flex gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  value="confidence"
+                  v-model="deduplicationStrategy"
+                  class="h-4 w-4 border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
+                />
+                <div class="flex flex-col">
+                  <span class="text-gray-300 text-sm">{{ t('tools.labeling.output.confidenceStrategy') }}</span>
+                  <span class="text-xs text-gray-500">{{ t('tools.labeling.output.confidenceStrategyDesc') }}</span>
+                </div>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  value="area"
+                  v-model="deduplicationStrategy"
+                  class="h-4 w-4 border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
+                />
+                <div class="flex flex-col">
+                  <span class="text-gray-300 text-sm">{{ t('tools.labeling.output.areaStrategy') }}</span>
+                  <span class="text-xs text-gray-500">{{ t('tools.labeling.output.areaStrategyDesc') }}</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Preview Mode -->
+          <div class="border-t border-gray-700 pt-4">
+            <div class="flex items-center gap-3 mb-3">
+              <input
+                type="checkbox"
+                id="previewMode"
+                v-model="previewMode"
+                class="h-4 w-4 rounded border-gray-600 bg-background-tertiary text-primary focus:ring-primary"
+              />
+              <label for="previewMode" class="text-sm text-gray-300 cursor-pointer flex items-center gap-2">
+                <Sparkles class="h-4 w-4 text-yellow-400" />
+                {{ t('tools.labeling.output.previewMode') }}
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">{{ t('tools.labeling.output.previewModeDesc') }}</p>
+            <div v-if="previewMode">
+              <label class="text-sm text-gray-400 flex justify-between mb-2">
+                <span>{{ t('tools.labeling.output.previewCount') }}</span>
+                <span class="text-white">{{ previewCount }} {{ t('tools.labeling.output.images') }}</span>
+              </label>
+              <input
+                type="range"
+                v-model.number="previewCount"
+                min="5"
+                max="50"
+                step="5"
+                class="w-full accent-primary"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -552,6 +657,15 @@ onUnmounted(() => {
           </p>
         </div>
         <span class="text-2xl font-bold text-primary">{{ currentJob.progress }}%</span>
+        <BaseButton
+          v-if="currentJob.status === 'running'"
+          variant="ghost"
+          size="sm"
+          @click="cancelCurrentJob"
+        >
+          <StopCircle class="h-4 w-4" />
+          {{ t('tools.labeling.actions.cancel') }}
+        </BaseButton>
       </div>
 
       <div class="h-3 bg-background-tertiary rounded-full overflow-hidden">
@@ -559,6 +673,21 @@ onUnmounted(() => {
           class="h-full bg-gradient-to-r from-primary to-green-400 transition-all duration-500"
           :style="{ width: `${currentJob.progress}%` }"
         />
+      </div>
+
+      <!-- Detections by Class -->
+      <div v-if="currentJob.objects_by_class && Object.keys(currentJob.objects_by_class).length > 0" class="mt-4">
+        <h4 class="text-sm font-medium text-gray-400 mb-2">{{ t('tools.labeling.progress.byClass') }}</h4>
+        <div class="flex flex-wrap gap-2">
+          <div
+            v-for="(count, className) in currentJob.objects_by_class"
+            :key="className"
+            class="bg-background-tertiary rounded-lg px-3 py-1.5 flex items-center gap-2"
+          >
+            <span class="text-sm text-gray-300">{{ className }}</span>
+            <span class="text-sm font-semibold text-primary">{{ count }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- Quality Metrics -->
