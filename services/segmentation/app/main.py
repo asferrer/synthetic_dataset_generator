@@ -111,9 +111,15 @@ try:
     from shared.job_database import JobDatabase, get_job_db
     JOB_DATABASE_AVAILABLE = True
 except ImportError:
-    JOB_DATABASE_AVAILABLE = False
-    JobDatabase = None
-    get_job_db = None
+    try:
+        import sys
+        sys.path.insert(0, '/app')
+        from services.shared.job_database import JobDatabase, get_job_db
+        JOB_DATABASE_AVAILABLE = True
+    except ImportError:
+        JOB_DATABASE_AVAILABLE = False
+        JobDatabase = None
+        get_job_db = None
 
 # Labeling optimization modules
 from app.prompt_optimizer import PromptOptimizer, get_prompt_optimizer
@@ -380,16 +386,11 @@ async def lifespan(app: FastAPI):
             state.db = get_job_db()
             logger.info("Job database initialized for persistence")
 
-            # Restore any interrupted labeling jobs from database
-            interrupted_jobs = state.db.list_jobs(
-                service="segmentation",
-                job_type="labeling"
-            )
-            for db_job in interrupted_jobs:
-                if db_job["status"] in ["pending", "running"]:
-                    # Mark as interrupted since we're restarting
-                    state.db.update_job_status(db_job["id"], "interrupted")
-                    logger.info(f"Marked job {db_job['id']} as interrupted (service restarted)")
+            # Mark any jobs left in running/queued state as interrupted
+            # (they were abandoned when the service was last shut down)
+            orphaned = state.db.mark_orphaned_jobs("segmentation")
+            if orphaned:
+                logger.warning(f"Marked {orphaned} orphaned segmentation jobs as interrupted")
         except Exception as e:
             logger.warning(f"Failed to initialize job database: {e}")
             state.db = None
@@ -1167,6 +1168,27 @@ async def extract_objects(request: ExtractObjectsRequest):
             "deduplication_enabled": request.deduplication.enabled if request.deduplication else True
         }
 
+        # Persist extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "source_path": source_path,
+                        "images_dir": request.images_dir,
+                        "categories_to_extract": request.categories_to_extract,
+                        "use_sam3_for_bbox": request.use_sam3_for_bbox,
+                        "force_bbox_only": request.force_bbox_only,
+                    },
+                    total_items=total_objects,
+                    output_path=request.output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist extraction job to DB: {e}")
+
         # Define extraction task
         async def run_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1174,10 +1196,44 @@ async def extract_objects(request: ExtractObjectsRequest):
 
             def progress_callback(progress):
                 # This callback runs from a thread pool, but dict updates are atomic in CPython
-                extraction_jobs[job_id]["extracted_objects"] = progress["extracted"]
-                extraction_jobs[job_id]["failed_objects"] = progress["failed"]
-                extraction_jobs[job_id]["current_category"] = progress.get("current_category", "")
-                extraction_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+                extracted = progress["extracted"]
+                failed = progress["failed"]
+                current_category = progress.get("current_category", "")
+                by_category = progress.get("by_category", {})
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
+                extraction_jobs[job_id]["current_category"] = current_category
+                extraction_jobs[job_id]["categories_progress"] = by_category
+
+                # Save checkpoint file so progress survives a partial run
+                try:
+                    checkpoint_path = os.path.join(request.output_dir, "extraction_progress.json")
+                    with open(checkpoint_path, "w") as _cp_f:
+                        json.dump(
+                            {
+                                "extracted": extracted,
+                                "failed": failed,
+                                "completed_categories": list(by_category.keys()),
+                                "current_category": current_category,
+                                "timestamp": datetime.now().isoformat(),
+                            },
+                            _cp_f,
+                            indent=2,
+                        )
+                except Exception:
+                    pass
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_category,
+                            progress_details={"by_category": by_category},
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.extract_from_dataset(
@@ -1202,12 +1258,34 @@ async def extract_objects(request: ExtractObjectsRequest):
                 extraction_jobs[job_id]["extracted_files"] = result.get("extracted_files", [])[:1000]
                 extraction_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
                 extraction_jobs[job_id]["duplicates_prevented"] = result.get("deduplication_stats", {}).get("duplicates_prevented", 0)
+                extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+
+                if state.db:
+                    try:
+                        state.db.complete_job(
+                            job_id,
+                            "completed",
+                            result_summary={
+                                "extracted": result["extracted"],
+                                "failed": result["failed"],
+                                "by_category": result["by_category"],
+                                "duplicates_prevented": result.get("deduplication_stats", {}).get("duplicates_prevented", 0),
+                            },
+                        )
+                    except Exception:
+                        pass
 
             except Exception as e:
                 # Use logger.exception to get full traceback for debugging
                 logger.exception(f"Extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 # Always set completed_at, even if job failed
@@ -1294,6 +1372,26 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
             "current_image": ""
         }
 
+        # Persist custom extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "images_dir": request.images_dir,
+                        "object_names": request.object_names,
+                        "total_images": total_images,
+                        "extraction_type": "custom",
+                    },
+                    total_items=total_images,
+                    output_path=request.output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist custom extraction job to DB: {e}")
+
         # Define extraction task
         async def run_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1301,10 +1399,24 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
 
             def progress_callback(progress):
                 # Update job status with progress info
-                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
-                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+                extracted = progress.get("extracted", 0)
+                failed = progress.get("failed", 0)
+                current_image = progress.get("current_image", "")
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
                 extraction_jobs[job_id]["duplicates_prevented"] = progress.get("duplicates_prevented", 0)
-                extraction_jobs[job_id]["current_image"] = progress.get("current_image", "")
+                extraction_jobs[job_id]["current_image"] = current_image
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_image,
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.extract_custom_objects(
@@ -1330,14 +1442,38 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
                 if result.get("success"):
                     extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
                     logger.info(f"Custom extraction job {job_id} completed: {result['total_objects_extracted']} objects")
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "total_objects_extracted": result.get("total_objects_extracted", 0),
+                                    "failed_extractions": result.get("failed_extractions", 0),
+                                    "by_category": result.get("by_category", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     extraction_jobs[job_id]["status"] = JobStatus.FAILED
                     logger.error(f"Custom extraction job {job_id} failed")
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="Extraction returned failure")
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.exception(f"Custom extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
@@ -1366,10 +1502,39 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
         )
 
 
+def _db_row_to_extraction_job(db_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a DB job row to the extraction job dict format used by the list endpoint."""
+    result_summary = db_job.get("result_summary") or {}
+    total = db_job.get("total_items", 0)
+    extracted = db_job.get("processed_items", 0)
+    failed = db_job.get("failed_items", 0)
+    progress = round(((extracted + failed) / total * 100), 1) if total > 0 else 0.0
+
+    return {
+        "job_id": db_job.get("id", ""),
+        "type": "extraction",
+        "job_type": "extraction",
+        "status": db_job.get("status", "unknown"),
+        "progress": progress,
+        "created_at": db_job.get("created_at", datetime.now().isoformat()),
+        "total_objects": result_summary.get("extracted", 0) + result_summary.get("failed", 0) if result_summary else total,
+        "extracted_objects": result_summary.get("extracted", extracted),
+        "failed_objects": result_summary.get("failed", failed),
+        "current_category": db_job.get("current_item", ""),
+        "output_dir": db_job.get("output_path", ""),
+        "started_at": db_job.get("started_at"),
+        "completed_at": db_job.get("completed_at"),
+        "processing_time_ms": db_job.get("processing_time_ms", 0),
+    }
+
+
 @app.get("/extract/jobs", tags=["Object Extraction"])
 async def list_extraction_jobs():
-    """List all extraction jobs."""
+    """List all extraction jobs (active from memory, historical from database)."""
     jobs = []
+    seen_ids: set = set()
+
+    # First: active jobs from memory (most detailed real-time data)
     for job_id, job in extraction_jobs.items():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
@@ -1397,6 +1562,19 @@ async def list_extraction_jobs():
             "completed_at": job.get("completed_at"),
             "processing_time_ms": job.get("processing_time_ms", 0),
         })
+        seen_ids.add(job_id)
+
+    # Second: historical/completed jobs from DB not present in memory
+    if state.db:
+        try:
+            db_jobs = state.db.list_jobs(service="segmentation", job_type="extraction", limit=50)
+            for db_job in db_jobs:
+                job_id = db_job.get("id", "")
+                if job_id and job_id not in seen_ids:
+                    jobs.append(_db_row_to_extraction_job(db_job))
+        except Exception:
+            pass
+
     return {"jobs": jobs, "total": len(jobs)}
 
 
@@ -1553,6 +1731,25 @@ async def extract_from_imagenet(
             "extraction_type": "imagenet"
         }
 
+        # Persist ImageNet extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "root_dir": root_dir,
+                        "num_classes": num_classes,
+                        "extraction_type": "imagenet",
+                    },
+                    total_items=num_classes,
+                    output_path=output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist ImageNet extraction job to DB: {e}")
+
         # Define extraction task
         async def run_imagenet_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1560,9 +1757,23 @@ async def extract_from_imagenet(
 
             def progress_callback(progress):
                 # Update job progress
-                extraction_jobs[job_id]["current_category"] = progress.get("current_class", "")
-                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
-                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+                current_class = progress.get("current_class", "")
+                extracted = progress.get("extracted", 0)
+                failed = progress.get("failed", 0)
+                extraction_jobs[job_id]["current_category"] = current_class
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_class,
+                        )
+                    except Exception:
+                        pass
 
             try:
                 start_time = time.time()
@@ -1577,8 +1788,26 @@ async def extract_from_imagenet(
 
                 if result.get("success"):
                     extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "total_extracted": result.get("total_extracted", 0),
+                                    "total_failed": result.get("total_failed", 0),
+                                    "classes": result.get("classes", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="ImageNet extraction returned failure")
+                        except Exception:
+                            pass
 
                 extraction_jobs[job_id]["total_objects"] = result.get("total_extracted", 0) + result.get("total_failed", 0)
                 extraction_jobs[job_id]["extracted_objects"] = result.get("total_extracted", 0)
@@ -1591,6 +1820,12 @@ async def extract_from_imagenet(
                 logger.exception(f"ImageNet extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
@@ -1846,6 +2081,25 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
             "completed_at": None
         }
 
+        # Persist SAM3 conversion job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="sam3_conversion",
+                    service="segmentation",
+                    request_params={
+                        "images_dir": request.images_dir,
+                        "categories_to_convert": request.categories_to_convert,
+                        "overwrite_existing": request.overwrite_existing,
+                    },
+                    total_items=total_annotations,
+                    output_path=request.output_path,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist SAM3 conversion job to DB: {e}")
+
         # Define conversion task
         async def run_conversion():
             sam3_conversion_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1853,11 +2107,27 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
 
             def progress_callback(progress):
                 # This callback runs from a thread pool, but dict updates are atomic in CPython
-                sam3_conversion_jobs[job_id]["converted_annotations"] = progress["converted"]
-                sam3_conversion_jobs[job_id]["skipped_annotations"] = progress["skipped"]
-                sam3_conversion_jobs[job_id]["failed_annotations"] = progress["failed"]
-                sam3_conversion_jobs[job_id]["current_image"] = progress.get("current_image", "")
+                converted = progress["converted"]
+                skipped = progress["skipped"]
+                failed = progress["failed"]
+                current_image = progress.get("current_image", "")
+                sam3_conversion_jobs[job_id]["converted_annotations"] = converted
+                sam3_conversion_jobs[job_id]["skipped_annotations"] = skipped
+                sam3_conversion_jobs[job_id]["failed_annotations"] = failed
+                sam3_conversion_jobs[job_id]["current_image"] = current_image
                 sam3_conversion_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=converted + skipped,
+                            failed_items=failed,
+                            current_item=current_image,
+                            progress_details={"by_category": progress.get("by_category", {})},
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.convert_bbox_to_segmentation(
@@ -1873,8 +2143,27 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
 
                 if result.get("success"):
                     sam3_conversion_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "converted": result.get("converted", 0),
+                                    "skipped": result.get("skipped", 0),
+                                    "failed": result.get("failed", 0),
+                                    "by_category": result.get("by_category", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="Conversion returned failure")
+                        except Exception:
+                            pass
 
                 sam3_conversion_jobs[job_id]["converted_annotations"] = result.get("converted", 0)
                 sam3_conversion_jobs[job_id]["skipped_annotations"] = result.get("skipped", 0)
@@ -1888,6 +2177,12 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
                 logger.exception(f"Conversion job {job_id} failed: {e}")
                 sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
                 sam3_conversion_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 # Always set completed_at, even if job failed
@@ -1912,10 +2207,41 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
         )
 
 
+def _db_row_to_sam3_conversion_job(db_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a DB job row to the SAM3 conversion job dict format."""
+    result_summary = db_job.get("result_summary") or {}
+    total = db_job.get("total_items", 0)
+    converted = result_summary.get("converted", db_job.get("processed_items", 0))
+    skipped = result_summary.get("skipped", 0)
+    failed = result_summary.get("failed", db_job.get("failed_items", 0))
+    progress = round(((converted + skipped + failed) / total * 100), 1) if total > 0 else 0.0
+
+    return {
+        "job_id": db_job.get("id", ""),
+        "type": "sam3_conversion",
+        "job_type": "sam3_conversion",
+        "status": db_job.get("status", "unknown"),
+        "progress": progress,
+        "created_at": db_job.get("created_at", datetime.now().isoformat()),
+        "total_annotations": total,
+        "converted_annotations": converted,
+        "skipped_annotations": skipped,
+        "failed_annotations": failed,
+        "current_image": db_job.get("current_item", ""),
+        "output_path": db_job.get("output_path", ""),
+        "started_at": db_job.get("started_at"),
+        "completed_at": db_job.get("completed_at"),
+        "processing_time_ms": db_job.get("processing_time_ms", 0),
+    }
+
+
 @app.get("/sam3/jobs", tags=["SAM3 Tool"])
 async def list_sam3_conversion_jobs():
-    """List all SAM3 conversion jobs."""
+    """List all SAM3 conversion jobs (active from memory, historical from database)."""
     jobs = []
+    seen_ids: set = set()
+
+    # First: active jobs from memory (most detailed real-time data)
     for job_id, job in sam3_conversion_jobs.items():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
@@ -1945,6 +2271,19 @@ async def list_sam3_conversion_jobs():
             "completed_at": job.get("completed_at"),
             "processing_time_ms": job.get("processing_time_ms", 0),
         })
+        seen_ids.add(job_id)
+
+    # Second: historical/completed jobs from DB not present in memory
+    if state.db:
+        try:
+            db_jobs = state.db.list_jobs(service="segmentation", job_type="sam3_conversion", limit=50)
+            for db_job in db_jobs:
+                job_id = db_job.get("id", "")
+                if job_id and job_id not in seen_ids:
+                    jobs.append(_db_row_to_sam3_conversion_job(db_job))
+        except Exception:
+            pass
+
     return {"jobs": jobs, "total": len(jobs)}
 
 
@@ -2121,21 +2460,49 @@ async def start_labeling_job(request: StartLabelingRequest):
                     await _process_labeling_job(job_id)
                     labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
 
-                    # Update database with completion
+                    # Update database with completion and record dataset metadata
                     if state.db:
                         try:
                             job = labeling_jobs[job_id]
+                            output_path = job.get("output_dir", "")
+                            coco_json_path = str(Path(output_path) / "annotations.json")
                             state.db.complete_job(
                                 job_id=job_id,
                                 status="completed",
                                 result_summary={
                                     "total_objects_found": job.get("total_objects_found", 0),
                                     "objects_by_class": job.get("objects_by_class", {}),
+                                    "output_path": output_path,
+                                    "coco_json_path": coco_json_path,
                                 },
                                 processing_time_ms=job.get("processing_time_ms", 0)
                             )
                         except Exception as e:
                             logger.warning(f"Failed to update job completion in database: {e}")
+
+                        # Save dataset metadata for completed labeling jobs
+                        try:
+                            job = labeling_jobs[job_id]
+                            output_path = job.get("output_dir", "")
+                            coco_json_path = str(Path(output_path) / "annotations.json")
+                            if Path(coco_json_path).exists():
+                                state.db.create_dataset_metadata(
+                                    job_id=job_id,
+                                    dataset_name=f"Labeled_{job_id[-8:]}",
+                                    dataset_type="labeling",
+                                    coco_json_path=coco_json_path,
+                                    images_dir=output_path,
+                                    num_images=job.get("total_images", 0),
+                                    num_annotations=job.get("total_objects_found", 0),
+                                    num_categories=len(job.get("objects_by_class", {})),
+                                    class_distribution=job.get("objects_by_class", {}),
+                                    categories=[
+                                        {"id": i + 1, "name": cls}
+                                        for i, cls in enumerate(job.get("objects_by_class", {}).keys())
+                                    ],
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to save labeling dataset metadata: {e}")
 
                 except Exception as e:
                     logger.exception(f"Labeling job {job_id} failed: {e}")
@@ -2307,6 +2674,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),
             "started_at": None,
             "completed_at": None,
             # Store request params
@@ -2322,6 +2690,26 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
 
+        # Persist relabeling job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="relabeling",
+                    service="segmentation",
+                    request_params={
+                        "classes": classes_to_label,
+                        "relabel_mode": request.relabel_mode,
+                        "output_formats": request.output_formats,
+                        "min_confidence": request.min_confidence,
+                    },
+                    total_items=total_images,
+                    output_path=request.output_dir,
+                )
+                logger.info(f"Relabeling job {job_id} persisted to database")
+            except Exception as e:
+                logger.warning(f"Failed to persist relabeling job to database: {e}")
+
         # Start background task with concurrency control
         async def run_relabeling():
             async with labeling_job_semaphore:
@@ -2329,15 +2717,49 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                 labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
                 labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
+                if state.db:
+                    try:
+                        state.db.update_job_status(job_id, "running", started_at=datetime.now())
+                    except Exception as e:
+                        logger.warning(f"Failed to update relabeling job status in database: {e}")
+
                 try:
                     logger.info(f"[RELABEL] Calling _process_relabeling_job for {job_id}")
                     await _process_relabeling_job(job_id)
                     labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
                     logger.info(f"[RELABEL] Job {job_id} completed successfully")
+
+                    # Update database with completion
+                    if state.db:
+                        try:
+                            job = labeling_jobs[job_id]
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="completed",
+                                result_summary={
+                                    "total_objects_found": job.get("total_objects_found", 0),
+                                    "objects_by_class": job.get("objects_by_class", {}),
+                                },
+                                processing_time_ms=job.get("processing_time_ms", 0),
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update relabeling job completion in database: {e}")
+
                 except Exception as e:
                     logger.exception(f"Relabeling job {job_id} failed: {e}")
                     labeling_jobs[job_id]["status"] = JobStatus.FAILED
                     labeling_jobs[job_id]["errors"].append(str(e))
+
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="failed",
+                                error_message=str(e),
+                            )
+                        except Exception as db_err:
+                            logger.warning(f"Failed to update relabeling job failure in database: {db_err}")
+
                 finally:
                     labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
                     logger.info(f"[RELABEL] Job {job_id} released semaphore")
