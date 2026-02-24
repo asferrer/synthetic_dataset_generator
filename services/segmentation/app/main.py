@@ -98,13 +98,17 @@ import base64
 
 # Shared utilities
 try:
-    import sys
-    sys.path.insert(0, '/app')
-    from services.shared.vram_monitor import VRAMMonitor
+    from shared.vram_monitor import VRAMMonitor
     VRAM_MONITOR_AVAILABLE = True
 except ImportError:
-    VRAM_MONITOR_AVAILABLE = False
-    VRAMMonitor = None
+    try:
+        import sys
+        sys.path.insert(0, '/app')
+        from shared.vram_monitor import VRAMMonitor
+        VRAM_MONITOR_AVAILABLE = True
+    except ImportError:
+        VRAM_MONITOR_AVAILABLE = False
+        VRAMMonitor = None
 
 # Job database for persistence
 try:
@@ -114,7 +118,7 @@ except ImportError:
     try:
         import sys
         sys.path.insert(0, '/app')
-        from services.shared.job_database import JobDatabase, get_job_db
+        from shared.job_database import JobDatabase, get_job_db
         JOB_DATABASE_AVAILABLE = True
     except ImportError:
         JOB_DATABASE_AVAILABLE = False
@@ -2350,9 +2354,9 @@ async def start_labeling_job(request: StartLabelingRequest):
                 )
 
             for ext in image_extensions:
-                for img_path in dir_obj.glob(f"*{ext}"):
+                for img_path in dir_obj.rglob(f"*{ext}"):
                     all_image_paths.append(str(img_path))
-                for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                for img_path in dir_obj.rglob(f"*{ext.upper()}"):
                     all_image_paths.append(str(img_path))
 
         total_images = len(all_image_paths)
@@ -2374,12 +2378,22 @@ async def start_labeling_job(request: StartLabelingRequest):
             if total_images > 1000:
                 logger.warning(f"[LABEL] Large dataset detected: {total_images} images. Processing may take several hours. Consider using preview mode first.")
 
-        # Create output directory
-        output_dir = Path(request.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Check for conflicting output directory with active jobs
+        for existing_job in labeling_jobs.values():
+            if (existing_job.get("status") in (JobStatus.QUEUED, JobStatus.PROCESSING)
+                    and existing_job.get("output_dir") == request.output_dir):
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"A labeling job is already running/queued with the same output directory: {request.output_dir}"
+                )
 
-        # Create job
+        # Create job with unique output subdirectory
         job_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_subdir = f"labeling_{timestamp}_{job_id[:8]}"
+        output_dir = Path(request.output_dir) / job_subdir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[LABEL] Job output directory: {output_dir}")
 
         # Determine final classes for tracking (use mapped names if mapping exists)
         if request.class_mapping:
@@ -2398,7 +2412,7 @@ async def start_labeling_job(request: StartLabelingRequest):
             "total_objects_found": 0,
             "objects_by_class": {cls: 0 for cls in final_classes},
             "current_image": "",
-            "output_dir": request.output_dir,
+            "output_dir": str(output_dir),
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
@@ -2436,7 +2450,7 @@ async def start_labeling_job(request: StartLabelingRequest):
                         "min_confidence": request.min_confidence,
                     },
                     total_items=total_images,
-                    output_path=request.output_dir
+                    output_path=str(output_dir)
                 )
                 logger.info(f"Labeling job {job_id} persisted to database")
             except Exception as e:
@@ -2532,7 +2546,7 @@ async def start_labeling_job(request: StartLabelingRequest):
             success=True,
             job_id=job_id,
             status=JobStatus.QUEUED,
-            message=f"Labeling job started. {total_images} images, {len(request.classes)} classes.",
+            message=f"Labeling job started. {total_images} images, {len(request.classes)} classes. Output: {output_dir}",
             total_images=total_images
         )
 
@@ -2567,6 +2581,13 @@ async def start_relabeling_job(request: StartRelabelingRequest):
         )
 
     try:
+        # Validate that annotation source is provided for relabeling
+        if not request.coco_data and not request.coco_json_path:
+            return LabelingJobResponse(
+                success=False,
+                error="Relabeling requires an existing annotations file. Please provide a COCO JSON path."
+            )
+
         # If coco_json_path is provided but coco_data is not, read and parse the JSON file
         if request.coco_json_path and not request.coco_data:
             coco_path = Path(request.coco_json_path)
@@ -2596,16 +2617,27 @@ async def start_relabeling_job(request: StartRelabelingRequest):
         all_image_paths = []
         image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
-        # Build image lookup from directories
-        image_lookup = {}  # filename -> full path
+        # Build image lookup from directories (recursive search)
+        image_lookup = {}      # basename -> full path
+        image_lookup_rel = {}  # relative path -> full path
         for dir_path in request.image_directories:
             dir_obj = Path(dir_path)
             if dir_obj.exists():
                 for ext in image_extensions:
-                    for img_path in dir_obj.glob(f"*{ext}"):
+                    for img_path in dir_obj.rglob(f"*{ext}"):
                         image_lookup[img_path.name] = str(img_path)
-                    for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                        try:
+                            rel = str(img_path.relative_to(dir_obj))
+                            image_lookup_rel[rel] = str(img_path)
+                        except ValueError:
+                            pass
+                    for img_path in dir_obj.rglob(f"*{ext.upper()}"):
                         image_lookup[img_path.name] = str(img_path)
+                        try:
+                            rel = str(img_path.relative_to(dir_obj))
+                            image_lookup_rel[rel] = str(img_path)
+                        except ValueError:
+                            pass
 
         # Build image ID mapping from original COCO data (preserves original IDs)
         image_id_map = {}  # filename -> original_image_id
@@ -2618,8 +2650,12 @@ async def start_relabeling_job(request: StartRelabelingRequest):
         if request.coco_data:
             for img in request.coco_data.get("images", []):
                 filename = img.get("file_name", "")
-                if filename in image_lookup:
-                    all_image_paths.append(image_lookup[filename])
+                basename = Path(filename).name
+                # Try matching by relative path first, then by basename
+                if filename in image_lookup_rel:
+                    all_image_paths.append(image_lookup_rel[filename])
+                elif basename in image_lookup:
+                    all_image_paths.append(image_lookup[basename])
                 elif Path(filename).exists():
                     all_image_paths.append(filename)
         else:
@@ -2654,12 +2690,22 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             classes_to_label = [c["name"] for c in request.coco_data.get("categories", [])]
             logger.info(f"[RELABEL] Using {len(classes_to_label)} classes from existing COCO data: {classes_to_label}")
 
-        # Create output directory
-        output_dir = Path(request.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Check for conflicting output directory with active jobs
+        for existing_job in labeling_jobs.values():
+            if (existing_job.get("status") in (JobStatus.QUEUED, JobStatus.PROCESSING)
+                    and existing_job.get("output_dir") == request.output_dir):
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"A relabeling job is already running/queued with the same output directory: {request.output_dir}"
+                )
 
-        # Create job
+        # Create job with unique output subdirectory
         job_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_subdir = f"relabeling_{timestamp}_{job_id[:8]}"
+        output_dir = Path(request.output_dir) / job_subdir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[RELABEL] Job output directory: {output_dir}")
 
         labeling_jobs[job_id] = {
             "job_id": job_id,
@@ -2670,7 +2716,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "total_objects_found": 0,
             "objects_by_class": {cls: 0 for cls in classes_to_label},
             "current_image": "",
-            "output_dir": request.output_dir,
+            "output_dir": str(output_dir),
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
@@ -2704,7 +2750,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                         "min_confidence": request.min_confidence,
                     },
                     total_items=total_images,
-                    output_path=request.output_dir,
+                    output_path=str(output_dir),
                 )
                 logger.info(f"Relabeling job {job_id} persisted to database")
             except Exception as e:
@@ -2772,7 +2818,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             success=True,
             job_id=job_id,
             status=JobStatus.QUEUED,
-            message=f"Relabeling job started. Mode: {request.relabel_mode}, {total_images} images.",
+            message=f"Relabeling job started. Mode: {request.relabel_mode}, {total_images} images. Output: {output_dir}",
             total_images=total_images
         )
 
@@ -3793,7 +3839,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             # Deduplicate annotations for this image (remove overlapping detections)
             image_annotations = coco_result["annotations"][image_annotations_start_idx:]
             if len(image_annotations) > 1:
-                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.7, strategy=deduplication_strategy)
+                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.5, strategy=deduplication_strategy)
                 removed_count = len(image_annotations) - len(deduped)
                 if removed_count > 0:
                     # Update the annotations list
@@ -4120,6 +4166,9 @@ async def _process_relabeling_job(job_id: str):
                     "height": h
                 })
 
+            # Track annotations added for this image (for deduplication)
+            image_annotations_start_idx = len(coco_result["annotations"])
+
             # Handle improve_segmentation mode differently
             if relabel_mode == "improve_segmentation" and coco_data:
                 # Get existing annotations for this image (bbox-only annotations)
@@ -4237,6 +4286,7 @@ async def _process_relabeling_job(job_id: str):
                             "bbox": [float(x), float(y), float(bw), float(bh)],
                             "area": area,
                             "iscrowd": 0,
+                            "_score": score_val,
                         }
 
                         if polygons:
@@ -4262,15 +4312,28 @@ async def _process_relabeling_job(job_id: str):
                             job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
                             job["total_objects_found"] += 1
 
-                # Garbage collection and yielding
-                if (img_idx + 1) % gc_interval == 0:
-                    del image, image_rgb, pil_image
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    gc.collect()
+            # Deduplicate annotations for this image (remove overlapping detections across all classes)
+            image_anns = coco_result["annotations"][image_annotations_start_idx:]
+            if len(image_anns) > 1:
+                deduped = deduplicate_annotations(image_anns, iou_threshold=0.5, strategy=deduplication_strategy)
+                removed_count = len(image_anns) - len(deduped)
+                if removed_count > 0:
+                    coco_result["annotations"] = coco_result["annotations"][:image_annotations_start_idx] + deduped
+                    job["total_objects_found"] -= removed_count
+                    for i, ann in enumerate(coco_result["annotations"][image_annotations_start_idx:]):
+                        ann["id"] = image_annotations_start_idx + i + 1
+                    annotation_id = len(coco_result["annotations"]) + 1
+                    logger.debug(f"[RELABEL] Deduplicated {removed_count} overlapping annotations for {Path(img_path).name}")
 
-                # Yield to event loop
-                await asyncio.sleep(0)
+            # Garbage collection and yielding
+            if (img_idx + 1) % gc_interval == 0:
+                del image, image_rgb, pil_image
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            # Yield to event loop
+            await asyncio.sleep(0)
 
         except asyncio.TimeoutError:
             # Image processing took too long (>30s), skip it

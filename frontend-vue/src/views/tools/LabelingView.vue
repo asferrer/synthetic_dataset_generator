@@ -36,6 +36,7 @@ import {
   TreePine,
   Utensils,
   Shirt,
+  Trash2,
 } from 'lucide-vue-next'
 import type { LabelingJob, LabelingTaskType, RelabelMode } from '@/types/api'
 
@@ -115,6 +116,15 @@ const labelingTemplates: LabelingTemplate[] = [
     icon: Shirt,
     classes: ['shirt', 'pants', 'dress', 'shoe', 'hat', 'bag', 'tie', 'watch', 'glasses', 'backpack'],
     taskType: 'detection',
+    confidence: 0.35,
+  },
+  {
+    id: 'marine_debris',
+    nameKey: 'tools.labeling.templates.marineDebris',
+    descKey: 'tools.labeling.templates.marineDebrisDesc',
+    icon: Trash2,
+    classes: ['Bottle', 'Can', 'Fishing_Net', 'Glove', 'Mask', 'Metal_Debris', 'Plastic_Debris', 'Tire'],
+    taskType: 'both',
     confidence: 0.35,
   },
 ]
@@ -226,6 +236,11 @@ async function startJob() {
 
   if (!isRelabeling.value && validClasses.length === 0) {
     uiStore.showError(t('tools.labeling.notifications.missingInput'), t('tools.labeling.notifications.missingClasses'))
+    return
+  }
+
+  if (isRelabeling.value && !existingAnnotations.value?.trim()) {
+    uiStore.showError(t('tools.labeling.notifications.missingInput'), t('tools.labeling.notifications.missingAnnotations'))
     return
   }
 
@@ -512,6 +527,7 @@ onUnmounted(() => {
             :show-files="true"
             file-pattern="*.json"
             path-mode="input"
+            required
           />
         </div>
       </div>
@@ -765,7 +781,7 @@ onUnmounted(() => {
     <div class="flex justify-end">
       <BaseButton
         :loading="loading"
-        :disabled="loading || (currentJob?.status === 'running')"
+        :disabled="loading"
         @click="startJob"
         size="lg"
       >
