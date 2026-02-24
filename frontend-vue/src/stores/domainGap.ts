@@ -21,6 +21,12 @@ import {
   listDomainGapJobs,
   getDomainGapJob,
   cancelDomainGapJob,
+  diffusionRefine,
+  diffusionRefineBatch,
+  diffusionTrainLora,
+  listLoraModels,
+  deleteLoraModel,
+  validateAnnotations,
 } from '@/lib/api'
 
 /** Extract error detail from Axios error responses */
@@ -124,6 +130,7 @@ export interface DomainGapJob {
   status: string
   progress: number
   result: any
+  error?: string | null
   created_at: string
   updated_at: string
   progress_details?: {
@@ -138,6 +145,52 @@ export interface AnalysisProgress {
   phase: string
   phaseProgress: number
   globalProgress: number
+}
+
+export interface DiffusionRefinementConfig {
+  method: 'controlnet' | 'ip_adapter' | 'lora'
+  reference_set_id: string
+  strength: number
+  controlnet_conditioning_scale: number
+  use_depth_conditioning: boolean
+  ip_adapter_scale: number
+  lora_model_id: string | null
+  lora_weight: number
+  guidance_scale: number
+  num_inference_steps: number
+  use_lcm: boolean
+  seed: number | null
+  validate_annotations: boolean
+  annotation_threshold: number
+  prompt: string
+  negative_prompt: string
+}
+
+export interface AnnotationPreservationMetrics {
+  edge_iou: number
+  ssim: number
+  mean_keypoint_displacement: number
+  annotations_valid: boolean
+}
+
+export interface LoRAModel {
+  model_id: string
+  reference_set_id: string
+  training_steps: number
+  lora_rank: number
+  resolution: number
+  model_size_mb: number
+  model_dir: string
+  created_at: string
+}
+
+export interface DiffusionRefinementResult {
+  success: boolean
+  output_path: string
+  method: string
+  preservation_metrics: AnnotationPreservationMetrics | null
+  processing_time_ms: number
+  error: string | null
 }
 
 // ============================================
@@ -167,6 +220,15 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   const analysisProgress = ref<AnalysisProgress | null>(null)
   let _analysisPollTimer: ReturnType<typeof setInterval> | null = null
 
+  // Diffusion refinement state
+  const loraModels = ref<LoRAModel[]>([])
+  const isDiffusionProcessing = ref(false)
+  const isLoraTraining = ref(false)
+  const diffusionPreviewBefore = ref<string | null>(null)
+  const diffusionPreviewAfter = ref<string | null>(null)
+  const lastPreservationMetrics = ref<AnnotationPreservationMetrics | null>(null)
+  const lastDiffusionError = ref<string | null>(null)
+
   // ============================================
   // GETTERS
   // ============================================
@@ -192,6 +254,8 @@ export const useDomainGapStore = defineStore('domainGap', () => {
   const activeJobs = computed(() =>
     jobs.value.filter(j => j.status === 'running' || j.status === 'pending')
   )
+
+  const hasLoraModels = computed(() => loraModels.value.length > 0)
 
   // ============================================
   // ACTIONS
@@ -597,7 +661,8 @@ export const useDomainGapStore = defineStore('domainGap', () => {
 
   async function fetchJobs() {
     try {
-      jobs.value = await listDomainGapJobs()
+      const response = await listDomainGapJobs()
+      jobs.value = response.jobs ?? []
     } catch (e: any) {
       console.error('Error fetching domain gap jobs:', e)
     }
@@ -632,6 +697,130 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     }
   }
 
+  async function applyDiffusionRefine(
+    imagePath: string,
+    outputPath: string,
+    config: DiffusionRefinementConfig,
+    depthMapPath?: string,
+    annotationsPath?: string,
+  ): Promise<DiffusionRefinementResult | null> {
+    isDiffusionProcessing.value = true
+    lastDiffusionError.value = null
+    lastPreservationMetrics.value = null
+    try {
+      const result = await diffusionRefine({
+        image_path: imagePath,
+        config,
+        output_path: outputPath,
+        depth_map_path: depthMapPath || null,
+        annotations_path: annotationsPath || null,
+      })
+      if (result.preservation_metrics) {
+        lastPreservationMetrics.value = result.preservation_metrics
+      }
+      return result
+    } catch (e: any) {
+      lastDiffusionError.value = getErrorMessage(e, 'Failed to apply diffusion refinement')
+      return null
+    } finally {
+      isDiffusionProcessing.value = false
+    }
+  }
+
+  async function applyDiffusionRefineBatch(
+    imagesDir: string,
+    outputDir: string,
+    config: DiffusionRefinementConfig,
+    annotationsDir?: string,
+  ): Promise<string | null> {
+    isDiffusionProcessing.value = true
+    lastDiffusionError.value = null
+    try {
+      const result = await diffusionRefineBatch({
+        images_dir: imagesDir,
+        config,
+        output_dir: outputDir,
+        annotations_dir: annotationsDir || null,
+      })
+      return result.job_id || null
+    } catch (e: any) {
+      lastDiffusionError.value = getErrorMessage(e, 'Failed to start batch diffusion refinement')
+      return null
+    } finally {
+      isDiffusionProcessing.value = false
+    }
+  }
+
+  async function trainLora(
+    referenceSetId: string,
+    modelId: string,
+    config?: Partial<{
+      training_steps: number
+      learning_rate: number
+      lora_rank: number
+      resolution: number
+      batch_size: number
+      prompt_template: string
+    }>,
+  ): Promise<string | null> {
+    isLoraTraining.value = true
+    lastDiffusionError.value = null
+    try {
+      const result = await diffusionTrainLora({
+        reference_set_id: referenceSetId,
+        model_id: modelId,
+        ...config,
+      })
+      return result.job_id || null
+    } catch (e: any) {
+      lastDiffusionError.value = getErrorMessage(e, 'Failed to start LoRA training')
+      return null
+    } finally {
+      isLoraTraining.value = false
+    }
+  }
+
+  async function fetchLoraModels(): Promise<void> {
+    try {
+      const result = await listLoraModels()
+      loraModels.value = result.models || []
+    } catch (e: any) {
+      console.error('Failed to fetch LoRA models:', e)
+    }
+  }
+
+  async function removeLoraModel(modelId: string): Promise<boolean> {
+    try {
+      await deleteLoraModel(modelId)
+      loraModels.value = loraModels.value.filter(m => m.model_id !== modelId)
+      return true
+    } catch (e: any) {
+      lastDiffusionError.value = getErrorMessage(e, 'Failed to delete LoRA model')
+      return false
+    }
+  }
+
+  async function validateAnnotationPreservation(
+    originalPath: string,
+    refinedPath: string,
+    threshold?: number,
+  ): Promise<AnnotationPreservationMetrics | null> {
+    try {
+      const result = await validateAnnotations({
+        original_path: originalPath,
+        refined_path: refinedPath,
+        threshold,
+      })
+      if (result.metrics) {
+        lastPreservationMetrics.value = result.metrics
+      }
+      return result.metrics || null
+    } catch (e: any) {
+      lastDiffusionError.value = getErrorMessage(e, 'Failed to validate annotation preservation')
+      return null
+    }
+  }
+
   function clearAnalysis() {
     latestAnalysis.value = null
   }
@@ -648,6 +837,13 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     error.value = null
     uploadProgress.value = null
     analysisProgress.value = null
+    loraModels.value = []
+    isDiffusionProcessing.value = false
+    isLoraTraining.value = false
+    diffusionPreviewBefore.value = null
+    diffusionPreviewAfter.value = null
+    lastPreservationMetrics.value = null
+    lastDiffusionError.value = null
   }
 
   // ============================================
@@ -695,5 +891,22 @@ export const useDomainGapStore = defineStore('domainGap', () => {
     fetchServiceInfo,
     clearAnalysis,
     reset,
+
+    // Diffusion state
+    loraModels,
+    isDiffusionProcessing,
+    isLoraTraining,
+    diffusionPreviewBefore,
+    diffusionPreviewAfter,
+    lastPreservationMetrics,
+    lastDiffusionError,
+    hasLoraModels,
+    // Diffusion actions
+    applyDiffusionRefine,
+    applyDiffusionRefineBatch,
+    trainLora,
+    fetchLoraModels,
+    removeLoraModel,
+    validateAnnotationPreservation,
   }
 })

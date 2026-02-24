@@ -114,7 +114,9 @@
       "food": "Food & Kitchen",
       "foodDesc": "Food items and kitchenware",
       "fashion": "Fashion & Clothing",
-      "fashionDesc": "Clothes and accessories"
+      "fashionDesc": "Clothes and accessories",
+      "marineDebris": "Marine Debris",
+      "marineDebrisDesc": "Underwater waste detection"
     },
     "input": {
       "imageDirectories": "Image Directories",
@@ -151,7 +153,7 @@
         "replace": "Replace - Remove all, relabel everything",
         "improve": "Improve - Enhance segmentation quality"
       },
-      "existingAnnotations": "Existing Annotations Path (optional)"
+      "existingAnnotations": "Existing Annotations Path"
     },
     "progress": {
       "title": "Current Job Progress",
@@ -188,6 +190,8 @@
       "missingInput": "Missing Input",
       "missingDirectories": "Please specify at least one image directory",
       "missingClasses": "Please specify at least one class to detect",
+      "missingAnnotations": "Please provide an existing annotations file (COCO JSON) for relabeling",
+      "outputConflict": "A job is already running with the same output directory. Wait for it to finish or use a different output path.",
       "cancelled": "Labeling job cancelled",
       "cancelFailed": "Failed to cancel job",
       "pollingError": "Connection Issue",
@@ -296,7 +300,8 @@
       "references": "Reference Images",
       "validation": "Validation",
       "randomization": "Domain Randomization",
-      "styleTransfer": "Style Transfer"
+      "styleTransfer": "Style Transfer",
+      "diffusion": "Diffusion Refinement"
     },
     "references": {
       "title": "Reference Image Sets",
@@ -383,6 +388,9 @@
         "apply": "Apply Suggestion",
         "applyAll": "Apply All Suggestions"
       },
+      "skip": "Skip",
+      "issuesDetected": "issues detected",
+      "parameterSuggestions": "parameter suggestions",
       "progress": {
         "phases": {
           "pending": "Starting analysis...",
@@ -440,6 +448,96 @@
         "depthGuided": "Depth-Guided Transfer"
       },
       "applyBatch": "Apply Style Transfer"
+    },
+    "diffusion": {
+      "title": "Diffusion Refinement",
+      "description": "Use modern diffusion models to close the domain gap while preserving annotations",
+      "sourceDirectory": "Source Directory",
+      "outputDirectory": "Output Directory",
+      "method": {
+        "label": "Refinement Method",
+        "controlnet": "ControlNet + Depth",
+        "controlnetDesc": "Uses depth maps as structural guide with img2img refinement",
+        "ipAdapter": "IP-Adapter",
+        "ipAdapterDesc": "Zero-shot style transfer using reference images as image prompts",
+        "lora": "LoRA Fine-tuning",
+        "loraDesc": "Domain-specific adaptation trained on your reference set"
+      },
+      "params": {
+        "strength": "Denoising Strength",
+        "strengthHint": "Lower values preserve more structure (0.3-0.5 recommended)",
+        "conditioningScale": "ControlNet Scale",
+        "conditioningScaleHint": "Higher values enforce structure more strictly",
+        "ipAdapterScale": "IP-Adapter Scale",
+        "ipAdapterScaleHint": "Controls style transfer intensity from reference images",
+        "guidanceScale": "Guidance Scale",
+        "steps": "Inference Steps",
+        "useLcm": "Use Lightning (4-step)",
+        "useLcmHint": "Much faster but slightly lower quality",
+        "prompt": "Text Prompt",
+        "promptPlaceholder": "Optional: describe target appearance",
+        "negativePrompt": "Negative Prompt",
+        "seed": "Seed",
+        "seedPlaceholder": "Leave empty for random",
+        "loraWeight": "LoRA Weight",
+        "loraWeightHint": "Strength of the domain-specific adaptation"
+      },
+      "lora": {
+        "title": "LoRA Models",
+        "train": "Train New LoRA",
+        "trainingSteps": "Training Steps",
+        "learningRate": "Learning Rate",
+        "rank": "LoRA Rank",
+        "resolution": "Resolution",
+        "batchSize": "Batch Size",
+        "promptTemplate": "Prompt Template",
+        "noModels": "No LoRA models trained yet",
+        "modelId": "Model ID",
+        "modelIdPlaceholder": "e.g., underwater-v1",
+        "delete": "Delete",
+        "deleteConfirm": "Are you sure you want to delete this LoRA model?",
+        "training": "Training LoRA...",
+        "trainingComplete": "LoRA training complete",
+        "size": "Size",
+        "createdAt": "Created"
+      },
+      "annotations": {
+        "title": "Annotation Preservation",
+        "edgeIou": "Edge IoU",
+        "edgeIouHint": "Overlap of edge structures (higher = better preserved)",
+        "ssim": "Structural Similarity",
+        "ssimHint": "Overall structural preservation (higher = better)",
+        "keypointDisplacement": "Keypoint Displacement",
+        "keypointDisplacementHint": "Average pixel shift of features (lower = better)",
+        "valid": "Annotations preserved",
+        "invalid": "Annotations may be corrupted - consider reducing strength",
+        "threshold": "Validity Threshold"
+      },
+      "actions": {
+        "refineSingle": "Refine Image",
+        "refineBatch": "Refine Batch",
+        "refining": "Refining...",
+        "selectMethod": "Select a refinement method",
+        "selectReferenceSet": "Select a reference set",
+        "selectLoraModel": "Select a LoRA model"
+      },
+      "preview": {
+        "before": "Before",
+        "after": "After",
+        "noPreview": "Refine an image to see the comparison"
+      },
+      "notifications": {
+        "refineSuccess": "Image refined successfully",
+        "refineFailed": "Image refinement failed",
+        "batchStarted": "Batch refinement started",
+        "batchComplete": "Batch refinement complete",
+        "loraTrainStarted": "LoRA training started",
+        "loraTrainComplete": "LoRA training complete",
+        "loraDeleted": "LoRA model deleted",
+        "noGpu": "GPU required for diffusion refinement",
+        "lowVram": "Insufficient GPU memory (6GB+ required)",
+        "annotationsWarning": "Low annotation preservation detected"
+      }
     },
     "optimization": {
       "title": "Automatic Optimization",

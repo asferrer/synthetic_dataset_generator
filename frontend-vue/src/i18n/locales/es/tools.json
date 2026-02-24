@@ -114,7 +114,9 @@
       "food": "Comida y Cocina",
       "foodDesc": "Alimentos y utensilios de cocina",
       "fashion": "Moda y Ropa",
-      "fashionDesc": "Ropa y accesorios"
+      "fashionDesc": "Ropa y accesorios",
+      "marineDebris": "Residuos Marinos",
+      "marineDebrisDesc": "Detección de residuos submarinos"
     },
     "input": {
       "imageDirectories": "Directorios de Imágenes",
@@ -151,7 +153,7 @@
         "replace": "Reemplazar - Eliminar todo, re-etiquetar completamente",
         "improve": "Mejorar - Mejorar calidad de segmentación"
       },
-      "existingAnnotations": "Ruta de Anotaciones Existentes (opcional)"
+      "existingAnnotations": "Ruta de Anotaciones Existentes"
     },
     "progress": {
       "title": "Progreso del Trabajo Actual",
@@ -188,6 +190,8 @@
       "missingInput": "Entrada Faltante",
       "missingDirectories": "Por favor especifica al menos un directorio de imágenes",
       "missingClasses": "Por favor especifica al menos una clase a detectar",
+      "missingAnnotations": "Por favor proporciona un archivo de anotaciones existente (COCO JSON) para el re-etiquetado",
+      "outputConflict": "Ya hay un trabajo ejecutándose con el mismo directorio de salida. Espera a que termine o usa una ruta diferente.",
       "cancelled": "Trabajo de etiquetado cancelado",
       "cancelFailed": "Error al cancelar el trabajo",
       "pollingError": "Problema de Conexión",
@@ -296,7 +300,8 @@
       "references": "Imágenes de Referencia",
       "validation": "Validación",
       "randomization": "Domain Randomization",
-      "styleTransfer": "Style Transfer"
+      "styleTransfer": "Style Transfer",
+      "diffusion": "Refinamiento por Difusión"
     },
     "references": {
       "title": "Conjuntos de Imágenes de Referencia",
@@ -383,6 +388,9 @@
         "apply": "Aplicar Sugerencia",
         "applyAll": "Aplicar Todas las Sugerencias"
       },
+      "skip": "Omitir",
+      "issuesDetected": "problemas detectados",
+      "parameterSuggestions": "sugerencias de parámetros",
       "progress": {
         "phases": {
           "pending": "Iniciando análisis...",
@@ -440,6 +448,96 @@
         "depthGuided": "Transferencia Guiada por Profundidad"
       },
       "applyBatch": "Aplicar Transferencia de Estilo"
+    },
+    "diffusion": {
+      "title": "Refinamiento por Difusión",
+      "description": "Usa modelos de difusión modernos para cerrar el domain gap preservando anotaciones",
+      "sourceDirectory": "Directorio de origen",
+      "outputDirectory": "Directorio de salida",
+      "method": {
+        "label": "Método de Refinamiento",
+        "controlnet": "ControlNet + Profundidad",
+        "controlnetDesc": "Usa mapas de profundidad como guía estructural con refinamiento img2img",
+        "ipAdapter": "IP-Adapter",
+        "ipAdapterDesc": "Transferencia de estilo zero-shot usando imágenes de referencia",
+        "lora": "LoRA Fine-tuning",
+        "loraDesc": "Adaptación específica al dominio entrenada con tu set de referencia"
+      },
+      "params": {
+        "strength": "Fuerza de Denoising",
+        "strengthHint": "Valores más bajos preservan más estructura (0.3-0.5 recomendado)",
+        "conditioningScale": "Escala ControlNet",
+        "conditioningScaleHint": "Valores más altos refuerzan la estructura con más fuerza",
+        "ipAdapterScale": "Escala IP-Adapter",
+        "ipAdapterScaleHint": "Controla la intensidad de transferencia de estilo",
+        "guidanceScale": "Escala de Guía",
+        "steps": "Pasos de Inferencia",
+        "useLcm": "Usar Lightning (4 pasos)",
+        "useLcmHint": "Mucho más rápido pero calidad ligeramente menor",
+        "prompt": "Prompt de Texto",
+        "promptPlaceholder": "Opcional: describe la apariencia objetivo",
+        "negativePrompt": "Prompt Negativo",
+        "seed": "Semilla",
+        "seedPlaceholder": "Dejar vacío para aleatorio",
+        "loraWeight": "Peso LoRA",
+        "loraWeightHint": "Fuerza de la adaptación específica al dominio"
+      },
+      "lora": {
+        "title": "Modelos LoRA",
+        "train": "Entrenar Nuevo LoRA",
+        "trainingSteps": "Pasos de Entrenamiento",
+        "learningRate": "Tasa de Aprendizaje",
+        "rank": "Rango LoRA",
+        "resolution": "Resolución",
+        "batchSize": "Tamaño de Lote",
+        "promptTemplate": "Plantilla de Prompt",
+        "noModels": "No hay modelos LoRA entrenados aún",
+        "modelId": "ID del Modelo",
+        "modelIdPlaceholder": "ej., submarino-v1",
+        "delete": "Eliminar",
+        "deleteConfirm": "¿Estás seguro de que deseas eliminar este modelo LoRA?",
+        "training": "Entrenando LoRA...",
+        "trainingComplete": "Entrenamiento LoRA completado",
+        "size": "Tamaño",
+        "createdAt": "Creado"
+      },
+      "annotations": {
+        "title": "Preservación de Anotaciones",
+        "edgeIou": "IoU de Bordes",
+        "edgeIouHint": "Solapamiento de estructuras de bordes (mayor = mejor preservado)",
+        "ssim": "Similitud Estructural",
+        "ssimHint": "Preservación estructural general (mayor = mejor)",
+        "keypointDisplacement": "Desplazamiento de Puntos Clave",
+        "keypointDisplacementHint": "Desplazamiento promedio en píxeles (menor = mejor)",
+        "valid": "Anotaciones preservadas",
+        "invalid": "Las anotaciones pueden estar corruptas - considera reducir la fuerza",
+        "threshold": "Umbral de Validez"
+      },
+      "actions": {
+        "refineSingle": "Refinar Imagen",
+        "refineBatch": "Refinar Lote",
+        "refining": "Refinando...",
+        "selectMethod": "Selecciona un método de refinamiento",
+        "selectReferenceSet": "Selecciona un set de referencia",
+        "selectLoraModel": "Selecciona un modelo LoRA"
+      },
+      "preview": {
+        "before": "Antes",
+        "after": "Después",
+        "noPreview": "Refina una imagen para ver la comparación"
+      },
+      "notifications": {
+        "refineSuccess": "Imagen refinada exitosamente",
+        "refineFailed": "Falló el refinamiento de la imagen",
+        "batchStarted": "Refinamiento por lotes iniciado",
+        "batchComplete": "Refinamiento por lotes completado",
+        "loraTrainStarted": "Entrenamiento LoRA iniciado",
+        "loraTrainComplete": "Entrenamiento LoRA completado",
+        "loraDeleted": "Modelo LoRA eliminado",
+        "noGpu": "Se requiere GPU para refinamiento por difusión",
+        "lowVram": "Memoria GPU insuficiente (se requieren 6GB+)",
+        "annotationsWarning": "Se detectó baja preservación de anotaciones"
+      }
     },
     "optimization": {
       "title": "Optimización Automática",

@@ -1088,3 +1088,90 @@ export async function listAutoTuneJobs(): Promise<any> {
   const response = await api.get('/auto-tune/jobs')
   return response.data
 }
+
+
+// ==================== Diffusion Refinement ====================
+
+export async function diffusionRefine(request: {
+  image_path: string
+  config: {
+    method: 'controlnet' | 'ip_adapter' | 'lora'
+    reference_set_id: string
+    strength?: number
+    controlnet_conditioning_scale?: number
+    use_depth_conditioning?: boolean
+    ip_adapter_scale?: number
+    lora_model_id?: string | null
+    lora_weight?: number
+    guidance_scale?: number
+    num_inference_steps?: number
+    use_lcm?: boolean
+    seed?: number | null
+    validate_annotations?: boolean
+    annotation_threshold?: number
+    prompt?: string
+    negative_prompt?: string
+  }
+  output_path: string
+  depth_map_path?: string | null
+  annotations_path?: string | null
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/refine', request)
+  return response.data
+}
+
+export async function diffusionRefineBatch(request: {
+  images_dir: string
+  config: {
+    method: 'controlnet' | 'ip_adapter' | 'lora'
+    reference_set_id: string
+    strength?: number
+    controlnet_conditioning_scale?: number
+    ip_adapter_scale?: number
+    lora_model_id?: string | null
+    guidance_scale?: number
+    num_inference_steps?: number
+    use_lcm?: boolean
+    validate_annotations?: boolean
+    prompt?: string
+    negative_prompt?: string
+  }
+  output_dir: string
+  annotations_dir?: string | null
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/refine-batch', request, { timeout: 300000 })
+  return response.data
+}
+
+export async function diffusionTrainLora(request: {
+  reference_set_id: string
+  model_id: string
+  training_steps?: number
+  learning_rate?: number
+  lora_rank?: number
+  resolution?: number
+  batch_size?: number
+  prompt_template?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/train-lora', request)
+  return response.data
+}
+
+export async function listLoraModels(): Promise<any> {
+  const response = await api.get('/domain-gap/diffusion/lora-models')
+  return response.data
+}
+
+export async function deleteLoraModel(modelId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/diffusion/lora-models/${modelId}`)
+  return response.data
+}
+
+export async function validateAnnotations(request: {
+  original_path: string
+  refined_path: string
+  threshold?: number
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/validate-annotations', request)
+  return response.data
+}

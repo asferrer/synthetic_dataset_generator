@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import { useDomainGapStore } from '@/stores/domainGap'
@@ -28,6 +28,7 @@ import {
   FolderOpen,
   Palette,
   Zap,
+  Sparkles,
 } from 'lucide-vue-next'
 import type { GapAnalysis, ReferenceSet, ParameterSuggestion, UploadProgress } from '@/stores/domainGap'
 
@@ -40,13 +41,14 @@ const domainStore = useDomainStore()
 // Tab management
 // ============================================
 
-const activeTab = ref<'references' | 'validation' | 'randomization' | 'styleTransfer'>('references')
+const activeTab = ref<'references' | 'validation' | 'randomization' | 'styleTransfer' | 'diffusion'>('references')
 
 const tabs = computed(() => [
   { id: 'references' as const, label: t('tools.domainGap.tabs.references'), icon: ImageIcon },
   { id: 'validation' as const, label: t('tools.domainGap.tabs.validation'), icon: BarChart3 },
   { id: 'randomization' as const, label: t('tools.domainGap.tabs.randomization'), icon: Shuffle },
   { id: 'styleTransfer' as const, label: t('tools.domainGap.tabs.styleTransfer'), icon: Palette },
+  { id: 'diffusion' as const, label: t('tools.domainGap.tabs.diffusion'), icon: Sparkles },
 ])
 
 // ============================================
@@ -276,6 +278,120 @@ async function handleStyleTransfer() {
 }
 
 // ============================================
+// Diffusion Refinement tab state
+// ============================================
+
+const selectedDiffusionMethod = ref<'controlnet' | 'ip_adapter' | 'lora'>('controlnet')
+const diffusionReferenceSetId = ref('')
+const selectedLoraModelId = ref('')
+const diffusionSourceDir = ref('')
+const diffusionOutputDir = ref('')
+const showLoraTraining = ref(false)
+const loraTrainingModelId = ref('')
+const loraTrainingSteps = ref(500)
+const loraTrainingRank = ref(4)
+const loraTrainingLR = ref(0.0001)
+
+const diffusionConfig = reactive({
+  strength: 0.4,
+  controlnet_conditioning_scale: 0.8,
+  ip_adapter_scale: 0.5,
+  lora_weight: 0.7,
+  guidance_scale: 7.5,
+  num_inference_steps: 30,
+  use_lcm: false,
+  prompt: '',
+  negative_prompt: 'blurry, distorted, artifacts, watermark',
+  seed: null as number | null,
+})
+
+const diffusionMethods = computed(() => [
+  {
+    id: 'controlnet' as const,
+    label: t('tools.domainGap.diffusion.method.controlnet'),
+    description: t('tools.domainGap.diffusion.method.controlnetDesc'),
+  },
+  {
+    id: 'ip_adapter' as const,
+    label: t('tools.domainGap.diffusion.method.ipAdapter'),
+    description: t('tools.domainGap.diffusion.method.ipAdapterDesc'),
+  },
+  {
+    id: 'lora' as const,
+    label: t('tools.domainGap.diffusion.method.lora'),
+    description: t('tools.domainGap.diffusion.method.loraDesc'),
+  },
+])
+
+async function handleDiffusionRefineBatch() {
+  if (!diffusionReferenceSetId.value || !diffusionSourceDir.value) return
+
+  const config = {
+    method: selectedDiffusionMethod.value,
+    reference_set_id: diffusionReferenceSetId.value,
+    lora_model_id: selectedDiffusionMethod.value === 'lora' ? selectedLoraModelId.value : null,
+    strength: diffusionConfig.strength,
+    controlnet_conditioning_scale: diffusionConfig.controlnet_conditioning_scale,
+    use_depth_conditioning: selectedDiffusionMethod.value === 'controlnet',
+    ip_adapter_scale: diffusionConfig.ip_adapter_scale,
+    lora_weight: diffusionConfig.lora_weight,
+    guidance_scale: diffusionConfig.guidance_scale,
+    num_inference_steps: diffusionConfig.num_inference_steps,
+    use_lcm: diffusionConfig.use_lcm,
+    seed: diffusionConfig.seed,
+    validate_annotations: true,
+    annotation_threshold: 0.65,
+    prompt: diffusionConfig.prompt,
+    negative_prompt: diffusionConfig.negative_prompt,
+  }
+
+  const jobId = await store.applyDiffusionRefineBatch(
+    diffusionSourceDir.value,
+    diffusionOutputDir.value || diffusionSourceDir.value.replace(/\/?$/, '_refined/'),
+    config as any,
+  )
+
+  if (jobId) {
+    await store.fetchJobs()
+    uiStore.showSuccess(
+      t('tools.domainGap.diffusion.notifications.batchStarted'),
+      jobId,
+    )
+  } else {
+    uiStore.showError(
+      t('tools.domainGap.diffusion.notifications.refineFailed'),
+      store.lastDiffusionError || undefined,
+    )
+  }
+}
+
+async function handleTrainLora() {
+  if (!diffusionReferenceSetId.value || !loraTrainingModelId.value) return
+
+  const jobId = await store.trainLora(diffusionReferenceSetId.value, loraTrainingModelId.value, {
+    training_steps: loraTrainingSteps.value,
+    learning_rate: loraTrainingLR.value,
+    lora_rank: loraTrainingRank.value,
+  })
+
+  if (jobId) {
+    showLoraTraining.value = false
+    await store.fetchJobs()
+    uiStore.showSuccess(t('tools.domainGap.diffusion.notifications.loraTrainStarted'), jobId)
+  } else {
+    uiStore.showError(
+      t('tools.domainGap.diffusion.notifications.refineFailed'),
+      store.lastDiffusionError || undefined,
+    )
+  }
+}
+
+async function handleDeleteLora(modelId: string) {
+  if (!confirm(t('tools.domainGap.diffusion.lora.deleteConfirm'))) return
+  await store.removeLoraModel(modelId)
+}
+
+// ============================================
 // Optimization state
 // ============================================
 
@@ -334,6 +450,13 @@ const referenceSetOptions = computed(() =>
   })),
 )
 
+const randReferenceSetId = computed({
+  get: () => randConfig.reference_set_id ?? '',
+  set: (val: string) => {
+    randConfig.reference_set_id = val === '' ? null : val
+  },
+})
+
 // ============================================
 // Lifecycle
 // ============================================
@@ -342,7 +465,12 @@ onMounted(async () => {
   await Promise.all([
     store.fetchReferenceSets(),
     domainStore.fetchDomains(),
+    store.fetchLoraModels(),
   ])
+})
+
+onUnmounted(() => {
+  store.reset()
 })
 </script>
 
@@ -362,7 +490,7 @@ onMounted(async () => {
     </div>
 
     <!-- Error alert -->
-    <AlertBox v-if="store.error" variant="error" class="mb-6" dismissible @dismiss="store.error = null">
+    <AlertBox v-if="store.error" type="error" class="mb-6" dismissible @dismiss="store.error = null">
       {{ store.error }}
     </AlertBox>
 
@@ -1025,7 +1153,7 @@ onMounted(async () => {
         <!-- Reference set for histogram matching -->
         <div class="mb-6">
           <BaseSelect
-            v-model="randConfig.reference_set_id"
+            v-model="randReferenceSetId"
             :label="t('tools.domainGap.validation.referenceSet')"
             :options="[{ value: '', label: 'None (no histogram matching)' }, ...referenceSetOptions]"
           />
@@ -1040,6 +1168,385 @@ onMounted(async () => {
           <Shuffle class="h-4 w-4 mr-2" />
           {{ t('tools.domainGap.randomization.applyBatch') }}
         </BaseButton>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- TAB: Diffusion Refinement -->
+    <!-- ============================================ -->
+    <div v-if="activeTab === 'diffusion'" class="space-y-6">
+
+      <!-- Method Selection -->
+      <div class="rounded-xl border border-gray-700/50 bg-background-card p-6">
+        <h3 class="text-lg font-semibold text-white mb-2">
+          {{ t('tools.domainGap.diffusion.title') }}
+        </h3>
+        <p class="text-sm text-gray-400 mb-6">
+          {{ t('tools.domainGap.diffusion.description') }}
+        </p>
+
+        <!-- Method Radio Group -->
+        <div class="mb-6">
+          <label class="block text-sm font-medium text-gray-300 mb-3">
+            {{ t('tools.domainGap.diffusion.method.label') }}
+          </label>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <button
+              v-for="method in diffusionMethods"
+              :key="method.id"
+              @click="selectedDiffusionMethod = method.id"
+              :class="[
+                'p-4 rounded-xl border-2 text-left transition-colors',
+                selectedDiffusionMethod === method.id
+                  ? 'border-primary bg-primary/10 text-white'
+                  : 'border-gray-700/50 hover:border-gray-600/50 text-gray-300',
+              ]"
+            >
+              <div class="font-medium text-sm">{{ method.label }}</div>
+              <div class="text-xs text-gray-500 mt-1">{{ method.description }}</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Reference Set Selector -->
+        <div class="mb-4">
+          <BaseSelect
+            v-model="diffusionReferenceSetId"
+            :label="t('tools.domainGap.diffusion.actions.selectReferenceSet')"
+            :options="referenceSetOptions"
+            :placeholder="t('tools.domainGap.diffusion.actions.selectReferenceSet')"
+          />
+        </div>
+
+        <!-- LoRA Model Selector (visible only when method is lora) -->
+        <div v-if="selectedDiffusionMethod === 'lora'" class="mb-4">
+          <BaseSelect
+            v-model="selectedLoraModelId"
+            :label="t('tools.domainGap.diffusion.actions.selectLoraModel')"
+            :options="store.loraModels.map(m => ({ value: m.model_id, label: `${m.model_id} (${m.model_size_mb.toFixed(1)} MB)` }))"
+            :placeholder="t('tools.domainGap.diffusion.actions.selectLoraModel')"
+          />
+          <p v-if="!store.hasLoraModels" class="text-xs text-gray-500 mt-1">
+            {{ t('tools.domainGap.diffusion.lora.noModels') }}
+          </p>
+        </div>
+      </div>
+
+      <!-- Parameters Panel -->
+      <div class="rounded-xl border border-gray-700/50 bg-background-card p-6">
+        <h4 class="font-semibold text-white mb-4">{{ t('tools.domainGap.diffusion.params.strength') }}</h4>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Strength Slider -->
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.strength') }}: {{ diffusionConfig.strength.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.strength"
+              type="range"
+              min="0.1"
+              max="0.7"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+            <p class="text-xs text-gray-500 mt-1">{{ t('tools.domainGap.diffusion.params.strengthHint') }}</p>
+          </div>
+
+          <!-- ControlNet Scale (visible for controlnet method) -->
+          <div v-if="selectedDiffusionMethod === 'controlnet'">
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.conditioningScale') }}: {{ diffusionConfig.controlnet_conditioning_scale.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.controlnet_conditioning_scale"
+              type="range"
+              min="0.3"
+              max="1.0"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+            <p class="text-xs text-gray-500 mt-1">{{ t('tools.domainGap.diffusion.params.conditioningScaleHint') }}</p>
+          </div>
+
+          <!-- IP-Adapter Scale (visible for ip_adapter method) -->
+          <div v-if="selectedDiffusionMethod === 'ip_adapter'">
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.ipAdapterScale') }}: {{ diffusionConfig.ip_adapter_scale.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.ip_adapter_scale"
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+            <p class="text-xs text-gray-500 mt-1">{{ t('tools.domainGap.diffusion.params.ipAdapterScaleHint') }}</p>
+          </div>
+
+          <!-- LoRA Weight (visible for lora method) -->
+          <div v-if="selectedDiffusionMethod === 'lora'">
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.loraWeight') }}: {{ diffusionConfig.lora_weight.toFixed(2) }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.lora_weight"
+              type="range"
+              min="0.1"
+              max="1.0"
+              step="0.05"
+              class="w-full accent-primary"
+            />
+            <p class="text-xs text-gray-500 mt-1">{{ t('tools.domainGap.diffusion.params.loraWeightHint') }}</p>
+          </div>
+
+          <!-- Guidance Scale -->
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.guidanceScale') }}: {{ diffusionConfig.guidance_scale.toFixed(1) }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.guidance_scale"
+              type="range"
+              min="1"
+              max="20"
+              step="0.5"
+              class="w-full accent-primary"
+            />
+          </div>
+
+          <!-- Inference Steps -->
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">
+              {{ t('tools.domainGap.diffusion.params.steps') }}: {{ diffusionConfig.num_inference_steps }}
+            </label>
+            <input
+              v-model.number="diffusionConfig.num_inference_steps"
+              type="range"
+              min="4"
+              max="100"
+              step="1"
+              class="w-full accent-primary"
+            />
+          </div>
+
+          <!-- LCM Toggle -->
+          <div class="flex items-center gap-3">
+            <input
+              v-model="diffusionConfig.use_lcm"
+              type="checkbox"
+              id="diffusion-use-lcm"
+              class="h-4 w-4 accent-primary"
+            />
+            <label for="diffusion-use-lcm" class="text-sm font-medium text-gray-300">
+              {{ t('tools.domainGap.diffusion.params.useLcm') }}
+            </label>
+            <span class="text-xs text-gray-500">{{ t('tools.domainGap.diffusion.params.useLcmHint') }}</span>
+          </div>
+
+          <!-- Prompt -->
+          <div class="md:col-span-2">
+            <BaseInput
+              v-model="diffusionConfig.prompt"
+              :label="t('tools.domainGap.diffusion.params.prompt')"
+              :placeholder="t('tools.domainGap.diffusion.params.promptPlaceholder')"
+            />
+          </div>
+
+          <!-- Negative Prompt -->
+          <div class="md:col-span-2">
+            <BaseInput
+              v-model="diffusionConfig.negative_prompt"
+              :label="t('tools.domainGap.diffusion.params.negativePrompt')"
+            />
+          </div>
+
+          <!-- Seed -->
+          <div>
+            <BaseInput
+              v-model.number="diffusionConfig.seed"
+              :label="t('tools.domainGap.diffusion.params.seed')"
+              type="number"
+              :placeholder="t('tools.domainGap.diffusion.params.seedPlaceholder')"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Directory Inputs & Actions -->
+      <div class="rounded-xl border border-gray-700/50 bg-background-card p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <DirectoryBrowser
+            v-model="diffusionSourceDir"
+            :label="t('tools.domainGap.diffusion.sourceDirectory')"
+            path-mode="both"
+          />
+          <DirectoryBrowser
+            v-model="diffusionOutputDir"
+            :label="t('tools.domainGap.diffusion.outputDirectory')"
+            path-mode="output"
+          />
+        </div>
+
+        <BaseButton
+          @click="handleDiffusionRefineBatch"
+          variant="primary"
+          :disabled="store.isDiffusionProcessing || !diffusionReferenceSetId || !diffusionSourceDir"
+          :loading="store.isDiffusionProcessing"
+        >
+          <Sparkles class="h-4 w-4 mr-2" />
+          <span v-if="store.isDiffusionProcessing">{{ t('tools.domainGap.diffusion.actions.refining') }}</span>
+          <span v-else>{{ t('tools.domainGap.diffusion.actions.refineBatch') }}</span>
+        </BaseButton>
+
+        <!-- Error Display -->
+        <AlertBox
+          v-if="store.lastDiffusionError"
+          type="error"
+          class="mt-4"
+        >
+          {{ store.lastDiffusionError }}
+        </AlertBox>
+      </div>
+
+      <!-- Annotation Preservation Metrics -->
+      <div
+        v-if="store.lastPreservationMetrics"
+        class="rounded-xl border border-gray-700/50 bg-background-card p-6"
+      >
+        <h4 class="font-semibold text-white mb-4">
+          {{ t('tools.domainGap.diffusion.annotations.title') }}
+        </h4>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <MetricCard
+            :title="t('tools.domainGap.diffusion.annotations.edgeIou')"
+            :value="`${(store.lastPreservationMetrics.edge_iou * 100).toFixed(1)}%`"
+            :icon="BarChart3"
+            :variant="store.lastPreservationMetrics.edge_iou >= 0.65 ? 'success' : 'error'"
+          />
+          <MetricCard
+            :title="t('tools.domainGap.diffusion.annotations.ssim')"
+            :value="`${(store.lastPreservationMetrics.ssim * 100).toFixed(1)}%`"
+            :icon="BarChart3"
+            :variant="store.lastPreservationMetrics.ssim >= 0.6 ? 'success' : 'error'"
+          />
+          <MetricCard
+            :title="t('tools.domainGap.diffusion.annotations.keypointDisplacement')"
+            :value="`${store.lastPreservationMetrics.mean_keypoint_displacement.toFixed(1)}px`"
+            :icon="BarChart3"
+            :variant="store.lastPreservationMetrics.mean_keypoint_displacement <= 10 ? 'success' : 'error'"
+          />
+        </div>
+
+        <div class="text-center">
+          <span
+            v-if="store.lastPreservationMetrics.annotations_valid"
+            class="inline-flex items-center gap-1.5 text-green-400 text-sm font-medium"
+          >
+            <CheckCircle class="h-4 w-4" />
+            {{ t('tools.domainGap.diffusion.annotations.valid') }}
+          </span>
+          <span
+            v-else
+            class="inline-flex items-center gap-1.5 text-red-400 text-sm font-medium"
+          >
+            <AlertTriangle class="h-4 w-4" />
+            {{ t('tools.domainGap.diffusion.annotations.invalid') }}
+          </span>
+        </div>
+      </div>
+
+      <!-- LoRA Management Section -->
+      <div class="rounded-xl border border-gray-700/50 bg-background-card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h4 class="font-semibold text-white">{{ t('tools.domainGap.diffusion.lora.title') }}</h4>
+          <BaseButton
+            @click="showLoraTraining = !showLoraTraining"
+            variant="ghost"
+            class="text-purple-400 hover:text-purple-300 hover:bg-purple-900/20"
+          >
+            <Sparkles class="h-4 w-4 mr-2" />
+            {{ t('tools.domainGap.diffusion.lora.train') }}
+          </BaseButton>
+        </div>
+
+        <!-- LoRA Training Form -->
+        <div v-if="showLoraTraining" class="mb-6 rounded-xl border border-purple-700/30 bg-purple-900/10 p-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <BaseInput
+              v-model="loraTrainingModelId"
+              :label="t('tools.domainGap.diffusion.lora.modelId')"
+              :placeholder="t('tools.domainGap.diffusion.lora.modelIdPlaceholder')"
+            />
+            <BaseInput
+              v-model.number="loraTrainingSteps"
+              :label="t('tools.domainGap.diffusion.lora.trainingSteps')"
+              type="number"
+              :min="100"
+              :max="5000"
+            />
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2">
+                {{ t('tools.domainGap.diffusion.lora.rank') }}
+              </label>
+              <BaseSelect
+                :modelValue="loraTrainingRank"
+                @update:modelValue="loraTrainingRank = Number($event)"
+                :options="[{ value: 4, label: '4' }, { value: 8, label: '8' }, { value: 16, label: '16' }, { value: 32, label: '32' }]"
+              />
+            </div>
+            <BaseInput
+              v-model.number="loraTrainingLR"
+              :label="t('tools.domainGap.diffusion.lora.learningRate')"
+              type="number"
+              :min="0.00001"
+              :max="0.01"
+              :step="0.0001"
+            />
+          </div>
+          <div class="flex gap-3">
+            <BaseButton
+              @click="handleTrainLora"
+              variant="primary"
+              :disabled="store.isLoraTraining || !diffusionReferenceSetId || !loraTrainingModelId"
+              :loading="store.isLoraTraining"
+              class="bg-purple-600 hover:bg-purple-700"
+            >
+              <span v-if="store.isLoraTraining">{{ t('tools.domainGap.diffusion.lora.training') }}</span>
+              <span v-else>{{ t('tools.domainGap.diffusion.lora.train') }}</span>
+            </BaseButton>
+            <BaseButton @click="showLoraTraining = false" variant="ghost">
+              {{ t('common.actions.cancel') }}
+            </BaseButton>
+          </div>
+        </div>
+
+        <!-- LoRA Models List -->
+        <div v-if="store.hasLoraModels" class="space-y-2">
+          <div
+            v-for="lora in store.loraModels"
+            :key="lora.model_id"
+            class="flex items-center justify-between rounded-lg border border-gray-700/50 bg-background-secondary p-3"
+          >
+            <div>
+              <div class="font-medium text-sm text-white">{{ lora.model_id }}</div>
+              <div class="text-xs text-gray-500 mt-0.5">
+                {{ lora.training_steps }} steps &middot; rank {{ lora.lora_rank }} &middot; {{ lora.model_size_mb.toFixed(1) }} MB
+              </div>
+            </div>
+            <button
+              @click="handleDeleteLora(lora.model_id)"
+              class="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded-lg hover:bg-red-900/20"
+            >
+              <Trash2 class="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div v-else class="text-sm text-gray-500">
+          {{ t('tools.domainGap.diffusion.lora.noModels') }}
+        </div>
       </div>
     </div>
 
