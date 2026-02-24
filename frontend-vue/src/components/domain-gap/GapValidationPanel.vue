@@ -111,6 +111,7 @@ function handleApplySuggestions() {
 }
 
 onMounted(async () => {
+  store.clearAnalysis()
   await store.fetchReferenceSets()
   if (store.hasReferenceSets) {
     expanded.value = true
@@ -194,7 +195,7 @@ onMounted(async () => {
             size="sm"
           >
             <SkipForward class="h-4 w-4 mr-1" />
-            Skip
+            {{ t('tools.domainGap.validation.skip') }}
           </BaseButton>
         </div>
       </div>
@@ -235,7 +236,7 @@ onMounted(async () => {
             class="text-sm text-gray-400 hover:text-white flex items-center gap-1"
           >
             <AlertTriangle class="h-3.5 w-3.5 text-yellow-400" />
-            {{ store.latestAnalysis.issues.length }} issues detected
+            {{ store.latestAnalysis.issues.length }} {{ t('tools.domainGap.validation.issuesDetected') }}
             <ChevronDown v-if="!showDetails" class="h-3.5 w-3.5" />
             <ChevronUp v-else class="h-3.5 w-3.5" />
           </button>
@@ -264,7 +265,7 @@ onMounted(async () => {
           <div class="flex items-center justify-between">
             <span class="text-sm text-gray-400 flex items-center gap-1">
               <Lightbulb class="h-3.5 w-3.5 text-yellow-400" />
-              {{ store.latestAnalysis.suggestions.length }} parameter suggestions
+              {{ store.latestAnalysis.suggestions.length }} {{ t('tools.domainGap.validation.parameterSuggestions') }}
             </span>
             <BaseButton
               @click="handleApplySuggestions"

@@ -397,6 +397,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     useSegmentation.value = true
     depthAwarePlacement.value = true
     activeJobId.value = null
+    autoTuneEnabled.value = false
+    autoTuneJobId.value = null
+    autoTuneStatus.value = null
+    autoTuneReferenceSetId.value = null
+    autoTuneTargetScore.value = 25
+    autoTuneMaxIterations.value = 5
+    autoTuneProbeSize.value = 30
   }
 
   function resetEffectsConfig() {

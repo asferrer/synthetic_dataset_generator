@@ -271,7 +271,9 @@
     },
     "actions": {
       "startGeneration": "Iniciar Generación",
-      "continueToExport": "Continuar a Exportar"
+      "continueToExport": "Continuar a Exportar",
+      "suggestionsApplied": "Sugerencias Aplicadas",
+      "suggestionsAppliedMsg": "{count} sugerencias de parámetros aplicadas"
     },
     "autoTune": {
       "title": "Auto-Ajuste de Efectos",

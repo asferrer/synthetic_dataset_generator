@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUiStore } from '@/stores/ui'
 import { startGeneration, getJob, getActiveLabelingJobs, startAutoTune, getAutoTuneStatus, cancelAutoTune } from '@/lib/api'
+import { useDomainGapStore } from '@/stores/domainGap'
 import MetricCard from '@/components/common/MetricCard.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -46,6 +47,7 @@ import type { Job, LabelingJob, ValidationConfig, BatchConfig, LightingEstimatio
 
 const router = useRouter()
 const workflowStore = useWorkflowStore()
+const domainGapStore = useDomainGapStore()
 const uiStore = useUiStore()
 const { t } = useI18n()
 
@@ -99,6 +101,13 @@ const canGenerate = computed(() => {
 
 const totalTargetImages = computed(() =>
   Object.values(targets.value).reduce((sum, val) => sum + val, 0)
+)
+
+const autoTuneRefSetOptions = computed(() =>
+  domainGapStore.referenceSets.map(s => ({
+    value: s.set_id,
+    label: `${s.name} (${s.image_count} imgs)`,
+  }))
 )
 
 // Watch for store changes
@@ -385,6 +394,11 @@ watch(() => workflowStore.balancingTargets, (newTargets) => {
 
 // Load active labeling jobs
 loadActiveLabelingJobs()
+
+// Load reference sets for auto-tune panel
+onMounted(() => {
+  domainGapStore.fetchReferenceSets()
+})
 
 // Cleanup on unmount
 onUnmounted(() => {
@@ -963,10 +977,71 @@ onUnmounted(() => {
             workflowStore.updateAdvancedEffect(effectKey, { [paramKey]: s.suggested_value })
           }
         }
-        uiStore.showSuccess('Suggestions Applied', `Applied ${suggestions.length} parameter suggestions`)
+        uiStore.showSuccess(t('workflow.generation.actions.suggestionsApplied'), t('workflow.generation.actions.suggestionsAppliedMsg', { count: suggestions.length }))
         router.push('/configure')
       }"
     />
+
+    <!-- Auto-Tune Configuration -->
+    <div v-if="!generating && !currentJob?.status" class="rounded-xl border border-purple-700/30 bg-purple-900/10 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+            <Target class="h-5 w-5 text-purple-400" />
+            {{ t('workflow.generation.autoTune.title') }}
+          </h3>
+          <p class="text-sm text-gray-400 mt-1">
+            {{ t('workflow.generation.autoTune.description') }}
+          </p>
+        </div>
+        <button
+          :class="[workflowStore.autoTuneEnabled ? 'bg-purple-600' : 'bg-gray-600',
+                   'relative inline-flex h-6 w-11 items-center rounded-full transition-colors']"
+          @click="workflowStore.autoTuneEnabled = !workflowStore.autoTuneEnabled"
+        >
+          <span :class="[workflowStore.autoTuneEnabled ? 'translate-x-6' : 'translate-x-1',
+                         'inline-block h-4 w-4 transform rounded-full bg-white transition-transform']" />
+        </button>
+      </div>
+
+      <div v-if="workflowStore.autoTuneEnabled" class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <BaseSelect
+          v-model="workflowStore.autoTuneReferenceSetId"
+          :label="t('workflow.generation.autoTune.referenceSet')"
+          :options="autoTuneRefSetOptions"
+          :placeholder="t('tools.domainGap.validation.selectReferenceSet')"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneTargetScore"
+          :label="t('workflow.generation.autoTune.targetScore')"
+          type="number"
+          :min="5"
+          :max="80"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneMaxIterations"
+          :label="t('workflow.generation.autoTune.maxIterations')"
+          type="number"
+          :min="1"
+          :max="20"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneProbeSize"
+          :label="t('workflow.generation.autoTune.probeSize')"
+          type="number"
+          :min="10"
+          :max="200"
+        />
+      </div>
+
+      <AlertBox
+        v-if="workflowStore.autoTuneEnabled && !workflowStore.autoTuneReferenceSetId"
+        type="warning"
+        class="mt-4"
+      >
+        {{ t('workflow.generation.autoTune.missingRefSetMsg') }}
+      </AlertBox>
+    </div>
 
     <!-- Action Buttons -->
     <div class="flex justify-between pt-4">

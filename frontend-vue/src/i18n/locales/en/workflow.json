@@ -271,7 +271,9 @@
     },
     "actions": {
       "startGeneration": "Start Generation",
-      "continueToExport": "Continue to Export"
+      "continueToExport": "Continue to Export",
+      "suggestionsApplied": "Suggestions Applied",
+      "suggestionsAppliedMsg": "Applied {count} parameter suggestions"
     },
     "autoTune": {
       "title": "Auto-Tune Effects",
