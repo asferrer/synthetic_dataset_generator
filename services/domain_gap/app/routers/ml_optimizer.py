@@ -5,6 +5,9 @@ Endpoints for ML-based domain gap optimization using Bayesian optimization
 and predictive models.
 """
 
+import json
+import threading
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -73,10 +76,33 @@ class PredictGapScoreResponse(BaseModel):
 
 
 # =============================================================================
-# In-memory job store (TODO: move to database)
+# Cancellation events (thread-safe, used by background tasks in thread pool)
 # =============================================================================
 
-_ml_optimize_jobs: Dict[str, MLOptimizeStatus] = {}
+_cancel_events: Dict[str, threading.Event] = {}
+
+
+def _job_to_status(job_row: Dict[str, Any]) -> MLOptimizeStatus:
+    """Convert a DB job row to MLOptimizeStatus model."""
+    progress = job_row.get("progress_details") or {}
+    if isinstance(progress, str):
+        progress = json.loads(progress)
+    result = job_row.get("result_summary") or {}
+    if isinstance(result, str):
+        result = json.loads(result)
+    return MLOptimizeStatus(
+        job_id=job_row["id"],
+        status=job_row.get("status", "pending"),
+        current_trial=progress.get("current_trial", 0),
+        total_trials=progress.get("total_trials", 0),
+        best_gap_score=progress.get("best_gap_score"),
+        best_config=result.get("best_config"),
+        optimization_history=result.get("optimization_history", []),
+        feature_importance=result.get("feature_importance"),
+        error=job_row.get("error_message"),
+        started_at=progress.get("started_at"),
+        completed_at=progress.get("completed_at"),
+    )
 
 
 # =============================================================================
@@ -114,12 +140,22 @@ async def start_ml_optimization(
 
     job_id = f"mlopt_{uuid.uuid4().hex[:12]}"
 
-    job_status = MLOptimizeStatus(
+    state.db.create_job(
         job_id=job_id,
-        status="pending",
-        total_trials=request.n_trials,
+        job_type="ml_optimization",
+        service="domain_gap",
+        request_params={
+            "synthetic_dir": request.synthetic_dir,
+            "reference_set_id": request.reference_set_id,
+            "n_trials": request.n_trials,
+            "probe_size": request.probe_size,
+        },
+        total_items=request.n_trials,
     )
-    _ml_optimize_jobs[job_id] = job_status
+    state.db.update_job_progress(
+        job_id,
+        progress_details={"total_trials": request.n_trials, "current_trial": 0},
+    )
 
     background_tasks.add_task(
         _run_ml_optimization,
@@ -128,38 +164,54 @@ async def start_ml_optimization(
         ref_set.image_dir,
     )
 
-    return job_status
+    return MLOptimizeStatus(
+        job_id=job_id,
+        status="pending",
+        total_trials=request.n_trials,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=MLOptimizeStatus)
 async def get_ml_optimization_status(job_id: str):
     """Get status of ML optimization job."""
-    job = _ml_optimize_jobs.get(job_id)
-    if not job:
+    from app.main import state
+
+    job_row = state.db.get_job(job_id)
+    if not job_row:
         raise HTTPException(status_code=404, detail=f"ML optimization job {job_id} not found")
-    return job
+    return _job_to_status(job_row)
 
 
 @router.delete("/jobs/{job_id}")
 async def cancel_ml_optimization(job_id: str):
     """Cancel a running ML optimization job."""
-    job = _ml_optimize_jobs.get(job_id)
-    if not job:
+    from app.main import state
+
+    job_row = state.db.get_job(job_id)
+    if not job_row:
         raise HTTPException(status_code=404, detail=f"ML optimization job {job_id} not found")
 
-    if job.status in ("completed", "failed", "cancelled"):
-        return {"success": False, "message": f"Job already {job.status}"}
+    if job_row.get("status") in ("completed", "failed", "cancelled"):
+        return {"success": False, "message": f"Job already {job_row['status']}"}
 
-    job.status = "cancelled"
+    # Signal the background task to stop
+    event = _cancel_events.get(job_id)
+    if event:
+        event.set()
+
+    state.db.update_job_status(job_id, "cancelled")
     return {"success": True, "job_id": job_id, "message": "Cancellation requested"}
 
 
 @router.get("/jobs")
 async def list_ml_optimization_jobs():
     """List all ML optimization jobs."""
+    from app.main import state
+
+    rows = state.db.list_jobs(job_type="ml_optimization")
     return {
-        "jobs": list(_ml_optimize_jobs.values()),
-        "total": len(_ml_optimize_jobs),
+        "jobs": [_job_to_status(r) for r in rows],
+        "total": len(rows),
     }
 
 
@@ -271,33 +323,54 @@ async def _run_ml_optimization(
 ):
     """Background task for ML-guided Bayesian optimization."""
     import asyncio
-    import time
     from app.main import state
     from app.engines.bayesian_optimizer_engine import HybridOptimizer
     from app.engines.predictor_engine import PredictorEngine
 
-    job = _ml_optimize_jobs[job_id]
-    job.status = "optimizing"
-    job.started_at = time.time()
+    cancel_event = threading.Event()
+    _cancel_events[job_id] = cancel_event
+
+    state.db.update_job_status(job_id, "running")
+    state.db.update_job_progress(
+        job_id,
+        progress_details={
+            "total_trials": request.n_trials,
+            "current_trial": 0,
+            "started_at": time.time(),
+        },
+    )
+
+    current_trial = 0
+    best_gap_score: Optional[float] = None
+    best_config: Optional[Dict[str, Any]] = None
+    optimization_history: List[Dict[str, Any]] = []
 
     try:
         # Initialize predictor and optimizer
         predictor = PredictorEngine()
         optimizer = HybridOptimizer(predictor=predictor)
 
-        # Define evaluation callback: config → gap_score
         def evaluate_config(config: Dict[str, Any]) -> float:
-            """Generate probe images with this config and measure gap score."""
-            # This is a synchronous function called by Optuna
-            # We'll generate a small probe batch and measure metrics
+            """Evaluate a configuration proposed by Optuna.
 
-            # NOTE: In a real implementation, this would call the augmentor
-            # and metrics engines. For now, we'll use a placeholder that
-            # actually measures real gap scores.
+            TODO: Full implementation should:
+            1. Apply `config` to the augmentor service to generate a probe batch
+            2. Measure gap score on the generated probe images vs real reference
+            3. Return the gap score as the objective to minimize
+
+            Current limitation: measures the existing synthetic_dir baseline
+            without applying the suggested config. All trials evaluate the same
+            images, so the optimization explores configs but cannot validate them
+            against real generation. The best_config returned reflects Optuna's
+            search but is not experimentally validated.
+            """
+            nonlocal current_trial, best_gap_score, best_config
+
+            # Check for cancellation
+            if cancel_event.is_set():
+                raise RuntimeError("Cancelled by user")
 
             try:
-                # Compute metrics using the provided synthetic_dir
-                # (Assume user has already generated synthetic images)
                 metrics = state.metrics_engine.compute_metrics(
                     synthetic_dir=request.synthetic_dir,
                     real_dir=real_dir,
@@ -311,26 +384,35 @@ async def _run_ml_optimization(
                 )
 
                 gap_score = metrics.overall_gap_score
+                current_trial += 1
 
-                # Update job status
-                job.current_trial = job.current_trial + 1
-                job.optimization_history.append({
-                    "trial": job.current_trial,
+                optimization_history.append({
+                    "trial": current_trial,
                     "config": config,
                     "gap_score": gap_score,
                 })
 
-                if job.best_gap_score is None or gap_score < job.best_gap_score:
-                    job.best_gap_score = gap_score
-                    job.best_config = config
+                if best_gap_score is None or gap_score < best_gap_score:
+                    best_gap_score = gap_score
+                    best_config = config
 
-                logger.info(f"ML-opt {job_id}: trial {job.current_trial}, score={gap_score:.1f}")
+                # Update progress in DB
+                state.db.update_job_progress(
+                    job_id,
+                    processed_items=current_trial,
+                    progress_details={
+                        "total_trials": request.n_trials,
+                        "current_trial": current_trial,
+                        "best_gap_score": best_gap_score,
+                        "started_at": state.db.get_job(job_id).get("progress_details", {}).get("started_at"),
+                    },
+                )
 
+                logger.info(f"ML-opt {job_id}: trial {current_trial}, score={gap_score:.1f}")
                 return gap_score
 
             except Exception as e:
                 logger.error(f"Config evaluation failed: {e}")
-                # Return a high penalty score on failure
                 return 100.0
 
         # Run optimization
@@ -344,24 +426,39 @@ async def _run_ml_optimization(
             warm_start=request.warm_start,
         )
 
-        # Extract feature importance
-        job.feature_importance = optimizer.get_feature_importance()
+        feature_importance = optimizer.get_feature_importance()
 
-        # Update job with final results
-        job.best_config = result["best_config"]
-        job.best_gap_score = result["best_gap_score"]
-        job.optimization_history = result["optimization_history"]
-        job.status = "completed"
-        job.completed_at = time.time()
+        state.db.complete_job(
+            job_id,
+            "completed",
+            result_summary={
+                "best_config": result["best_config"],
+                "best_gap_score": result["best_gap_score"],
+                "optimization_history": result["optimization_history"],
+                "feature_importance": feature_importance,
+                "n_trials_completed": result.get("n_trials_completed", current_trial),
+            },
+            processing_time_ms=(time.time() - (state.db.get_job(job_id) or {}).get("started_at", time.time())) * 1000,
+        )
 
         logger.info(
             f"ML optimization {job_id} completed: "
-            f"best_score={job.best_gap_score:.1f}, "
-            f"trials={result['n_trials_completed']}"
+            f"best_score={result['best_gap_score']:.1f}, "
+            f"trials={result.get('n_trials_completed', current_trial)}"
         )
 
     except Exception as e:
         logger.exception(f"ML optimization {job_id} failed: {e}")
-        job.status = "failed"
-        job.error = str(e)
-        job.completed_at = time.time()
+        final_status = "cancelled" if cancel_event.is_set() else "failed"
+        state.db.complete_job(
+            job_id,
+            final_status,
+            error_message=str(e),
+            result_summary={
+                "best_config": best_config,
+                "best_gap_score": best_gap_score,
+                "optimization_history": optimization_history,
+            },
+        )
+    finally:
+        _cancel_events.pop(job_id, None)
