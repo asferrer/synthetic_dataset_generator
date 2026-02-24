@@ -89,7 +89,7 @@ class ReferenceManager:
             # Avoid name collisions by appending a counter
             if dst.exists():
                 dst = image_dir / f"{src.stem}_{copied}{src.suffix}"
-            shutil.move(str(src), str(dst))
+            shutil.copy2(str(src), str(dst))
             copied += 1
 
         if copied == 0:
@@ -97,7 +97,7 @@ class ReferenceManager:
             shutil.rmtree(str(image_dir), ignore_errors=True)
             raise ValueError("No valid images found in the provided paths")
 
-        logger.info("Moved {} images to {}", copied, image_dir)
+        logger.info("Copied {} images to {}", copied, image_dir)
 
         # Pre-compute statistics
         stats = self._compute_stats(str(image_dir))

@@ -10,6 +10,10 @@ LPIPS perceptual loss.
 
 Training requires ~10GB VRAM; inference requires ~3GB.
 Falls back to CPU if no GPU is available.
+
+TODO: CycleGAN API endpoints not yet implemented in main.py.
+This engine is ready but not exposed via any route. The DGRTechnique.CYCLEGAN
+enum value exists in schemas.py for future integration.
 """
 
 import json
