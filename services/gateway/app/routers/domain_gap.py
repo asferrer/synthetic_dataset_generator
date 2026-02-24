@@ -24,6 +24,8 @@ DOMAIN_GAP_TIMEOUT = 120.0
 DOMAIN_GAP_BATCH_TIMEOUT = 300.0    # 5 min per batch of ~50 files
 DOMAIN_GAP_COMPUTE_TIMEOUT = 600.0  # 10 min for FID/KID on large image sets
 DOMAIN_GAP_FINALIZE_TIMEOUT = 600.0  # 10 min for stats on 1000+ images
+DOMAIN_GAP_DIFFUSION_TIMEOUT = 300.0   # 5 min for single image diffusion refinement
+DOMAIN_GAP_LORA_TIMEOUT = 1800.0       # 30 min for LoRA training
 
 
 def _extract_detail(e: httpx.HTTPStatusError) -> str:
@@ -383,6 +385,110 @@ async def cancel_job(job_id: str):
         raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
     except Exception as e:
         logger.error(f"Failed to cancel job {job_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# ==================== Diffusion Refinement ====================
+
+@router.post("/diffusion/refine")
+async def diffusion_refine(request: Dict[str, Any]):
+    """Apply diffusion-based refinement to a single synthetic image."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_DIFFUSION_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/diffusion/refine",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to apply diffusion refinement: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/diffusion/refine-batch")
+async def diffusion_refine_batch(request: Dict[str, Any]):
+    """Apply diffusion-based refinement to a batch of synthetic images (async job)."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_DIFFUSION_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/diffusion/refine-batch",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to start diffusion refinement batch: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/diffusion/train-lora")
+async def diffusion_train_lora(request: Dict[str, Any]):
+    """Start a LoRA fine-tuning job on the reference domain (async job)."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_LORA_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/diffusion/train-lora",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to start LoRA training: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/diffusion/lora-models")
+async def list_lora_models():
+    """List all available LoRA models trained for diffusion refinement."""
+    client = _get_client()
+    try:
+        return await client.get("/diffusion/lora-models")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to list LoRA models: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.delete("/diffusion/lora-models/{model_id}")
+async def delete_lora_model(model_id: str):
+    """Delete a specific LoRA model by ID."""
+    client = _get_client()
+    try:
+        return await client.delete(f"/diffusion/lora-models/{model_id}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to delete LoRA model {model_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/diffusion/validate-annotations")
+async def diffusion_validate_annotations(request: Dict[str, Any]):
+    """Validate that diffusion-refined images preserve the original bounding-box annotations."""
+    client = _get_client()
+    try:
+        async with httpx.AsyncClient(timeout=DOMAIN_GAP_DIFFUSION_TIMEOUT) as http:
+            response = await http.post(
+                f"{client.base_url}/diffusion/validate-annotations",
+                json=request,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=_extract_detail(e))
+    except Exception as e:
+        logger.error(f"Failed to validate diffusion annotations: {e}")
         raise HTTPException(status_code=502, detail=str(e))
 
 

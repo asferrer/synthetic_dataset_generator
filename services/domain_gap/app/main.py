@@ -76,6 +76,19 @@ from app.models.schemas import (
     HealthResponse,
     InfoResponse,
     DGRTechnique,
+    # Diffusion Refinement
+    DiffusionMethod,
+    DiffusionRefinementConfig,
+    DiffusionRefinementRequest,
+    DiffusionRefinementResponse,
+    DiffusionBatchRequest,
+    AnnotationPreservationMetrics,
+    LoRATrainingConfig,
+    LoRATrainingResponse,
+    LoRAModelInfo,
+    LoRAModelsResponse,
+    AnnotationValidationRequest,
+    AnnotationValidationResponse,
 )
 
 # Import routers
@@ -94,6 +107,7 @@ class ServiceState:
         self.advisor_engine = None
         self.randomization_engine = None
         self.style_transfer_engine = None
+        self.diffusion_engine = None
         self.reference_manager = None
         self.gpu_available = False
         self.gpu_name = None
@@ -151,6 +165,14 @@ class ServiceState:
         except Exception as e:
             logger.error(f"Failed to initialize StyleTransferEngine: {e}")
 
+        # Initialize Diffusion Refinement Engine (GPU-accelerated)
+        try:
+            from app.engines.diffusion_engine import DiffusionRefinementEngine
+            self.diffusion_engine = DiffusionRefinementEngine(use_gpu=self.gpu_available)
+            logger.info("DiffusionRefinementEngine initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize DiffusionRefinementEngine: {e}")
+
     def get_gpu_memory(self) -> Optional[str]:
         """Get GPU memory usage."""
         if not self.gpu_available:
@@ -180,14 +202,10 @@ async def lifespan(app: FastAPI):
         state.db = get_job_db()
         logger.info("Job database initialized")
 
-        # Recover interrupted jobs
-        processing_jobs = state.db.list_jobs(service="domain_gap", status="running")
-        for job in processing_jobs:
-            state.db.complete_job(
-                job["id"], "failed",
-                error_message="Service restarted before job completed"
-            )
-            logger.warning(f"Job {job['id']} marked as failed after restart")
+        # Recover orphaned jobs from unclean shutdowns
+        orphaned = state.db.mark_orphaned_jobs("domain_gap")
+        if orphaned:
+            logger.warning(f"Marked {orphaned} orphaned domain_gap jobs as interrupted")
     except Exception as e:
         logger.error(f"Failed to initialize job database: {e}")
 
@@ -253,6 +271,7 @@ async def health_check():
         "advisor": state.advisor_engine is not None,
         "randomization": state.randomization_engine is not None,
         "style_transfer": state.style_transfer_engine is not None,
+        "diffusion": state.diffusion_engine is not None,
         "reference_manager": state.reference_manager is not None,
     }
 
@@ -535,6 +554,9 @@ async def delete_reference(set_id: str):
 # Only one heavy GPU metrics computation at a time; subsequent requests queue.
 _gpu_metrics_semaphore = asyncio.Semaphore(1)
 
+# Dedicated GPU semaphore for diffusion inference/training (SD 1.5 + ControlNet).
+_gpu_diffusion_semaphore = asyncio.Semaphore(1)
+
 @app.post("/metrics/compute", response_model=MetricsResult, tags=["Metrics"])
 async def compute_metrics(request: MetricsRequest):
     """
@@ -608,18 +630,19 @@ async def compare_metrics(request: MetricsCompareRequest):
     start_time = time.time()
 
     try:
-        before = await asyncio.to_thread(
-            state.metrics_engine.compute_metrics,
-            synthetic_dir=request.original_synthetic_dir,
-            real_dir=ref_set.image_dir,
-            max_images=request.max_images,
-        )
-        after = await asyncio.to_thread(
-            state.metrics_engine.compute_metrics,
-            synthetic_dir=request.processed_synthetic_dir,
-            real_dir=ref_set.image_dir,
-            max_images=request.max_images,
-        )
+        async with _gpu_metrics_semaphore:
+            before = await asyncio.to_thread(
+                state.metrics_engine.compute_metrics,
+                synthetic_dir=request.original_synthetic_dir,
+                real_dir=ref_set.image_dir,
+                max_images=request.max_images,
+            )
+            after = await asyncio.to_thread(
+                state.metrics_engine.compute_metrics,
+                synthetic_dir=request.processed_synthetic_dir,
+                real_dir=ref_set.image_dir,
+                max_images=request.max_images,
+            )
 
         # Calculate improvement percentages (positive = better)
         improvement = {}
@@ -1189,16 +1212,16 @@ async def _run_randomization_batch(job_id: str, request: RandomizationBatchReque
         cache = state._active_jobs_cache.get(job_id, {})
         final_status = "cancelled" if cache.get("cancelled") else "completed"
 
+        state.db.update_job_progress(
+            job_id,
+            processed_items=result["total_images"],
+            failed_items=result["failed"],
+        )
         state.db.complete_job(
             job_id,
             final_status,
             result_summary=result,
             processing_time_ms=processing_time,
-        )
-        state.db.update_job_progress(
-            job_id,
-            processed_items=result["total_images"],
-            failed_items=result["failed"],
         )
 
         logger.info(f"Randomization batch {job_id} {final_status}: {result}")
@@ -1248,19 +1271,20 @@ async def _run_optimization(job_id: str, request: OptimizeRequest, real_dir: str
             style_transfer_engine=state.style_transfer_engine,
         )
 
-        result = await asyncio.to_thread(
-            optimizer.optimize,
-            synthetic_dir=request.synthetic_dir,
-            real_dir=real_dir,
-            output_dir=request.output_dir,
-            current_config=request.current_config,
-            target_gap_score=request.target_gap_score,
-            max_iterations=request.max_iterations,
-            max_images=request.max_images,
-            techniques=request.techniques,
-            reference_set_id=request.reference_set_id,
-            progress_callback=progress_callback,
-        )
+        async with _gpu_metrics_semaphore:
+            result = await asyncio.to_thread(
+                optimizer.optimize,
+                synthetic_dir=request.synthetic_dir,
+                real_dir=real_dir,
+                output_dir=request.output_dir,
+                current_config=request.current_config,
+                target_gap_score=request.target_gap_score,
+                max_iterations=request.max_iterations,
+                max_images=request.max_images,
+                techniques=request.techniques,
+                reference_set_id=request.reference_set_id,
+                progress_callback=progress_callback,
+            )
 
         processing_time = (time.time() - start_time) * 1000
 
@@ -1309,7 +1333,8 @@ async def _run_style_transfer_batch(
         )
 
     try:
-        result = state.style_transfer_engine.apply_batch(
+        result = await asyncio.to_thread(
+            state.style_transfer_engine.apply_batch,
             images_dir=request.images_dir,
             style_dir=style_dir,
             output_dir=request.output_dir,
@@ -1472,6 +1497,314 @@ def _get_sample_paths(directory: str, max_count: int = 5) -> List[str]:
         return images[:max_count]
     except Exception:
         return []
+
+
+# =============================================================================
+# Diffusion Refinement Endpoints
+# =============================================================================
+
+@app.post("/diffusion/refine", response_model=DiffusionRefinementResponse, tags=["Diffusion"])
+async def diffusion_refine_single(request: DiffusionRefinementRequest):
+    """Refine a single synthetic image using diffusion models."""
+    if state.diffusion_engine is None:
+        raise HTTPException(status_code=503, detail="DiffusionRefinementEngine not available")
+
+    async with _gpu_diffusion_semaphore:
+        try:
+            ref_set = state.reference_manager.get_set(request.config.reference_set_id)
+            reference_dir = ref_set.image_dir if ref_set else None
+
+            result = await asyncio.to_thread(
+                state.diffusion_engine.refine_single,
+                image_path=request.image_path,
+                output_path=request.output_path,
+                config=request.config.model_dump(),
+                depth_map_path=request.depth_map_path,
+                reference_dir=reference_dir,
+                annotations_path=request.annotations_path,
+            )
+
+            preservation = None
+            if result.get("preservation_metrics"):
+                preservation = AnnotationPreservationMetrics(**result["preservation_metrics"])
+
+            return DiffusionRefinementResponse(
+                success=result.get("success", False),
+                output_path=result.get("output_path", ""),
+                method=result.get("method", ""),
+                preservation_metrics=preservation,
+                processing_time_ms=result.get("processing_time_ms", 0),
+                error=result.get("error"),
+            )
+        except Exception as e:
+            logger.error(f"Diffusion refinement failed: {e}")
+            return DiffusionRefinementResponse(success=False, output_path="", error=str(e))
+
+
+@app.post("/diffusion/refine-batch", tags=["Diffusion"])
+async def diffusion_refine_batch(
+    request: DiffusionBatchRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Start async batch diffusion refinement job."""
+    if state.diffusion_engine is None:
+        raise HTTPException(status_code=503, detail="DiffusionRefinementEngine not available")
+
+    job_id = f"diff_{uuid.uuid4().hex[:12]}"
+
+    state.db.create_job(
+        job_id=job_id,
+        job_type="diffusion_refine_batch",
+        service="domain_gap",
+        request_params={
+            "images_dir": request.images_dir,
+            "output_dir": request.output_dir,
+            "method": request.config.method.value,
+        },
+        total_items=0,
+        output_path=request.output_dir,
+    )
+
+    state._active_jobs_cache[job_id] = {"cancelled": False}
+
+    background_tasks.add_task(_run_diffusion_batch, job_id, request)
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Diffusion refinement batch job started",
+    }
+
+
+@app.post("/diffusion/train-lora", tags=["Diffusion"])
+async def diffusion_train_lora(
+    request: LoRATrainingConfig,
+    background_tasks: BackgroundTasks,
+):
+    """Start async LoRA training job."""
+    if state.diffusion_engine is None:
+        raise HTTPException(status_code=503, detail="DiffusionRefinementEngine not available")
+
+    job_id = f"lora_{uuid.uuid4().hex[:12]}"
+
+    state.db.create_job(
+        job_id=job_id,
+        job_type="lora_training",
+        service="domain_gap",
+        request_params={
+            "model_id": request.model_id,
+            "reference_set_id": request.reference_set_id,
+            "training_steps": request.training_steps,
+        },
+        total_items=request.training_steps,
+    )
+
+    state._active_jobs_cache[job_id] = {"cancelled": False}
+
+    background_tasks.add_task(_run_lora_training, job_id, request)
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "pending",
+        "message": "LoRA training started",
+    }
+
+
+@app.get("/diffusion/lora-models", response_model=LoRAModelsResponse, tags=["Diffusion"])
+async def list_lora_models():
+    """List all trained LoRA models."""
+    if state.diffusion_engine is None:
+        raise HTTPException(status_code=503, detail="DiffusionRefinementEngine not available")
+
+    models_data = state.diffusion_engine.list_lora_models()
+    models = [LoRAModelInfo(**m) for m in models_data]
+    return LoRAModelsResponse(models=models, total=len(models))
+
+
+@app.delete("/diffusion/lora-models/{model_id}", tags=["Diffusion"])
+async def delete_lora_model(model_id: str):
+    """Delete a trained LoRA model."""
+    if state.diffusion_engine is None:
+        raise HTTPException(status_code=503, detail="DiffusionRefinementEngine not available")
+
+    success = state.diffusion_engine.delete_lora_model(model_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"LoRA model '{model_id}' not found")
+    return {"success": True, "message": f"LoRA model '{model_id}' deleted"}
+
+
+@app.post("/diffusion/validate-annotations", response_model=AnnotationValidationResponse, tags=["Diffusion"])
+async def validate_annotations_endpoint(request: AnnotationValidationRequest):
+    """Validate annotation preservation between original and refined images."""
+    import cv2 as _cv2
+
+    start = time.time()
+
+    original = _cv2.imread(request.original_path)
+    refined = _cv2.imread(request.refined_path)
+
+    if original is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot read original image: {request.original_path}",
+        )
+    if refined is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot read refined image: {request.refined_path}",
+        )
+
+    original_rgb = _cv2.cvtColor(original, _cv2.COLOR_BGR2RGB)
+    refined_rgb = _cv2.cvtColor(refined, _cv2.COLOR_BGR2RGB)
+
+    from app.engines.diffusion_engine import DiffusionRefinementEngine
+    metrics_dict = DiffusionRefinementEngine.validate_annotations(
+        original_rgb, refined_rgb, threshold=request.threshold
+    )
+
+    elapsed_ms = (time.time() - start) * 1000
+
+    return AnnotationValidationResponse(
+        success=True,
+        metrics=AnnotationPreservationMetrics(**metrics_dict),
+        processing_time_ms=elapsed_ms,
+    )
+
+
+# =============================================================================
+# Diffusion Background Tasks
+# =============================================================================
+
+async def _run_diffusion_batch(job_id: str, request: DiffusionBatchRequest):
+    """Background task for batch diffusion refinement."""
+    start_time = time.time()
+
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
+
+    ref_set = state.reference_manager.get_set(request.config.reference_set_id)
+    reference_dir = ref_set.image_dir if ref_set else None
+
+    def progress_callback(current, total):
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            return
+        state.db.update_job_progress(
+            job_id,
+            processed_items=current,
+            progress_details={"total": total, "processed": current},
+        )
+
+    try:
+        async with _gpu_diffusion_semaphore:
+            result = await asyncio.to_thread(
+                state.diffusion_engine.refine_batch,
+                images_dir=request.images_dir,
+                output_dir=request.output_dir,
+                config=request.config.model_dump(),
+                reference_dir=reference_dir,
+                annotations_dir=request.annotations_dir,
+                progress_callback=progress_callback,
+            )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        cache = state._active_jobs_cache.get(job_id, {})
+        final_status = "cancelled" if cache.get("cancelled") else "completed"
+
+        state.db.complete_job(
+            job_id,
+            final_status,
+            result_summary=result,
+            processing_time_ms=processing_time,
+        )
+        state.db.update_job_progress(
+            job_id,
+            processed_items=result.get("processed", 0),
+            failed_items=result.get("failed", 0),
+        )
+
+        logger.info(f"Diffusion batch {job_id} {final_status}: {result}")
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"Diffusion batch {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time,
+        )
+    finally:
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+
+
+async def _run_lora_training(job_id: str, request: LoRATrainingConfig):
+    """Background task for LoRA training."""
+    start_time = time.time()
+
+    state.db.update_job_status(job_id, "running", started_at=datetime.now())
+
+    ref_set = state.reference_manager.get_set(request.reference_set_id)
+    if not ref_set:
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=f"Reference set '{request.reference_set_id}' not found",
+        )
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
+        return
+
+    def progress_callback(step, total):
+        cache = state._active_jobs_cache.get(job_id, {})
+        if cache.get("cancelled", False):
+            return
+        state.db.update_job_progress(
+            job_id,
+            processed_items=step,
+            progress_details={
+                "step": step,
+                "total": total,
+                "global_progress": round((step / total) * 100, 1) if total > 0 else 0,
+            },
+        )
+
+    try:
+        async with _gpu_diffusion_semaphore:
+            result = await asyncio.to_thread(
+                state.diffusion_engine.train_lora,
+                reference_dir=ref_set.image_dir,
+                model_id=request.model_id,
+                config=request.model_dump(),
+                progress_callback=progress_callback,
+            )
+
+        processing_time = (time.time() - start_time) * 1000
+
+        cache = state._active_jobs_cache.get(job_id, {})
+        final_status = "cancelled" if cache.get("cancelled") else "completed"
+
+        state.db.complete_job(
+            job_id,
+            final_status,
+            result_summary=result,
+            processing_time_ms=processing_time,
+        )
+
+        logger.info(f"LoRA training {job_id} {final_status}: model_id={request.model_id}")
+
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"LoRA training {job_id} failed: {e}")
+        state.db.complete_job(
+            job_id, "failed",
+            error_message=str(e),
+            processing_time_ms=processing_time,
+        )
+    finally:
+        if job_id in state._active_jobs_cache:
+            del state._active_jobs_cache[job_id]
 
 
 # =============================================================================

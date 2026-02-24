@@ -524,6 +524,11 @@ class AdvisorEngine:
             new_suggestions = self._map_issue_to_suggestions(issue, current_config)
             suggestions.extend(new_suggestions)
 
+        # --- Diffusion refinement suggestions based on aggregate issue profile ---
+        suggestions.extend(
+            self._generate_diffusion_suggestions(issues, current_config)
+        )
+
         # Deduplicate by parameter_path (keep highest impact)
         seen_paths: Dict[str, ParameterSuggestion] = {}
         for s in suggestions:
@@ -540,6 +545,165 @@ class AdvisorEngine:
 
         # Sort by expected impact (HIGH first)
         suggestions.sort(key=lambda s: _IMPACT_ORDER.get(s.expected_impact, 99))
+
+        return suggestions
+
+    def _generate_diffusion_suggestions(
+        self,
+        issues: List[GapIssue],
+        current_config: Optional[Dict],
+    ) -> List[ParameterSuggestion]:
+        """
+        Generate diffusion refinement suggestions based on aggregate issue analysis.
+
+        Triggered when:
+        - A TEXTURE issue with HIGH severity is detected, or
+        - A COLOR issue with HIGH severity is detected alongside a TEXTURE issue, or
+        - The overall issue profile suggests color/randomization alone is insufficient
+          (more than two HIGH-severity issues across any categories).
+
+        Specific diffusion parameters (strength, method) are tuned per gap profile:
+        - Color gap dominant  -> strength=0.3 (conservative to preserve structure)
+        - Texture gap dominant -> strength=0.5, method=controlnet
+        - Very high overall gap (proxied by >=3 HIGH-severity issues) -> ip_adapter
+        """
+        suggestions: List[ParameterSuggestion] = []
+
+        if not issues:
+            return suggestions
+
+        # Classify issues by category and severity for aggregate decisions
+        high_severity_issues = [
+            i for i in issues
+            if getattr(i.severity, "value", i.severity) == IssueSeverity.HIGH.value
+        ]
+        texture_high = any(
+            getattr(i.category, "value", i.category) == IssueCategory.TEXTURE.value
+            for i in high_severity_issues
+        )
+        color_high = any(
+            getattr(i.category, "value", i.category) in (
+                IssueCategory.COLOR.value, IssueCategory.BRIGHTNESS.value
+            )
+            for i in high_severity_issues
+        )
+        texture_any = any(
+            getattr(i.category, "value", i.category) == IssueCategory.TEXTURE.value
+            for i in issues
+        )
+
+        # Only generate diffusion suggestions when there is clear evidence of a
+        # perceptual gap that simpler techniques cannot fully address
+        should_suggest_diffusion = (
+            texture_high
+            or (color_high and texture_any)
+            or len(high_severity_issues) >= 3
+        )
+
+        if not should_suggest_diffusion:
+            return suggestions
+
+        # --- Enable diffusion refinement ---
+        current_enabled = self._extract_config_value(
+            current_config, "techniques.diffusion_refinement.enabled"
+        )
+        suggestions.append(
+            ParameterSuggestion(
+                parameter_path="techniques.diffusion_refinement.enabled",
+                current_value=current_enabled,
+                suggested_value=True,
+                reason=(
+                    "High texture/realism gap detected. Diffusion refinement with "
+                    "ControlNet can significantly reduce perceptual domain gap while "
+                    "preserving annotations."
+                ),
+                expected_impact=ImpactLevel.HIGH,
+            )
+        )
+
+        # --- Tune diffusion strength and method based on gap profile ---
+        if len(high_severity_issues) >= 3:
+            # Very high overall gap -> ip_adapter as alternative method
+            current_method = None  # no float extraction; keep as None for string params
+            suggestions.append(
+                ParameterSuggestion(
+                    parameter_path="techniques.diffusion_refinement.method",
+                    current_value=current_method,
+                    suggested_value="ip_adapter",
+                    reason=(
+                        f"Very high overall domain gap ({len(high_severity_issues)} "
+                        f"HIGH-severity issues). IP-Adapter can better transfer "
+                        f"real-world style while preserving spatial layout."
+                    ),
+                    expected_impact=ImpactLevel.HIGH,
+                )
+            )
+            current_strength = self._extract_config_value(
+                current_config, "techniques.diffusion_refinement.strength"
+            )
+            suggestions.append(
+                ParameterSuggestion(
+                    parameter_path="techniques.diffusion_refinement.strength",
+                    current_value=current_strength,
+                    suggested_value=0.55,
+                    reason=(
+                        "Use higher diffusion strength to address severe domain gap "
+                        "across multiple feature dimensions."
+                    ),
+                    expected_impact=ImpactLevel.HIGH,
+                )
+            )
+
+        elif texture_high:
+            # Texture gap dominant -> controlnet at medium strength
+            current_strength = self._extract_config_value(
+                current_config, "techniques.diffusion_refinement.strength"
+            )
+            suggestions.append(
+                ParameterSuggestion(
+                    parameter_path="techniques.diffusion_refinement.strength",
+                    current_value=current_strength,
+                    suggested_value=0.5,
+                    reason=(
+                        "High texture gap detected. Strength=0.5 with ControlNet "
+                        "adds realistic surface detail while respecting structural "
+                        "constraints from depth/edge maps."
+                    ),
+                    expected_impact=ImpactLevel.HIGH,
+                )
+            )
+            current_method = None
+            suggestions.append(
+                ParameterSuggestion(
+                    parameter_path="techniques.diffusion_refinement.method",
+                    current_value=current_method,
+                    suggested_value="controlnet",
+                    reason=(
+                        "ControlNet conditioning preserves annotation geometry "
+                        "while improving texture realism."
+                    ),
+                    expected_impact=ImpactLevel.HIGH,
+                )
+            )
+
+        elif color_high:
+            # Color gap dominant -> conservative strength to avoid structural drift
+            current_strength = self._extract_config_value(
+                current_config, "techniques.diffusion_refinement.strength"
+            )
+            suggestions.append(
+                ParameterSuggestion(
+                    parameter_path="techniques.diffusion_refinement.strength",
+                    current_value=current_strength,
+                    suggested_value=0.3,
+                    reason=(
+                        "High color gap detected. Conservative strength=0.3 corrects "
+                        "color distribution without introducing structural artifacts "
+                        "that could misalign annotations."
+                    ),
+                    expected_impact=ImpactLevel.MEDIUM,
+                )
+            )
 
         return suggestions
 

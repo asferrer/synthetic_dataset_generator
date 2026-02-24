@@ -7,7 +7,7 @@ reference management, and post-processing techniques.
 
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,7 @@ class DGRTechnique(str, Enum):
     DOMAIN_RANDOMIZATION = "domain_randomization"
     STYLE_TRANSFER = "neural_style_transfer"
     CYCLEGAN = "cyclegan_translation"
+    DIFFUSION_REFINEMENT = "diffusion_refinement"
 
 
 class GapLevel(str, Enum):
@@ -275,7 +276,7 @@ class ParameterSuggestion(BaseModel):
         description="Dot-notation path to parameter, e.g. 'effects.color_correction.intensity'"
     )
     current_value: Optional[float] = Field(None, description="Current parameter value")
-    suggested_value: float = Field(description="Suggested new value")
+    suggested_value: Union[float, str, bool] = Field(description="Suggested new value")
     reason: str = Field(description="Why this change is suggested")
     expected_impact: ImpactLevel = Field(description="Expected impact on domain gap")
 
@@ -284,7 +285,7 @@ class AnalyzeRequest(BaseModel):
     """Request for full domain gap analysis with suggestions."""
     synthetic_dir: str = Field(description="Directory with synthetic images")
     reference_set_id: str = Field(description="ID of real reference set")
-    max_images: int = Field(50, ge=5, le=500, description="Images to analyze (smaller=faster)")
+    max_images: int = Field(100, ge=5, le=500, description="Images to analyze (smaller=faster)")
     current_config: Optional[Dict[str, Any]] = Field(
         None, description="Current pipeline configuration for parameter suggestion context"
     )
@@ -543,3 +544,129 @@ class InfoResponse(BaseModel):
     )
     gpu_available: bool = False
     max_image_size: int = 1024
+
+
+# =============================================================================
+# Diffusion Refinement
+# =============================================================================
+
+class DiffusionMethod(str, Enum):
+    """Available diffusion refinement methods."""
+    CONTROLNET = "controlnet"
+    IP_ADAPTER = "ip_adapter"
+    LORA = "lora"
+
+
+class DiffusionRefinementConfig(BaseModel):
+    """Configuration for diffusion-based refinement."""
+    method: DiffusionMethod = Field(default=DiffusionMethod.CONTROLNET)
+    reference_set_id: str = Field(description="Reference set for style/LoRA")
+    # ControlNet params
+    strength: float = Field(default=0.4, ge=0.1, le=0.7, description="img2img denoising strength")
+    controlnet_conditioning_scale: float = Field(default=0.8, ge=0.3, le=1.0)
+    use_depth_conditioning: bool = Field(default=True, description="Use depth maps as ControlNet conditioning")
+    # IP-Adapter params
+    ip_adapter_scale: float = Field(default=0.5, ge=0.1, le=0.9)
+    # LoRA params
+    lora_model_id: Optional[str] = Field(default=None, description="Pre-trained LoRA model ID")
+    lora_weight: float = Field(default=0.7, ge=0.1, le=1.0)
+    # Generation params
+    guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0)
+    num_inference_steps: int = Field(default=30, ge=4, le=100)
+    use_lcm: bool = Field(default=False, description="Use LCM/Lightning for 4-step generation")
+    seed: Optional[int] = Field(default=None, description="Random seed for reproducibility")
+    # Annotation preservation
+    validate_annotations: bool = Field(default=True)
+    annotation_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum Edge IoU for annotation validity")
+    prompt: str = Field(default="", description="Optional text prompt to guide generation")
+    negative_prompt: str = Field(default="blurry, distorted, artifacts, watermark", description="Negative prompt")
+
+
+class DiffusionRefinementRequest(BaseModel):
+    """Request to refine a single image with diffusion."""
+    image_path: str
+    config: DiffusionRefinementConfig
+    output_path: str
+    depth_map_path: Optional[str] = Field(default=None)
+    annotations_path: Optional[str] = Field(default=None)
+
+
+class AnnotationPreservationMetrics(BaseModel):
+    """Metrics measuring annotation preservation after refinement."""
+    edge_iou: float = Field(description="IoU of Canny edges before/after (0-1)")
+    ssim: float = Field(description="Structural similarity index (0-1)")
+    mean_keypoint_displacement: float = Field(description="Average pixel displacement of ORB keypoints")
+    annotations_valid: bool = Field(description="Whether metrics exceed the configured threshold")
+
+
+class DiffusionRefinementResponse(BaseModel):
+    """Response after refining a single image."""
+    success: bool
+    output_path: str
+    method: str = ""
+    preservation_metrics: Optional[AnnotationPreservationMetrics] = None
+    processing_time_ms: float = 0
+    error: Optional[str] = None
+
+
+class DiffusionBatchRequest(BaseModel):
+    """Request to refine a batch of images with diffusion."""
+    images_dir: str
+    config: DiffusionRefinementConfig
+    output_dir: str
+    annotations_dir: Optional[str] = None
+
+
+class LoRATrainingConfig(BaseModel):
+    """Configuration for LoRA fine-tuning on reference images."""
+    reference_set_id: str = Field(description="Reference set to train on")
+    model_id: str = Field(description="Unique identifier for the LoRA model")
+    training_steps: int = Field(default=500, ge=100, le=5000)
+    learning_rate: float = Field(default=1e-4, gt=0, le=1e-2)
+    lora_rank: int = Field(default=4, ge=1, le=64)
+    resolution: int = Field(default=512, ge=256, le=1024)
+    batch_size: int = Field(default=1, ge=1, le=4)
+    prompt_template: str = Field(default="a photo in the style of {domain}", description="Training prompt template")
+
+
+class LoRATrainingResponse(BaseModel):
+    """Response after LoRA training."""
+    success: bool
+    model_id: str
+    model_dir: str = ""
+    training_steps: int = 0
+    training_time_seconds: float = 0
+    model_size_mb: float = 0
+    error: Optional[str] = None
+
+
+class LoRAModelInfo(BaseModel):
+    """Information about a trained LoRA model."""
+    model_id: str
+    reference_set_id: str
+    training_steps: int
+    lora_rank: int
+    resolution: int
+    model_size_mb: float
+    model_dir: str
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class LoRAModelsResponse(BaseModel):
+    """Response listing LoRA models."""
+    models: List[LoRAModelInfo]
+    total: int
+
+
+class AnnotationValidationRequest(BaseModel):
+    """Request to validate annotation preservation."""
+    original_path: str
+    refined_path: str
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class AnnotationValidationResponse(BaseModel):
+    """Response with annotation preservation validation."""
+    success: bool
+    metrics: AnnotationPreservationMetrics
+    processing_time_ms: float = 0

@@ -30,11 +30,13 @@ class OptimizerEngine:
         advisor_engine,
         randomization_engine=None,
         style_transfer_engine=None,
+        diffusion_engine=None,
     ) -> None:
         self.metrics = metrics_engine
         self.advisor = advisor_engine
         self.randomization = randomization_engine
         self.style_transfer = style_transfer_engine
+        self.diffusion = diffusion_engine
 
     def optimize(
         self,
@@ -61,7 +63,7 @@ class OptimizerEngine:
             max_iterations: Maximum optimization iterations.
             max_images: Max images to sample for metrics per iteration.
             techniques: List of techniques to apply. Options: "randomization",
-                "style_transfer". Defaults to ["randomization"].
+                "style_transfer", "diffusion_refinement". Defaults to ["randomization"].
             reference_set_id: Reference set ID (for randomization histogram matching).
             progress_callback: Called with (iteration, max_iterations, gap_score, phase).
 
@@ -79,12 +81,15 @@ class OptimizerEngine:
             available.append("randomization")
         if "style_transfer" in techniques and self.style_transfer is not None:
             available.append("style_transfer")
+        if "diffusion_refinement" in techniques and self.diffusion is not None:
+            available.append("diffusion_refinement")
 
         if not available:
             raise ValueError(
                 f"No available techniques from requested: {techniques}. "
                 f"Randomization loaded: {self.randomization is not None}, "
-                f"Style transfer loaded: {self.style_transfer is not None}"
+                f"Style transfer loaded: {self.style_transfer is not None}, "
+                f"Diffusion refinement loaded: {self.diffusion is not None}"
             )
 
         os.makedirs(output_dir, exist_ok=True)
@@ -224,6 +229,47 @@ class OptimizerEngine:
                 )
                 iteration_result["technique_applied"] = "randomization"
 
+            if technique_used == "diffusion_refinement":
+                _report(iteration, gap_score, "applying_diffusion_refinement")
+                logger.info("Applying diffusion refinement (iteration {})", iteration)
+                try:
+                    diffusion_config = _build_diffusion_config(
+                        adjusted_config, issues, gap_score
+                    )
+                    self.diffusion.refine_batch(
+                        images_dir=current_input_dir,
+                        output_dir=iter_output_dir,
+                        config=diffusion_config,
+                        reference_dir=real_dir,
+                    )
+                    iteration_result["technique_applied"] = "diffusion_refinement"
+                except Exception as e:
+                    logger.error(
+                        "Diffusion refinement failed at iteration {}: {}", iteration, e
+                    )
+                    # Fall back to randomization if available
+                    if "randomization" in available:
+                        technique_used = "randomization"
+                        intensity = _extract_intensity_from_issues(issues)
+                        self.randomization.apply_batch(
+                            images_dir=current_input_dir,
+                            output_dir=iter_output_dir,
+                            num_variants=1,
+                            intensity=intensity,
+                            color_jitter=min(0.5, intensity * 0.8),
+                            brightness_range=(max(0.7, 1.0 - intensity * 0.3), min(1.3, 1.0 + intensity * 0.3)),
+                            contrast_range=(max(0.8, 1.0 - intensity * 0.2), min(1.2, 1.0 + intensity * 0.2)),
+                            saturation_range=(max(0.7, 1.0 - intensity * 0.3), min(1.3, 1.0 + intensity * 0.3)),
+                            noise_intensity=min(0.05, intensity * 0.04),
+                            blur_range=(0.0, min(1.5, intensity * 1.0)),
+                            reference_stats=None,
+                        )
+                        iteration_result["technique_applied"] = "randomization (diffusion fallback)"
+                    else:
+                        iteration_result["technique_applied"] = f"failed: {e}"
+                        history.append(iteration_result)
+                        break
+
             # Update config and move to next iteration
             current_config = adjusted_config
             current_input_dir = iter_output_dir
@@ -301,3 +347,68 @@ def _extract_intensity_from_issues(issues) -> float:
         max_severity = max(max_severity, weight)
 
     return min(0.8, max_severity)
+
+
+def _build_diffusion_config(
+    current_config: dict,
+    issues,
+    gap_score: float,
+) -> dict:
+    """
+    Build a DiffusionRefinementConfig-compatible dict from advisor issues and gap score.
+
+    The strength and method are selected based on the dominant issue type:
+      - Color gap dominant  -> lower strength (0.3) to preserve structure, use controlnet
+      - Texture gap dominant -> medium strength (0.5) with controlnet for detail fidelity
+      - Gap score > 75      -> ip_adapter as alternative for high perceptual gap
+    Falls back to a safe default (strength=0.4, method=controlnet) when no issues match.
+    """
+    # Start from any user-provided diffusion overrides in the pipeline config
+    diffusion_overrides = {}
+    if isinstance(current_config, dict):
+        diffusion_overrides = current_config.get("techniques", {}).get(
+            "diffusion_refinement", {}
+        )
+
+    # Determine dominant issue categories
+    has_high_texture = any(
+        (getattr(i.category, "value", i.category) == "texture"
+         and getattr(i.severity, "value", i.severity) == "high")
+        for i in issues
+    ) if issues else False
+
+    has_high_color = any(
+        (getattr(i.category, "value", i.category) in ("color", "brightness")
+         and getattr(i.severity, "value", i.severity) == "high")
+        for i in issues
+    ) if issues else False
+
+    # Choose method and strength based on gap profile
+    if gap_score > 75:
+        method = "ip_adapter"
+        strength = 0.55
+    elif has_high_texture:
+        method = "controlnet"
+        strength = 0.5
+    elif has_high_color:
+        method = "controlnet"
+        strength = 0.3
+    else:
+        method = "controlnet"
+        strength = 0.4
+
+    config = {
+        "method": method,
+        "strength": strength,
+        "enabled": True,
+    }
+    # Allow explicit overrides from the pipeline config to take precedence
+    config.update(diffusion_overrides)
+
+    logger.debug(
+        "Diffusion config: method={} strength={:.2f} (gap_score={:.1f}, "
+        "high_texture={}, high_color={})",
+        config["method"], config["strength"], gap_score, has_high_texture, has_high_color,
+    )
+
+    return config

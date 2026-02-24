@@ -38,3 +38,9 @@ joblib>=1.3.0
 
 # Logging
 loguru>=0.7.0
+
+# Diffusion refinement (ControlNet + IP-Adapter + LoRA)
+diffusers>=0.30.0
+accelerate>=0.25.0
+controlnet-aux>=0.0.7
+peft>=0.8.0
