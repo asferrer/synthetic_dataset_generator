@@ -38,6 +38,7 @@ METRICS_TIMEOUT = 2700.0  # 45 min for RADIO metrics (batch_size=2 on 8GB GPUs c
 ANALYZE_TIMEOUT = 300.0   # 5 min for advisor analysis
 POLL_INTERVAL = 3.0       # seconds between job polls
 MAX_POLL_SECONDS = 1800.0  # 30 min global timeout per polling loop
+MAX_FULL_GEN_POLL_SECONDS = 14400.0  # 4 hours for full generation polling
 
 
 # =============================================================================
@@ -241,16 +242,19 @@ def _resolve_request(request: AutoTuneRequest) -> Dict[str, Any]:
 # =============================================================================
 
 _ADVISOR_TO_EFFECTS_MAP = {
+    # Direct semantic matches
     "effects.lighting.intensity": "lighting_intensity",
     "effects.color_correction.intensity": "color_intensity",
     "effects.blur_matching.strength": "blur_strength",
     "effects.shadows.opacity": "shadow_opacity",
     "effects.underwater.intensity": "underwater_intensity",
     "effects.caustics.intensity": "caustics_intensity",
-    "effects.edge_smoothing.feather_radius": "blur_strength",  # closest match
-    "augmentation.contrast": "color_intensity",  # fallback mapping
-    "augmentation.noise": "motion_blur_probability",  # approximate mapping
-    "domain_randomization.recommended": None,  # handled separately
+    # Approximation: contrast adjustments map to color intensity
+    "augmentation.contrast": "color_intensity",
+    # Non-mappable paths (handled by skipping in _map_suggestions)
+    "techniques.diffusion_refinement.method": None,
+    "techniques.diffusion_refinement.strength": None,
+    "domain_randomization.recommended": None,
 }
 
 
@@ -784,33 +788,48 @@ async def _run_auto_tune(job_id: str, request: AutoTuneRequest):
         # ---------------------------------------------------
         # Step 6: Optionally start full generation
         # ---------------------------------------------------
+        # Check if any iteration met the target gap score threshold
+        target_met = any(
+            h.gap_score <= request.target_gap_score for h in job.history
+        ) if job.history else False
+
         if request.auto_start_full and job.status != "cancelled":
-            job.status = "generating"
-            job.phase = "full_generating"
-            logger.info(f"Auto-tune {job_id}: starting full generation with tuned config")
-
-            full_request = {
-                "backgrounds_dir": resolved["backgrounds_dir"],
-                "objects_dir": resolved["objects_dir"],
-                "output_dir": output_dir,
-                "num_images": resolved["num_images"],
-                "effects": resolved["effects"],
-                "effects_config": current_config,
-                "max_objects_per_image": resolved["max_objects_per_image"],
-                "depth_aware": resolved["depth_aware"],
-                "targets_per_class": resolved["targets_per_class"],
-            }
-
-            full_job = await _call_service_post(
-                registry.augmentor, "/compose-batch", full_request, COMPOSE_TIMEOUT
-            )
-            job.full_generation_job_id = full_job.get("job_id")
-
-            # Poll full generation to completion
-            if job.full_generation_job_id:
-                await _poll_augmentor_job(
-                    registry.augmentor, job.full_generation_job_id, job
+            if not target_met:
+                best_achieved = min(h.gap_score for h in job.history) if job.history else None
+                logger.warning(
+                    f"Auto-tune {job_id}: skipping full generation — "
+                    f"no iteration reached target gap_score <= {request.target_gap_score} "
+                    f"(best achieved: {best_achieved})"
                 )
+                job.phase = "skipped_generation"
+            else:
+                job.status = "generating"
+                job.phase = "full_generating"
+                logger.info(f"Auto-tune {job_id}: starting full generation with tuned config")
+
+                full_request = {
+                    "backgrounds_dir": resolved["backgrounds_dir"],
+                    "objects_dir": resolved["objects_dir"],
+                    "output_dir": output_dir,
+                    "num_images": resolved["num_images"],
+                    "effects": resolved["effects"],
+                    "effects_config": current_config,
+                    "max_objects_per_image": resolved["max_objects_per_image"],
+                    "depth_aware": resolved["depth_aware"],
+                    "targets_per_class": resolved["targets_per_class"],
+                }
+
+                full_job = await _call_service_post(
+                    registry.augmentor, "/compose-batch", full_request, COMPOSE_TIMEOUT
+                )
+                job.full_generation_job_id = full_job.get("job_id")
+
+                # Poll full generation to completion (extended timeout)
+                if job.full_generation_job_id:
+                    await _poll_augmentor_job(
+                        registry.augmentor, job.full_generation_job_id, job,
+                        timeout=MAX_FULL_GEN_POLL_SECONDS,
+                    )
 
         if job.status != "cancelled":
             job.status = "completed"
@@ -927,7 +946,8 @@ async def _call_service_post(
 
 
 async def _poll_augmentor_job(
-    client, aug_job_id: str, parent_job: AutoTuneStatusResponse
+    client, aug_job_id: str, parent_job: AutoTuneStatusResponse,
+    timeout: float = MAX_POLL_SECONDS,
 ) -> Dict[str, Any]:
     """Poll an augmentor job until completion (with global timeout)."""
     start_time = time.time()
@@ -936,9 +956,9 @@ async def _poll_augmentor_job(
             return {}
 
         elapsed = time.time() - start_time
-        if elapsed > MAX_POLL_SECONDS:
+        if elapsed > timeout:
             raise RuntimeError(
-                f"Augmentor job {aug_job_id} timed out after {MAX_POLL_SECONDS}s"
+                f"Augmentor job {aug_job_id} timed out after {timeout}s"
             )
 
         await asyncio.sleep(POLL_INTERVAL)
