@@ -525,13 +525,31 @@ class StartLabelingRequest(BaseModel):
         le=50,
         description="Pixels of padding to add around detected bounding boxes"
     )
+    preview_mode: bool = Field(
+        default=False,
+        description="If True, process only preview_count images for testing"
+    )
+    preview_count: int = Field(
+        default=20,
+        ge=5,
+        le=100,
+        description="Number of images to process in preview mode"
+    )
+    deduplication_strategy: str = Field(
+        default="confidence",
+        description="Strategy for deduplicating overlapping detections: 'confidence' (prioritize high-confidence detections) or 'area' (prioritize larger detections)"
+    )
 
 
 class StartRelabelingRequest(BaseModel):
     """Request to start a relabeling job for existing dataset"""
     coco_data: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Existing COCO dataset to relabel"
+        description="Existing COCO dataset to relabel (parsed JSON)"
+    )
+    coco_json_path: Optional[str] = Field(
+        default=None,
+        description="Path to COCO JSON file to relabel (alternative to coco_data)"
     )
     image_directories: List[str] = Field(
         ...,
@@ -563,6 +581,20 @@ class StartRelabelingRequest(BaseModel):
     simplify_polygons: bool = Field(
         default=True,
         description="Whether to simplify segmentation polygons"
+    )
+    preview_mode: bool = Field(
+        default=False,
+        description="If True, process only preview_count images for testing"
+    )
+    preview_count: int = Field(
+        default=20,
+        ge=5,
+        le=100,
+        description="Number of images to process in preview mode"
+    )
+    deduplication_strategy: str = Field(
+        default="confidence",
+        description="Strategy for deduplicating overlapping detections: 'confidence' (prioritize high-confidence detections) or 'area' (prioritize larger detections)"
     )
 
 

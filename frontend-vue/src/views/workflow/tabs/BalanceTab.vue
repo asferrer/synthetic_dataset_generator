@@ -27,7 +27,7 @@ const balancing = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDataset = ref<string | null>(null)
 const datasetAnalysis = ref<DatasetAnalysis | null>(null)
-const outputDir = ref('/data/balanced')
+const outputDir = ref('/app/output/balanced')
 const error = ref<string | null>(null)
 const balanceResult = ref<{ success: boolean; message: string } | null>(null)
 
@@ -200,14 +200,6 @@ loadDatasets()
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
-    <div>
-      <h2 class="text-2xl font-bold text-white">Post-Processing & Class Balancing</h2>
-      <p class="mt-1 text-gray-400">
-        Analyze class distribution and balance your dataset for better training results.
-      </p>
-    </div>
-
     <!-- Error -->
     <AlertBox v-if="error" type="error" :title="error" dismissible @dismiss="error = null" />
 
@@ -431,7 +423,7 @@ loadDatasets()
         <BaseInput
           v-model="outputDir"
           label="Output Directory"
-          placeholder="/data/balanced"
+          placeholder="/app/output/balanced"
           hint="Where to save the balanced dataset"
         />
 

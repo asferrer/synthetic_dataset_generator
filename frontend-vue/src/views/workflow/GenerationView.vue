@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUiStore } from '@/stores/ui'
-import { startGeneration, getJob, getActiveLabelingJobs } from '@/lib/api'
+import { startGeneration, getJob, getActiveLabelingJobs, startAutoTune, getAutoTuneStatus, cancelAutoTune } from '@/lib/api'
+import { useDomainGapStore } from '@/stores/domainGap'
 import MetricCard from '@/components/common/MetricCard.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -38,11 +39,15 @@ import {
   FileText,
   ChevronDown,
   Target,
+  Zap,
+  RotateCcw,
 } from 'lucide-vue-next'
+import GapValidationPanel from '@/components/domain-gap/GapValidationPanel.vue'
 import type { Job, LabelingJob, ValidationConfig, BatchConfig, LightingEstimationConfig, DatasetMetadata } from '@/types/api'
 
 const router = useRouter()
 const workflowStore = useWorkflowStore()
+const domainGapStore = useDomainGapStore()
 const uiStore = useUiStore()
 const { t } = useI18n()
 
@@ -51,6 +56,10 @@ const currentJob = ref<Job | null>(null)
 const activeLabelingJobs = ref<LabelingJob[]>([])
 const error = ref<string | null>(null)
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null)
+
+// Auto-tune state
+const autoTuneRunning = ref(false)
+const autoTunePollingInterval = ref<ReturnType<typeof setInterval> | null>(null)
 
 // Balancing targets local state
 const targets = ref<Record<string, number>>({ ...workflowStore.balancingTargets })
@@ -82,11 +91,23 @@ const depthCategoryOptions = computed(() => [
 
 // Computed
 const canGenerate = computed(() => {
+  // In custom objects mode, only need objects_dir and output_dir
+  if (workflowStore.customObjectsMode) {
+    return workflowStore.objectsDir && workflowStore.outputDir
+  }
+  // In COCO mode, need source dataset and output dir
   return workflowStore.sourceDatasetPath && workflowStore.outputDir
 })
 
 const totalTargetImages = computed(() =>
   Object.values(targets.value).reduce((sum, val) => sum + val, 0)
+)
+
+const autoTuneRefSetOptions = computed(() =>
+  domainGapStore.referenceSets.map(s => ({
+    value: s.set_id,
+    label: `${s.name} (${s.image_count} imgs)`,
+  }))
 )
 
 // Watch for store changes
@@ -126,7 +147,7 @@ async function startGenerationJob() {
 
   try {
     const response = await startGeneration({
-      source_dataset: workflowStore.sourceDatasetPath!,
+      source_dataset: workflowStore.sourceDatasetPath || undefined,
       output_dir: workflowStore.outputDir!,
       target_counts: targets.value,
       effects_config: workflowStore.effectsConfig,
@@ -136,6 +157,7 @@ async function startGenerationJob() {
       lighting_config: lightingConfig.value,
       metadata: metadata.value,
       backgrounds_dir: workflowStore.backgroundsDir || undefined,
+      objects_dir: workflowStore.objectsDir || undefined,
       use_depth: useDepth.value,
       use_segmentation: useSegmentation.value,
       depth_aware_placement: depthAwarePlacement.value,
@@ -159,7 +181,7 @@ async function pollJobStatus(jobId: string) {
     if (job.status === 'completed') {
       stopPolling()
       generating.value = false
-      workflowStore.markStepCompleted(4)
+      workflowStore.markStepCompleted(3)
       uiStore.showSuccess(t('workflow.generation.notifications.completed'), t('workflow.generation.notifications.completedMsg'))
     } else if (job.status === 'failed') {
       stopPolling()
@@ -201,8 +223,157 @@ function setAllTargets(value: number) {
   }
 }
 
+// ---- Auto-Tune Helpers ----
+
+/**
+ * Map a flat tuned effects config back into the nested EffectsConfig structure.
+ * The auto-tune backend returns flat keys like {color_intensity: 0.15, blur_strength: 0.7}
+ * but the store uses nested format like {color_correction: {color_intensity: 0.12}, ...}.
+ */
+function applyTunedEffectsConfig(flatConfig: Record<string, any>) {
+  const mapping: Record<string, [string, string]> = {
+    color_intensity: ['color_correction', 'color_intensity'],
+    blur_strength: ['blur_matching', 'blur_strength'],
+    underwater_intensity: ['underwater', 'underwater_intensity'],
+    water_clarity: ['underwater', 'water_clarity'],
+    caustics_intensity: ['caustics', 'caustics_intensity'],
+    shadow_opacity: ['shadows', 'shadow_opacity'],
+    lighting_type: ['lighting', 'lighting_type'],
+    lighting_intensity: ['lighting', 'lighting_intensity'],
+    motion_blur_probability: ['motion_blur', 'motion_blur_probability'],
+  }
+
+  for (const [flatKey, value] of Object.entries(flatConfig)) {
+    const target = mapping[flatKey]
+    if (target) {
+      workflowStore.updateAdvancedEffect(target[0], { [target[1]]: value })
+    }
+  }
+}
+
+// ---- Auto-Tune Functions ----
+
+async function startAutoTuneJob() {
+  if (!canGenerate.value || !workflowStore.autoTuneReferenceSetId) {
+    uiStore.showError(t('workflow.generation.autoTune.missingRefSet'), t('workflow.generation.autoTune.missingRefSetMsg'))
+    return
+  }
+
+  // Save all configs to store
+  workflowStore.updateValidationConfig(validationConfig.value)
+  workflowStore.updateBatchConfig(batchConfig.value)
+  workflowStore.updateLightingConfig(lightingConfig.value)
+  workflowStore.updateMetadata(metadata.value)
+  workflowStore.setUseDepth(useDepth.value)
+  workflowStore.setUseSegmentation(useSegmentation.value)
+  workflowStore.setDepthAwarePlacement(depthAwarePlacement.value)
+
+  autoTuneRunning.value = true
+  generating.value = true
+  error.value = null
+
+  try {
+    const response = await startAutoTune({
+      source_dataset: workflowStore.sourceDatasetPath || undefined,
+      output_dir: workflowStore.outputDir,
+      target_counts: targets.value,
+      effects_config: workflowStore.effectsConfig,
+      placement_config: workflowStore.placementConfig,
+      validation_config: validationConfig.value,
+      batch_config: batchConfig.value,
+      lighting_config: lightingConfig.value,
+      metadata: metadata.value,
+      backgrounds_dir: workflowStore.backgroundsDir || undefined,
+      objects_dir: workflowStore.objectsDir || undefined,
+      use_depth: useDepth.value,
+      use_segmentation: useSegmentation.value,
+      depth_aware_placement: depthAwarePlacement.value,
+      reference_set_id: workflowStore.autoTuneReferenceSetId,
+      target_gap_score: workflowStore.autoTuneTargetScore,
+      max_tune_iterations: workflowStore.autoTuneMaxIterations,
+      probe_size: workflowStore.autoTuneProbeSize,
+      auto_start_full: true,
+    })
+
+    workflowStore.autoTuneJobId = response.job_id
+    workflowStore.autoTuneStatus = response
+    uiStore.showSuccess(t('workflow.generation.autoTune.notifications.started'), t('workflow.generation.autoTune.notifications.startedMsg'))
+    startAutoTunePolling(response.job_id)
+  } catch (e: any) {
+    error.value = e.message || t('workflow.generation.autoTune.notifications.failed')
+    uiStore.showError(t('workflow.generation.autoTune.notifications.failed'), error.value!)
+    autoTuneRunning.value = false
+    generating.value = false
+  }
+}
+
+function startAutoTunePolling(jobId: string) {
+  autoTunePollingInterval.value = setInterval(() => pollAutoTuneStatus(jobId), 3000)
+}
+
+function stopAutoTunePolling() {
+  if (autoTunePollingInterval.value) {
+    clearInterval(autoTunePollingInterval.value)
+    autoTunePollingInterval.value = null
+  }
+}
+
+async function pollAutoTuneStatus(jobId: string) {
+  try {
+    const status = await getAutoTuneStatus(jobId)
+    workflowStore.autoTuneStatus = status
+
+    if (status.status === 'completed') {
+      stopAutoTunePolling()
+      autoTuneRunning.value = false
+
+      // Apply tuned config back to nested EffectsConfig structure
+      if (status.tuned_effects_config) {
+        applyTunedEffectsConfig(status.tuned_effects_config)
+      }
+
+      // If full generation was started, switch to polling that job
+      if (status.full_generation_job_id) {
+        workflowStore.setActiveJobId(status.full_generation_job_id)
+        startPolling(status.full_generation_job_id)
+      } else {
+        generating.value = false
+        uiStore.showSuccess(
+          t('workflow.generation.autoTune.notifications.completed'),
+          t('workflow.generation.autoTune.notifications.completedMsg', { score: status.current_gap_score?.toFixed(1) }),
+        )
+      }
+    } else if (status.status === 'failed' || status.status === 'cancelled') {
+      stopAutoTunePolling()
+      autoTuneRunning.value = false
+      generating.value = false
+      if (status.status === 'failed') {
+        error.value = status.error || t('workflow.generation.autoTune.notifications.failed')
+        uiStore.showError(t('workflow.generation.autoTune.notifications.failed'), error.value!)
+      }
+    }
+  } catch (e) {
+    // Ignore polling errors
+  }
+}
+
+async function cancelAutoTuneJob() {
+  if (workflowStore.autoTuneJobId) {
+    try {
+      await cancelAutoTune(workflowStore.autoTuneJobId)
+      stopAutoTunePolling()
+      autoTuneRunning.value = false
+      generating.value = false
+      workflowStore.autoTuneJobId = null
+      workflowStore.autoTuneStatus = null
+    } catch (e) {
+      // Ignore
+    }
+  }
+}
+
 function goBack() {
-  router.push('/source-selection')
+  router.push('/prepare?tab=sources')
 }
 
 function continueToExport() {
@@ -216,12 +387,23 @@ if (workflowStore.categories.length > 0 && Object.keys(targets.value).length ===
   })
 }
 
+// Sync targets when store balancingTargets change (e.g. custom objects mode)
+watch(() => workflowStore.balancingTargets, (newTargets) => {
+  targets.value = { ...newTargets }
+}, { deep: true })
+
 // Load active labeling jobs
 loadActiveLabelingJobs()
+
+// Load reference sets for auto-tune panel
+onMounted(() => {
+  domainGapStore.fetchReferenceSets()
+})
 
 // Cleanup on unmount
 onUnmounted(() => {
   stopPolling()
+  stopAutoTunePolling()
 })
 </script>
 
@@ -240,7 +422,7 @@ onUnmounted(() => {
 
     <!-- Warning if missing configuration -->
     <AlertBox v-if="!canGenerate" type="warning" :title="t('workflow.generation.configRequired')">
-      {{ t('workflow.generation.configRequiredMsg') }}
+      {{ workflowStore.customObjectsMode ? t('workflow.generation.configRequiredCustomMsg') : t('workflow.generation.configRequiredMsg') }}
     </AlertBox>
 
     <!-- Active Labeling Jobs -->
@@ -670,6 +852,65 @@ onUnmounted(() => {
       </TabPanels>
     </TabGroup>
 
+    <!-- Auto-Tune Progress -->
+    <div v-if="autoTuneRunning && workflowStore.autoTuneStatus" class="card p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <RotateCcw class="h-5 w-5 text-primary animate-spin" />
+          <div>
+            <h3 class="text-lg font-semibold text-white">{{ t('workflow.generation.autoTune.progress.title') }}</h3>
+            <p class="text-sm text-gray-400">
+              {{ t('workflow.generation.autoTune.progress.iteration', {
+                current: workflowStore.autoTuneStatus.iteration || 0,
+                max: workflowStore.autoTuneStatus.max_iterations || workflowStore.autoTuneMaxIterations,
+              }) }}
+            </p>
+          </div>
+        </div>
+        <BaseButton variant="outline" @click="cancelAutoTuneJob">
+          <XCircle class="h-4 w-4" />
+          {{ t('common.actions.cancel') }}
+        </BaseButton>
+      </div>
+
+      <!-- Current score -->
+      <div>
+        <div class="flex justify-between text-sm mb-1">
+          <span class="text-gray-400">{{ t('workflow.generation.autoTune.progress.currentScore') }}</span>
+          <span
+            class="font-mono"
+            :class="[(workflowStore.autoTuneStatus.current_gap_score ?? 100) <= workflowStore.autoTuneTargetScore ? 'text-green-400' : 'text-yellow-400']"
+          >
+            {{ workflowStore.autoTuneStatus.current_gap_score?.toFixed(1) ?? '—' }} / {{ workflowStore.autoTuneTargetScore }}
+          </span>
+        </div>
+        <div class="h-2 bg-background-tertiary rounded-full overflow-hidden">
+          <div
+            class="h-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500 transition-all duration-500"
+            :style="{ width: `${Math.max(0, 100 - (workflowStore.autoTuneStatus.current_gap_score ?? 100))}%` }"
+          />
+        </div>
+      </div>
+
+      <!-- Iteration History -->
+      <div v-if="workflowStore.autoTuneStatus.history?.length" class="space-y-2">
+        <h4 class="text-sm font-medium text-gray-300">{{ t('workflow.generation.autoTune.progress.history') }}</h4>
+        <div class="space-y-1 max-h-32 overflow-y-auto">
+          <div
+            v-for="(entry, idx) in workflowStore.autoTuneStatus.history"
+            :key="idx"
+            class="flex items-center justify-between text-sm px-3 py-1.5 bg-background-tertiary rounded"
+          >
+            <span class="text-gray-400">{{ t('workflow.generation.autoTune.progress.iterationLabel', { n: entry.iteration }) }}</span>
+            <span :class="[entry.gap_score <= workflowStore.autoTuneTargetScore ? 'text-green-400' : 'text-gray-300']" class="font-mono">
+              {{ entry.gap_score.toFixed(1) }}
+            </span>
+            <span class="text-xs text-gray-500">{{ entry.suggestions_applied }} {{ t('workflow.generation.autoTune.progress.adjustments') }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Job Progress -->
     <div v-if="currentJob" class="card p-6">
       <h3 class="text-lg font-semibold text-white mb-4">{{ t('workflow.generation.progress.title') }}</h3>
@@ -721,6 +962,87 @@ onUnmounted(() => {
       />
     </div>
 
+    <!-- Domain Gap Validation (Step 4.5) -->
+    <GapValidationPanel
+      v-if="currentJob?.status === 'completed' && workflowStore.outputDir"
+      :output-dir="workflowStore.outputDir"
+      @skip="continueToExport"
+      @apply-suggestions="(suggestions) => {
+        // Navigate to configure with suggestions
+        for (const s of suggestions) {
+          const parts = s.parameter_path.split('.')
+          if (parts.length >= 2) {
+            const effectKey = parts[0]
+            const paramKey = parts.slice(1).join('.')
+            workflowStore.updateAdvancedEffect(effectKey, { [paramKey]: s.suggested_value })
+          }
+        }
+        uiStore.showSuccess(t('workflow.generation.actions.suggestionsApplied'), t('workflow.generation.actions.suggestionsAppliedMsg', { count: suggestions.length }))
+        router.push('/configure')
+      }"
+    />
+
+    <!-- Auto-Tune Configuration -->
+    <div v-if="!generating && !currentJob?.status" class="rounded-xl border border-purple-700/30 bg-purple-900/10 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+            <Target class="h-5 w-5 text-purple-400" />
+            {{ t('workflow.generation.autoTune.title') }}
+          </h3>
+          <p class="text-sm text-gray-400 mt-1">
+            {{ t('workflow.generation.autoTune.description') }}
+          </p>
+        </div>
+        <button
+          :class="[workflowStore.autoTuneEnabled ? 'bg-purple-600' : 'bg-gray-600',
+                   'relative inline-flex h-6 w-11 items-center rounded-full transition-colors']"
+          @click="workflowStore.autoTuneEnabled = !workflowStore.autoTuneEnabled"
+        >
+          <span :class="[workflowStore.autoTuneEnabled ? 'translate-x-6' : 'translate-x-1',
+                         'inline-block h-4 w-4 transform rounded-full bg-white transition-transform']" />
+        </button>
+      </div>
+
+      <div v-if="workflowStore.autoTuneEnabled" class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <BaseSelect
+          v-model="workflowStore.autoTuneReferenceSetId"
+          :label="t('workflow.generation.autoTune.referenceSet')"
+          :options="autoTuneRefSetOptions"
+          :placeholder="t('tools.domainGap.validation.selectReferenceSet')"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneTargetScore"
+          :label="t('workflow.generation.autoTune.targetScore')"
+          type="number"
+          :min="5"
+          :max="80"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneMaxIterations"
+          :label="t('workflow.generation.autoTune.maxIterations')"
+          type="number"
+          :min="1"
+          :max="20"
+        />
+        <BaseInput
+          v-model.number="workflowStore.autoTuneProbeSize"
+          :label="t('workflow.generation.autoTune.probeSize')"
+          type="number"
+          :min="10"
+          :max="200"
+        />
+      </div>
+
+      <AlertBox
+        v-if="workflowStore.autoTuneEnabled && !workflowStore.autoTuneReferenceSetId"
+        type="warning"
+        class="mt-4"
+      >
+        {{ t('workflow.generation.autoTune.missingRefSetMsg') }}
+      </AlertBox>
+    </div>
+
     <!-- Action Buttons -->
     <div class="flex justify-between pt-4">
       <BaseButton variant="outline" @click="goBack">
@@ -731,11 +1053,12 @@ onUnmounted(() => {
       <div class="flex gap-4">
         <BaseButton
           v-if="!generating && !currentJob?.status"
-          :disabled="!canGenerate"
-          @click="startGenerationJob"
+          :disabled="!canGenerate || (workflowStore.autoTuneEnabled && !workflowStore.autoTuneReferenceSetId)"
+          @click="workflowStore.autoTuneEnabled ? startAutoTuneJob() : startGenerationJob()"
         >
-          <Play class="h-5 w-5" />
-          {{ t('workflow.generation.actions.startGeneration') }}
+          <Zap v-if="workflowStore.autoTuneEnabled" class="h-5 w-5" />
+          <Play v-else class="h-5 w-5" />
+          {{ workflowStore.autoTuneEnabled ? t('workflow.generation.autoTune.actions.startAutoTune') : t('workflow.generation.actions.startGeneration') }}
         </BaseButton>
 
         <BaseButton

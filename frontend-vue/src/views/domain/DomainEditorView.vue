@@ -25,6 +25,7 @@ import {
   GripVertical,
   ChevronDown,
   ChevronRight,
+  RotateCcw,
 } from 'lucide-vue-next'
 import type {
   Domain,
@@ -40,11 +41,14 @@ const uiStore = useUiStore()
 
 const loading = ref(true)
 const saving = ref(false)
+const resetting = ref(false)
 const originalDomain = ref<Domain | null>(null)
 const editedDomain = ref<Domain | null>(null)
 const activeSection = ref<string>('general')
 const expandedRegions = ref<Set<string>>(new Set())
 const expandedObjects = ref<Set<string>>(new Set())
+const isBuiltinDomain = ref(false)
+const hasOverride = ref(false)
 
 // Icon mapping
 const iconComponents: Record<string, any> = {
@@ -87,11 +91,11 @@ async function loadDomain() {
 
   const domain = await domainStore.fetchDomain(domainId)
   if (domain) {
-    if (domain.is_builtin) {
-      uiStore.showError('Error', 'Cannot edit built-in domains')
-      router.push(`/domains/${domainId}`)
-      return
-    }
+    // Check if this is a built-in domain or has an override
+    const overrideStatus = await domainStore.getOverrideStatus(domainId)
+    isBuiltinDomain.value = domain.is_builtin || (overrideStatus?.is_builtin ?? false)
+    hasOverride.value = overrideStatus?.has_override ?? false
+
     originalDomain.value = JSON.parse(JSON.stringify(domain))
     editedDomain.value = JSON.parse(JSON.stringify(domain))
   } else {
@@ -120,13 +124,45 @@ async function handleSave() {
     labeling_templates: editedDomain.value.labeling_templates,
   }
 
-  const result = await domainStore.updateDomain(editedDomain.value.domain_id, updateRequest)
+  let result: Domain | null = null
+
+  // Use createBuiltinOverride for built-in domains, updateDomain for user domains
+  if (isBuiltinDomain.value) {
+    result = await domainStore.createBuiltinOverride(editedDomain.value.domain_id, updateRequest)
+    if (result) {
+      hasOverride.value = true
+      uiStore.showSuccess('Saved', 'Built-in domain customization saved successfully')
+    }
+  } else {
+    result = await domainStore.updateDomain(editedDomain.value.domain_id, updateRequest)
+    if (result) {
+      uiStore.showSuccess('Saved', 'Domain updated successfully')
+    }
+  }
+
   if (result) {
     originalDomain.value = JSON.parse(JSON.stringify(result))
     editedDomain.value = JSON.parse(JSON.stringify(result))
-    uiStore.showSuccess('Saved', 'Domain updated successfully')
   }
   saving.value = false
+}
+
+async function handleResetOverride() {
+  if (!editedDomain.value || !hasOverride.value) return
+
+  if (!confirm('Are you sure you want to reset this domain to its original built-in configuration? All your customizations will be lost.')) {
+    return
+  }
+
+  resetting.value = true
+  const result = await domainStore.resetBuiltinOverride(editedDomain.value.domain_id)
+  if (result) {
+    hasOverride.value = false
+    originalDomain.value = JSON.parse(JSON.stringify(result))
+    editedDomain.value = JSON.parse(JSON.stringify(result))
+    uiStore.showSuccess('Reset', 'Domain restored to original built-in configuration')
+  }
+  resetting.value = false
 }
 
 function handleCancel() {
@@ -292,6 +328,37 @@ onMounted(loadDomain)
           </BaseButton>
         </div>
       </div>
+
+      <!-- Built-in Domain Notice -->
+      <AlertBox
+        v-if="isBuiltinDomain && !hasOverride"
+        type="info"
+        title="Editing Built-in Domain"
+      >
+        This is a built-in domain. Your changes will be saved as a custom override,
+        allowing you to customize SAM3 prompts, regions, objects, and other settings
+        while preserving the original configuration.
+      </AlertBox>
+
+      <!-- Override Active Notice -->
+      <AlertBox
+        v-if="isBuiltinDomain && hasOverride"
+        type="info"
+        title="Custom Override Active"
+      >
+        <div class="flex items-center justify-between">
+          <span>This domain has been customized. You can reset to restore the original built-in configuration.</span>
+          <BaseButton
+            variant="outline"
+            size="sm"
+            @click="handleResetOverride"
+            :loading="resetting"
+            class="ml-4"
+          >
+            Reset to Original
+          </BaseButton>
+        </div>
+      </AlertBox>
 
       <!-- Unsaved Changes Warning -->
       <AlertBox v-if="hasChanges" type="warning" title="You have unsaved changes" />

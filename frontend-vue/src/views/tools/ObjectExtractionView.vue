@@ -25,7 +25,7 @@ const extracting = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const cocoJsonPath = ref('')
 const imagesDir = ref('')
-const outputDir = ref('/data/extracted')
+const outputDir = ref('/app/output/extracted')
 const minSize = ref(32)
 const includeMasks = ref(true)
 const useSam3 = ref(false)
@@ -139,7 +139,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="cocoJsonPath"
             label="COCO JSON Path"
-            placeholder="/data/dataset/annotations.json"
+            placeholder="/app/datasets/annotations.json"
             :show-files="true"
             file-pattern="*.json"
             path-mode="input"
@@ -147,7 +147,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="imagesDir"
             label="Images Directory"
-            placeholder="/data/dataset/images"
+            placeholder="/app/datasets/images"
             path-mode="input"
           />
         </div>
@@ -161,7 +161,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
-            placeholder="/data/extracted"
+            placeholder="/app/output/extracted"
             path-mode="output"
           />
 

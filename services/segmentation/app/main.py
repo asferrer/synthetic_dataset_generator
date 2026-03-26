@@ -98,22 +98,32 @@ import base64
 
 # Shared utilities
 try:
-    import sys
-    sys.path.insert(0, '/app')
-    from services.shared.vram_monitor import VRAMMonitor
+    from shared.vram_monitor import VRAMMonitor
     VRAM_MONITOR_AVAILABLE = True
 except ImportError:
-    VRAM_MONITOR_AVAILABLE = False
-    VRAMMonitor = None
+    try:
+        import sys
+        sys.path.insert(0, '/app')
+        from shared.vram_monitor import VRAMMonitor
+        VRAM_MONITOR_AVAILABLE = True
+    except ImportError:
+        VRAM_MONITOR_AVAILABLE = False
+        VRAMMonitor = None
 
 # Job database for persistence
 try:
     from shared.job_database import JobDatabase, get_job_db
     JOB_DATABASE_AVAILABLE = True
 except ImportError:
-    JOB_DATABASE_AVAILABLE = False
-    JobDatabase = None
-    get_job_db = None
+    try:
+        import sys
+        sys.path.insert(0, '/app')
+        from shared.job_database import JobDatabase, get_job_db
+        JOB_DATABASE_AVAILABLE = True
+    except ImportError:
+        JOB_DATABASE_AVAILABLE = False
+        JobDatabase = None
+        get_job_db = None
 
 # Labeling optimization modules
 from app.prompt_optimizer import PromptOptimizer, get_prompt_optimizer
@@ -172,8 +182,8 @@ thread_pool = ThreadPoolExecutor(max_workers=2)
 # Concurrency control for labeling jobs
 # Note: SAM3 uses ~4-6GB VRAM per job. Adjust based on available GPU memory.
 # Conservative settings to prevent GPU overheating and leave memory headroom.
-# 32GB VRAM -> 4 concurrent jobs (~24GB used, 8GB reserved)
-MAX_CONCURRENT_LABELING_JOBS = 4
+# Set to 1 to prevent resource saturation with large datasets (13k+ images)
+MAX_CONCURRENT_LABELING_JOBS = 1
 MAX_CONCURRENT_IMAGES_PER_JOB = 4
 labeling_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LABELING_JOBS)
 
@@ -211,6 +221,36 @@ def init_object_extractor():
         device=state.device
     )
     logger.info(f"ObjectExtractor initialized (SAM3: {state.sam3_available})")
+
+
+def _calculate_iou(bbox1: List[float], bbox2: List[float]) -> float:
+    """
+    Calculate Intersection over Union (IoU) between two bounding boxes.
+    Bbox format: [x, y, width, height] (COCO format)
+    """
+    x1, y1, w1, h1 = bbox1
+    x2, y2, w2, h2 = bbox2
+
+    # Calculate intersection
+    x_left = max(x1, x2)
+    y_top = max(y1, y2)
+    x_right = min(x1 + w1, x2 + w2)
+    y_bottom = min(y1 + h1, y2 + h2)
+
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+    # Calculate union
+    bbox1_area = w1 * h1
+    bbox2_area = w2 * h2
+    union_area = bbox1_area + bbox2_area - intersection_area
+
+    if union_area == 0:
+        return 0.0
+
+    return intersection_area / union_area
 
 
 def init_gpu():
@@ -350,16 +390,11 @@ async def lifespan(app: FastAPI):
             state.db = get_job_db()
             logger.info("Job database initialized for persistence")
 
-            # Restore any interrupted labeling jobs from database
-            interrupted_jobs = state.db.list_jobs(
-                service="segmentation",
-                job_type="labeling"
-            )
-            for db_job in interrupted_jobs:
-                if db_job["status"] in ["pending", "running"]:
-                    # Mark as interrupted since we're restarting
-                    state.db.update_job_status(db_job["id"], "interrupted")
-                    logger.info(f"Marked job {db_job['id']} as interrupted (service restarted)")
+            # Mark any jobs left in running/queued state as interrupted
+            # (they were abandoned when the service was last shut down)
+            orphaned = state.db.mark_orphaned_jobs("segmentation")
+            if orphaned:
+                logger.warning(f"Marked {orphaned} orphaned segmentation jobs as interrupted")
         except Exception as e:
             logger.warning(f"Failed to initialize job database: {e}")
             state.db = None
@@ -1137,6 +1172,27 @@ async def extract_objects(request: ExtractObjectsRequest):
             "deduplication_enabled": request.deduplication.enabled if request.deduplication else True
         }
 
+        # Persist extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "source_path": source_path,
+                        "images_dir": request.images_dir,
+                        "categories_to_extract": request.categories_to_extract,
+                        "use_sam3_for_bbox": request.use_sam3_for_bbox,
+                        "force_bbox_only": request.force_bbox_only,
+                    },
+                    total_items=total_objects,
+                    output_path=request.output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist extraction job to DB: {e}")
+
         # Define extraction task
         async def run_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1144,10 +1200,44 @@ async def extract_objects(request: ExtractObjectsRequest):
 
             def progress_callback(progress):
                 # This callback runs from a thread pool, but dict updates are atomic in CPython
-                extraction_jobs[job_id]["extracted_objects"] = progress["extracted"]
-                extraction_jobs[job_id]["failed_objects"] = progress["failed"]
-                extraction_jobs[job_id]["current_category"] = progress.get("current_category", "")
-                extraction_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+                extracted = progress["extracted"]
+                failed = progress["failed"]
+                current_category = progress.get("current_category", "")
+                by_category = progress.get("by_category", {})
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
+                extraction_jobs[job_id]["current_category"] = current_category
+                extraction_jobs[job_id]["categories_progress"] = by_category
+
+                # Save checkpoint file so progress survives a partial run
+                try:
+                    checkpoint_path = os.path.join(request.output_dir, "extraction_progress.json")
+                    with open(checkpoint_path, "w") as _cp_f:
+                        json.dump(
+                            {
+                                "extracted": extracted,
+                                "failed": failed,
+                                "completed_categories": list(by_category.keys()),
+                                "current_category": current_category,
+                                "timestamp": datetime.now().isoformat(),
+                            },
+                            _cp_f,
+                            indent=2,
+                        )
+                except Exception:
+                    pass
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_category,
+                            progress_details={"by_category": by_category},
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.extract_from_dataset(
@@ -1172,12 +1262,34 @@ async def extract_objects(request: ExtractObjectsRequest):
                 extraction_jobs[job_id]["extracted_files"] = result.get("extracted_files", [])[:1000]
                 extraction_jobs[job_id]["processing_time_ms"] = result.get("processing_time_seconds", 0) * 1000
                 extraction_jobs[job_id]["duplicates_prevented"] = result.get("deduplication_stats", {}).get("duplicates_prevented", 0)
+                extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+
+                if state.db:
+                    try:
+                        state.db.complete_job(
+                            job_id,
+                            "completed",
+                            result_summary={
+                                "extracted": result["extracted"],
+                                "failed": result["failed"],
+                                "by_category": result["by_category"],
+                                "duplicates_prevented": result.get("deduplication_stats", {}).get("duplicates_prevented", 0),
+                            },
+                        )
+                    except Exception:
+                        pass
 
             except Exception as e:
                 # Use logger.exception to get full traceback for debugging
                 logger.exception(f"Extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 # Always set completed_at, even if job failed
@@ -1264,6 +1376,26 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
             "current_image": ""
         }
 
+        # Persist custom extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "images_dir": request.images_dir,
+                        "object_names": request.object_names,
+                        "total_images": total_images,
+                        "extraction_type": "custom",
+                    },
+                    total_items=total_images,
+                    output_path=request.output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist custom extraction job to DB: {e}")
+
         # Define extraction task
         async def run_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1271,10 +1403,24 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
 
             def progress_callback(progress):
                 # Update job status with progress info
-                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
-                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+                extracted = progress.get("extracted", 0)
+                failed = progress.get("failed", 0)
+                current_image = progress.get("current_image", "")
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
                 extraction_jobs[job_id]["duplicates_prevented"] = progress.get("duplicates_prevented", 0)
-                extraction_jobs[job_id]["current_image"] = progress.get("current_image", "")
+                extraction_jobs[job_id]["current_image"] = current_image
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_image,
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.extract_custom_objects(
@@ -1300,14 +1446,38 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
                 if result.get("success"):
                     extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
                     logger.info(f"Custom extraction job {job_id} completed: {result['total_objects_extracted']} objects")
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "total_objects_extracted": result.get("total_objects_extracted", 0),
+                                    "failed_extractions": result.get("failed_extractions", 0),
+                                    "by_category": result.get("by_category", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     extraction_jobs[job_id]["status"] = JobStatus.FAILED
                     logger.error(f"Custom extraction job {job_id} failed")
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="Extraction returned failure")
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.exception(f"Custom extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
@@ -1336,10 +1506,39 @@ async def extract_custom_objects(request: ExtractCustomObjectsRequest):
         )
 
 
+def _db_row_to_extraction_job(db_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a DB job row to the extraction job dict format used by the list endpoint."""
+    result_summary = db_job.get("result_summary") or {}
+    total = db_job.get("total_items", 0)
+    extracted = db_job.get("processed_items", 0)
+    failed = db_job.get("failed_items", 0)
+    progress = round(((extracted + failed) / total * 100), 1) if total > 0 else 0.0
+
+    return {
+        "job_id": db_job.get("id", ""),
+        "type": "extraction",
+        "job_type": "extraction",
+        "status": db_job.get("status", "unknown"),
+        "progress": progress,
+        "created_at": db_job.get("created_at", datetime.now().isoformat()),
+        "total_objects": result_summary.get("extracted", 0) + result_summary.get("failed", 0) if result_summary else total,
+        "extracted_objects": result_summary.get("extracted", extracted),
+        "failed_objects": result_summary.get("failed", failed),
+        "current_category": db_job.get("current_item", ""),
+        "output_dir": db_job.get("output_path", ""),
+        "started_at": db_job.get("started_at"),
+        "completed_at": db_job.get("completed_at"),
+        "processing_time_ms": db_job.get("processing_time_ms", 0),
+    }
+
+
 @app.get("/extract/jobs", tags=["Object Extraction"])
 async def list_extraction_jobs():
-    """List all extraction jobs."""
+    """List all extraction jobs (active from memory, historical from database)."""
     jobs = []
+    seen_ids: set = set()
+
+    # First: active jobs from memory (most detailed real-time data)
     for job_id, job in extraction_jobs.items():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
@@ -1367,6 +1566,19 @@ async def list_extraction_jobs():
             "completed_at": job.get("completed_at"),
             "processing_time_ms": job.get("processing_time_ms", 0),
         })
+        seen_ids.add(job_id)
+
+    # Second: historical/completed jobs from DB not present in memory
+    if state.db:
+        try:
+            db_jobs = state.db.list_jobs(service="segmentation", job_type="extraction", limit=50)
+            for db_job in db_jobs:
+                job_id = db_job.get("id", "")
+                if job_id and job_id not in seen_ids:
+                    jobs.append(_db_row_to_extraction_job(db_job))
+        except Exception:
+            pass
+
     return {"jobs": jobs, "total": len(jobs)}
 
 
@@ -1523,6 +1735,25 @@ async def extract_from_imagenet(
             "extraction_type": "imagenet"
         }
 
+        # Persist ImageNet extraction job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="extraction",
+                    service="segmentation",
+                    request_params={
+                        "root_dir": root_dir,
+                        "num_classes": num_classes,
+                        "extraction_type": "imagenet",
+                    },
+                    total_items=num_classes,
+                    output_path=output_dir,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist ImageNet extraction job to DB: {e}")
+
         # Define extraction task
         async def run_imagenet_extraction():
             extraction_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1530,9 +1761,23 @@ async def extract_from_imagenet(
 
             def progress_callback(progress):
                 # Update job progress
-                extraction_jobs[job_id]["current_category"] = progress.get("current_class", "")
-                extraction_jobs[job_id]["extracted_objects"] = progress.get("extracted", 0)
-                extraction_jobs[job_id]["failed_objects"] = progress.get("failed", 0)
+                current_class = progress.get("current_class", "")
+                extracted = progress.get("extracted", 0)
+                failed = progress.get("failed", 0)
+                extraction_jobs[job_id]["current_category"] = current_class
+                extraction_jobs[job_id]["extracted_objects"] = extracted
+                extraction_jobs[job_id]["failed_objects"] = failed
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=extracted,
+                            failed_items=failed,
+                            current_item=current_class,
+                        )
+                    except Exception:
+                        pass
 
             try:
                 start_time = time.time()
@@ -1547,8 +1792,26 @@ async def extract_from_imagenet(
 
                 if result.get("success"):
                     extraction_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "total_extracted": result.get("total_extracted", 0),
+                                    "total_failed": result.get("total_failed", 0),
+                                    "classes": result.get("classes", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     extraction_jobs[job_id]["status"] = JobStatus.FAILED
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="ImageNet extraction returned failure")
+                        except Exception:
+                            pass
 
                 extraction_jobs[job_id]["total_objects"] = result.get("total_extracted", 0) + result.get("total_failed", 0)
                 extraction_jobs[job_id]["extracted_objects"] = result.get("total_extracted", 0)
@@ -1561,6 +1824,12 @@ async def extract_from_imagenet(
                 logger.exception(f"ImageNet extraction job {job_id} failed: {e}")
                 extraction_jobs[job_id]["status"] = JobStatus.FAILED
                 extraction_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 extraction_jobs[job_id]["completed_at"] = datetime.now().isoformat()
@@ -1816,6 +2085,25 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
             "completed_at": None
         }
 
+        # Persist SAM3 conversion job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="sam3_conversion",
+                    service="segmentation",
+                    request_params={
+                        "images_dir": request.images_dir,
+                        "categories_to_convert": request.categories_to_convert,
+                        "overwrite_existing": request.overwrite_existing,
+                    },
+                    total_items=total_annotations,
+                    output_path=request.output_path,
+                )
+                state.db.update_job_status(job_id, "running", started_at=datetime.now())
+            except Exception as e:
+                logger.warning(f"Failed to persist SAM3 conversion job to DB: {e}")
+
         # Define conversion task
         async def run_conversion():
             sam3_conversion_jobs[job_id]["status"] = JobStatus.PROCESSING
@@ -1823,11 +2111,27 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
 
             def progress_callback(progress):
                 # This callback runs from a thread pool, but dict updates are atomic in CPython
-                sam3_conversion_jobs[job_id]["converted_annotations"] = progress["converted"]
-                sam3_conversion_jobs[job_id]["skipped_annotations"] = progress["skipped"]
-                sam3_conversion_jobs[job_id]["failed_annotations"] = progress["failed"]
-                sam3_conversion_jobs[job_id]["current_image"] = progress.get("current_image", "")
+                converted = progress["converted"]
+                skipped = progress["skipped"]
+                failed = progress["failed"]
+                current_image = progress.get("current_image", "")
+                sam3_conversion_jobs[job_id]["converted_annotations"] = converted
+                sam3_conversion_jobs[job_id]["skipped_annotations"] = skipped
+                sam3_conversion_jobs[job_id]["failed_annotations"] = failed
+                sam3_conversion_jobs[job_id]["current_image"] = current_image
                 sam3_conversion_jobs[job_id]["categories_progress"] = progress.get("by_category", {})
+
+                if state.db:
+                    try:
+                        state.db.update_job_progress(
+                            job_id,
+                            processed_items=converted + skipped,
+                            failed_items=failed,
+                            current_item=current_image,
+                            progress_details={"by_category": progress.get("by_category", {})},
+                        )
+                    except Exception:
+                        pass
 
             try:
                 result = await state.object_extractor.convert_bbox_to_segmentation(
@@ -1843,8 +2147,27 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
 
                 if result.get("success"):
                     sam3_conversion_jobs[job_id]["status"] = JobStatus.COMPLETED
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id,
+                                "completed",
+                                result_summary={
+                                    "converted": result.get("converted", 0),
+                                    "skipped": result.get("skipped", 0),
+                                    "failed": result.get("failed", 0),
+                                    "by_category": result.get("by_category", {}),
+                                },
+                            )
+                        except Exception:
+                            pass
                 else:
                     sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
+                    if state.db:
+                        try:
+                            state.db.complete_job(job_id, "failed", error_message="Conversion returned failure")
+                        except Exception:
+                            pass
 
                 sam3_conversion_jobs[job_id]["converted_annotations"] = result.get("converted", 0)
                 sam3_conversion_jobs[job_id]["skipped_annotations"] = result.get("skipped", 0)
@@ -1858,6 +2181,12 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
                 logger.exception(f"Conversion job {job_id} failed: {e}")
                 sam3_conversion_jobs[job_id]["status"] = JobStatus.FAILED
                 sam3_conversion_jobs[job_id]["errors"].append(str(e))
+
+                if state.db:
+                    try:
+                        state.db.complete_job(job_id, "failed", error_message=str(e))
+                    except Exception:
+                        pass
 
             finally:
                 # Always set completed_at, even if job failed
@@ -1882,10 +2211,41 @@ async def sam3_convert_dataset(request: SAM3ConvertDatasetRequest):
         )
 
 
+def _db_row_to_sam3_conversion_job(db_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a DB job row to the SAM3 conversion job dict format."""
+    result_summary = db_job.get("result_summary") or {}
+    total = db_job.get("total_items", 0)
+    converted = result_summary.get("converted", db_job.get("processed_items", 0))
+    skipped = result_summary.get("skipped", 0)
+    failed = result_summary.get("failed", db_job.get("failed_items", 0))
+    progress = round(((converted + skipped + failed) / total * 100), 1) if total > 0 else 0.0
+
+    return {
+        "job_id": db_job.get("id", ""),
+        "type": "sam3_conversion",
+        "job_type": "sam3_conversion",
+        "status": db_job.get("status", "unknown"),
+        "progress": progress,
+        "created_at": db_job.get("created_at", datetime.now().isoformat()),
+        "total_annotations": total,
+        "converted_annotations": converted,
+        "skipped_annotations": skipped,
+        "failed_annotations": failed,
+        "current_image": db_job.get("current_item", ""),
+        "output_path": db_job.get("output_path", ""),
+        "started_at": db_job.get("started_at"),
+        "completed_at": db_job.get("completed_at"),
+        "processing_time_ms": db_job.get("processing_time_ms", 0),
+    }
+
+
 @app.get("/sam3/jobs", tags=["SAM3 Tool"])
 async def list_sam3_conversion_jobs():
-    """List all SAM3 conversion jobs."""
+    """List all SAM3 conversion jobs (active from memory, historical from database)."""
     jobs = []
+    seen_ids: set = set()
+
+    # First: active jobs from memory (most detailed real-time data)
     for job_id, job in sam3_conversion_jobs.items():
         # Convert JobStatus enum to string for JSON serialization
         status = job.get("status", "unknown")
@@ -1915,6 +2275,19 @@ async def list_sam3_conversion_jobs():
             "completed_at": job.get("completed_at"),
             "processing_time_ms": job.get("processing_time_ms", 0),
         })
+        seen_ids.add(job_id)
+
+    # Second: historical/completed jobs from DB not present in memory
+    if state.db:
+        try:
+            db_jobs = state.db.list_jobs(service="segmentation", job_type="sam3_conversion", limit=50)
+            for db_job in db_jobs:
+                job_id = db_job.get("id", "")
+                if job_id and job_id not in seen_ids:
+                    jobs.append(_db_row_to_sam3_conversion_job(db_job))
+        except Exception:
+            pass
+
     return {"jobs": jobs, "total": len(jobs)}
 
 
@@ -1981,9 +2354,9 @@ async def start_labeling_job(request: StartLabelingRequest):
                 )
 
             for ext in image_extensions:
-                for img_path in dir_obj.glob(f"*{ext}"):
+                for img_path in dir_obj.rglob(f"*{ext}"):
                     all_image_paths.append(str(img_path))
-                for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                for img_path in dir_obj.rglob(f"*{ext.upper()}"):
                     all_image_paths.append(str(img_path))
 
         total_images = len(all_image_paths)
@@ -1994,12 +2367,33 @@ async def start_labeling_job(request: StartLabelingRequest):
                 error="No images found in specified directories"
             )
 
-        # Create output directory
-        output_dir = Path(request.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Handle preview mode (limit to N images for testing)
+        if request.preview_mode:
+            preview_limit = min(request.preview_count, total_images)
+            all_image_paths = all_image_paths[:preview_limit]
+            total_images = preview_limit
+            logger.info(f"[LABEL] Preview mode enabled: processing first {total_images} images")
+        else:
+            # Warn about large datasets (may take hours/days to process)
+            if total_images > 1000:
+                logger.warning(f"[LABEL] Large dataset detected: {total_images} images. Processing may take several hours. Consider using preview mode first.")
 
-        # Create job
+        # Check for conflicting output directory with active jobs
+        for existing_job in labeling_jobs.values():
+            if (existing_job.get("status") in (JobStatus.QUEUED, JobStatus.PROCESSING)
+                    and existing_job.get("output_dir") == request.output_dir):
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"A labeling job is already running/queued with the same output directory: {request.output_dir}"
+                )
+
+        # Create job with unique output subdirectory
         job_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_subdir = f"labeling_{timestamp}_{job_id[:8]}"
+        output_dir = Path(request.output_dir) / job_subdir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[LABEL] Job output directory: {output_dir}")
 
         # Determine final classes for tracking (use mapped names if mapping exists)
         if request.class_mapping:
@@ -2018,7 +2412,7 @@ async def start_labeling_job(request: StartLabelingRequest):
             "total_objects_found": 0,
             "objects_by_class": {cls: 0 for cls in final_classes},
             "current_image": "",
-            "output_dir": request.output_dir,
+            "output_dir": str(output_dir),
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
@@ -2037,6 +2431,8 @@ async def start_labeling_job(request: StartLabelingRequest):
             "_save_visualizations": request.save_visualizations,
             "_class_mapping": request.class_mapping,  # Maps prompts to final class names
             "_padding": request.padding,  # Pixels of padding around bboxes
+            "_preview_mode": request.preview_mode,  # If True, this is a preview/test run
+            "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
 
         # Persist job to database for durability
@@ -2054,7 +2450,7 @@ async def start_labeling_job(request: StartLabelingRequest):
                         "min_confidence": request.min_confidence,
                     },
                     total_items=total_images,
-                    output_path=request.output_dir
+                    output_path=str(output_dir)
                 )
                 logger.info(f"Labeling job {job_id} persisted to database")
             except Exception as e:
@@ -2078,21 +2474,49 @@ async def start_labeling_job(request: StartLabelingRequest):
                     await _process_labeling_job(job_id)
                     labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
 
-                    # Update database with completion
+                    # Update database with completion and record dataset metadata
                     if state.db:
                         try:
                             job = labeling_jobs[job_id]
+                            output_path = job.get("output_dir", "")
+                            coco_json_path = str(Path(output_path) / "annotations.json")
                             state.db.complete_job(
                                 job_id=job_id,
                                 status="completed",
                                 result_summary={
                                     "total_objects_found": job.get("total_objects_found", 0),
                                     "objects_by_class": job.get("objects_by_class", {}),
+                                    "output_path": output_path,
+                                    "coco_json_path": coco_json_path,
                                 },
                                 processing_time_ms=job.get("processing_time_ms", 0)
                             )
                         except Exception as e:
                             logger.warning(f"Failed to update job completion in database: {e}")
+
+                        # Save dataset metadata for completed labeling jobs
+                        try:
+                            job = labeling_jobs[job_id]
+                            output_path = job.get("output_dir", "")
+                            coco_json_path = str(Path(output_path) / "annotations.json")
+                            if Path(coco_json_path).exists():
+                                state.db.create_dataset_metadata(
+                                    job_id=job_id,
+                                    dataset_name=f"Labeled_{job_id[-8:]}",
+                                    dataset_type="labeling",
+                                    coco_json_path=coco_json_path,
+                                    images_dir=output_path,
+                                    num_images=job.get("total_images", 0),
+                                    num_annotations=job.get("total_objects_found", 0),
+                                    num_categories=len(job.get("objects_by_class", {})),
+                                    class_distribution=job.get("objects_by_class", {}),
+                                    categories=[
+                                        {"id": i + 1, "name": cls}
+                                        for i, cls in enumerate(job.get("objects_by_class", {}).keys())
+                                    ],
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to save labeling dataset metadata: {e}")
 
                 except Exception as e:
                     logger.exception(f"Labeling job {job_id} failed: {e}")
@@ -2122,7 +2546,7 @@ async def start_labeling_job(request: StartLabelingRequest):
             success=True,
             job_id=job_id,
             status=JobStatus.QUEUED,
-            message=f"Labeling job started. {total_images} images, {len(request.classes)} classes.",
+            message=f"Labeling job started. {total_images} images, {len(request.classes)} classes. Output: {output_dir}",
             total_images=total_images
         )
 
@@ -2157,27 +2581,81 @@ async def start_relabeling_job(request: StartRelabelingRequest):
         )
 
     try:
+        # Validate that annotation source is provided for relabeling
+        if not request.coco_data and not request.coco_json_path:
+            return LabelingJobResponse(
+                success=False,
+                error="Relabeling requires an existing annotations file. Please provide a COCO JSON path."
+            )
+
+        # If coco_json_path is provided but coco_data is not, read and parse the JSON file
+        if request.coco_json_path and not request.coco_data:
+            coco_path = Path(request.coco_json_path)
+            if coco_path.exists():
+                import json as json_module
+                try:
+                    with open(coco_path, "r", encoding="utf-8") as f:
+                        request.coco_data = json_module.load(f)
+                    logger.info(f"[RELABEL] Loaded COCO data from {coco_path}: "
+                                f"{len(request.coco_data.get('images', []))} images, "
+                                f"{len(request.coco_data.get('categories', []))} categories, "
+                                f"{len(request.coco_data.get('annotations', []))} annotations")
+                except Exception as e:
+                    logger.error(f"[RELABEL] Failed to read COCO JSON from {coco_path}: {e}")
+                    return LabelingJobResponse(
+                        success=False,
+                        error=f"Failed to read COCO JSON file: {e}"
+                    )
+            else:
+                logger.warning(f"[RELABEL] COCO JSON path not found: {coco_path}")
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"COCO JSON file not found: {coco_path}"
+                )
+
         # Get image paths from directories and/or existing dataset
         all_image_paths = []
         image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
-        # Build image lookup from directories
-        image_lookup = {}  # filename -> full path
+        # Build image lookup from directories (recursive search)
+        image_lookup = {}      # basename -> full path
+        image_lookup_rel = {}  # relative path -> full path
         for dir_path in request.image_directories:
             dir_obj = Path(dir_path)
             if dir_obj.exists():
                 for ext in image_extensions:
-                    for img_path in dir_obj.glob(f"*{ext}"):
+                    for img_path in dir_obj.rglob(f"*{ext}"):
                         image_lookup[img_path.name] = str(img_path)
-                    for img_path in dir_obj.glob(f"*{ext.upper()}"):
+                        try:
+                            rel = str(img_path.relative_to(dir_obj))
+                            image_lookup_rel[rel] = str(img_path)
+                        except ValueError:
+                            pass
+                    for img_path in dir_obj.rglob(f"*{ext.upper()}"):
                         image_lookup[img_path.name] = str(img_path)
+                        try:
+                            rel = str(img_path.relative_to(dir_obj))
+                            image_lookup_rel[rel] = str(img_path)
+                        except ValueError:
+                            pass
+
+        # Build image ID mapping from original COCO data (preserves original IDs)
+        image_id_map = {}  # filename -> original_image_id
+        if request.coco_data:
+            for img in request.coco_data.get("images", []):
+                filename = img.get("file_name", "")
+                image_id_map[filename] = img.get("id")
 
         # If we have COCO data, get images from there
         if request.coco_data:
             for img in request.coco_data.get("images", []):
                 filename = img.get("file_name", "")
-                if filename in image_lookup:
-                    all_image_paths.append(image_lookup[filename])
+                basename = Path(filename).name
+                # Try matching by relative path first, then by basename
+                if filename in image_lookup_rel:
+                    all_image_paths.append(image_lookup_rel[filename])
+                elif basename in image_lookup:
+                    all_image_paths.append(image_lookup[basename])
                 elif Path(filename).exists():
                     all_image_paths.append(filename)
         else:
@@ -2192,19 +2670,42 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                 error="No images found in specified directories"
             )
 
+        # Handle preview mode (limit to N images for testing)
+        if request.preview_mode:
+            preview_limit = min(request.preview_count, total_images)
+            all_image_paths = all_image_paths[:preview_limit]
+            total_images = preview_limit
+            logger.info(f"[RELABEL] Preview mode enabled: processing first {total_images} images")
+        else:
+            # Warn about large datasets (may take hours/days to process)
+            if total_images > 1000:
+                logger.warning(f"[RELABEL] Large dataset detected: {total_images} images in mode '{request.relabel_mode}'. Processing may take several hours.")
+
         # Determine classes to label
         classes_to_label = request.new_classes if request.new_classes else []
 
-        if request.relabel_mode == "improve_segmentation" and request.coco_data:
-            # Get classes from existing dataset
+        if not classes_to_label and request.coco_data:
+            # Fall back to classes from existing dataset (for improve_segmentation,
+            # or add/replace when user didn't specify new classes)
             classes_to_label = [c["name"] for c in request.coco_data.get("categories", [])]
+            logger.info(f"[RELABEL] Using {len(classes_to_label)} classes from existing COCO data: {classes_to_label}")
 
-        # Create output directory
-        output_dir = Path(request.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Check for conflicting output directory with active jobs
+        for existing_job in labeling_jobs.values():
+            if (existing_job.get("status") in (JobStatus.QUEUED, JobStatus.PROCESSING)
+                    and existing_job.get("output_dir") == request.output_dir):
+                return LabelingJobResponse(
+                    success=False,
+                    error=f"A relabeling job is already running/queued with the same output directory: {request.output_dir}"
+                )
 
-        # Create job
+        # Create job with unique output subdirectory
         job_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_subdir = f"relabeling_{timestamp}_{job_id[:8]}"
+        output_dir = Path(request.output_dir) / job_subdir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[RELABEL] Job output directory: {output_dir}")
 
         labeling_jobs[job_id] = {
             "job_id": job_id,
@@ -2215,21 +2716,45 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "total_objects_found": 0,
             "objects_by_class": {cls: 0 for cls in classes_to_label},
             "current_image": "",
-            "output_dir": request.output_dir,
+            "output_dir": str(output_dir),
             "output_formats": request.output_formats,
             "errors": [],
             "processing_time_ms": 0.0,
+            "created_at": datetime.now().isoformat(),
             "started_at": None,
             "completed_at": None,
             # Store request params
             "_image_paths": all_image_paths,
             "_image_lookup": image_lookup,
+            "_image_id_map": image_id_map,  # filename -> original_image_id
             "_classes": classes_to_label,
             "_relabel_mode": request.relabel_mode,
             "_coco_data": request.coco_data,
             "_min_confidence": request.min_confidence,
             "_simplify_polygons": request.simplify_polygons,
+            "_preview_mode": request.preview_mode,  # If True, this is a preview/test run
+            "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
+
+        # Persist relabeling job to database
+        if state.db:
+            try:
+                state.db.create_job(
+                    job_id=job_id,
+                    job_type="relabeling",
+                    service="segmentation",
+                    request_params={
+                        "classes": classes_to_label,
+                        "relabel_mode": request.relabel_mode,
+                        "output_formats": request.output_formats,
+                        "min_confidence": request.min_confidence,
+                    },
+                    total_items=total_images,
+                    output_path=str(output_dir),
+                )
+                logger.info(f"Relabeling job {job_id} persisted to database")
+            except Exception as e:
+                logger.warning(f"Failed to persist relabeling job to database: {e}")
 
         # Start background task with concurrency control
         async def run_relabeling():
@@ -2238,15 +2763,49 @@ async def start_relabeling_job(request: StartRelabelingRequest):
                 labeling_jobs[job_id]["status"] = JobStatus.PROCESSING
                 labeling_jobs[job_id]["started_at"] = datetime.now().isoformat()
 
+                if state.db:
+                    try:
+                        state.db.update_job_status(job_id, "running", started_at=datetime.now())
+                    except Exception as e:
+                        logger.warning(f"Failed to update relabeling job status in database: {e}")
+
                 try:
                     logger.info(f"[RELABEL] Calling _process_relabeling_job for {job_id}")
                     await _process_relabeling_job(job_id)
                     labeling_jobs[job_id]["status"] = JobStatus.COMPLETED
                     logger.info(f"[RELABEL] Job {job_id} completed successfully")
+
+                    # Update database with completion
+                    if state.db:
+                        try:
+                            job = labeling_jobs[job_id]
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="completed",
+                                result_summary={
+                                    "total_objects_found": job.get("total_objects_found", 0),
+                                    "objects_by_class": job.get("objects_by_class", {}),
+                                },
+                                processing_time_ms=job.get("processing_time_ms", 0),
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update relabeling job completion in database: {e}")
+
                 except Exception as e:
                     logger.exception(f"Relabeling job {job_id} failed: {e}")
                     labeling_jobs[job_id]["status"] = JobStatus.FAILED
                     labeling_jobs[job_id]["errors"].append(str(e))
+
+                    if state.db:
+                        try:
+                            state.db.complete_job(
+                                job_id=job_id,
+                                status="failed",
+                                error_message=str(e),
+                            )
+                        except Exception as db_err:
+                            logger.warning(f"Failed to update relabeling job failure in database: {db_err}")
+
                 finally:
                     labeling_jobs[job_id]["completed_at"] = datetime.now().isoformat()
                     logger.info(f"[RELABEL] Job {job_id} released semaphore")
@@ -2259,7 +2818,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             success=True,
             job_id=job_id,
             status=JobStatus.QUEUED,
-            message=f"Relabeling job started. Mode: {request.relabel_mode}, {total_images} images.",
+            message=f"Relabeling job started. Mode: {request.relabel_mode}, {total_images} images. Output: {output_dir}",
             total_images=total_images
         )
 
@@ -2528,7 +3087,8 @@ async def get_labeling_job_previews(job_id: str, limit: int = 10):
             previews.append({
                 "filename": preview_file.name,
                 "path": str(preview_file),
-                "data": f"data:image/jpeg;base64,{img_data}",
+                "image_data": img_data,  # Base64 without prefix
+                "timestamp": str(preview_file.stat().st_mtime),
                 "size_kb": preview_file.stat().st_size / 1024,
             })
         except Exception as e:
@@ -3017,6 +3577,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     task_type = job["_task_type"]
     padding = job.get("_padding", 0)  # Pixels of padding around bboxes
     save_visualizations = job.get("_save_visualizations", True)  # Save preview images
+    deduplication_strategy = job.get("_deduplication_strategy", "confidence")  # Deduplication strategy
     output_dir = Path(job["output_dir"])
     checkpoint_path = output_dir / "checkpoint.json"
     checkpoint_interval = 10  # Save checkpoint every N images
@@ -3116,151 +3677,169 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
         job["current_image"] = Path(img_path).name
         job["processed_images"] = img_idx
 
+        # Log progress every 10 images
+        if img_idx == 0 or (img_idx + 1) % 10 == 0:
+            logger.info(f"[LABEL] Job {job_id}: Processing image {img_idx + 1}/{len(image_paths)} ({100*(img_idx+1)/len(image_paths):.1f}%)")
+
         try:
-            # Load image
-            image = cv2.imread(img_path)
-            if image is None:
-                job["errors"].append(f"Failed to load: {img_path}")
-                continue
-
-            h, w = image.shape[:2]
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            pil_image = PILImage.fromarray(image_rgb)
-
-            # Add image to COCO
-            image_id = img_idx + 1
-            coco_result["images"].append({
-                "id": image_id,
-                "file_name": Path(img_path).name,
-                "width": w,
-                "height": h
-            })
-
-            # Track annotations added for this image (for deduplication)
-            image_annotations_start_idx = len(coco_result["annotations"])
-
-            # Process each class (cls is the search prompt)
-            for cls in classes:
-                # Get final class name (may be different if mapping exists)
-                final_class = class_mapping.get(cls, cls) if class_mapping else cls
-
-                # Get optimized prompt for better detection
-                optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
-
-                # Run SAM3 text prompt segmentation using optimized prompt
-                inputs = state.sam3_processor(
-                    images=pil_image,
-                    text=optimized_prompt,  # Use optimized prompt for detection
-                    return_tensors="pt"
-                ).to(state.device)
-
-                with torch.no_grad():
-                    outputs = state.sam3_model(**inputs)
-
-                # Post-process results
-                target_sizes = inputs.get("original_sizes")
-                if target_sizes is not None:
-                    target_sizes = target_sizes.tolist()
-                else:
-                    target_sizes = [(h, w)]
-
-                results = state.sam3_processor.post_process_instance_segmentation(
-                    outputs,
-                    threshold=min_confidence,
-                    mask_threshold=min_confidence,
-                    target_sizes=target_sizes
-                )[0]
-
-                if 'masks' not in results or len(results['masks']) == 0:
+            # Timeout per image to prevent indefinite blocking (30 seconds)
+            async with asyncio.timeout(30.0):
+                # Load image with validation
+                image = cv2.imread(img_path)
+                if image is None:
+                    job["errors"].append(f"Failed to load: {img_path}")
+                    consecutive_errors += 1
                     continue
 
-                # Process each detected instance
-                instances_added = 0
-                for mask, score in zip(results['masks'], results['scores']):
-                    if instances_added >= max_instances:
-                        break
+                h, w = image.shape[:2]
 
-                    score_val = score.cpu().item()
-                    if score_val < min_confidence:
+                # Validate image dimensions (skip if too small or too large)
+                if h < 10 or w < 10:
+                    job["errors"].append(f"Image too small ({w}x{h}): {img_path}")
+                    consecutive_errors += 1
+                    continue
+                if h > 8192 or w > 8192:
+                    job["errors"].append(f"Image too large ({w}x{h}), may cause OOM: {img_path}")
+                    consecutive_errors += 1
+                    continue
+
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_image = PILImage.fromarray(image_rgb)
+
+                # Add image to COCO
+                image_id = img_idx + 1
+                coco_result["images"].append({
+                    "id": image_id,
+                    "file_name": Path(img_path).name,
+                    "width": w,
+                    "height": h
+                })
+
+                # Track annotations added for this image (for deduplication)
+                image_annotations_start_idx = len(coco_result["annotations"])
+
+                # Process each class (cls is the search prompt)
+                for cls in classes:
+                    # Get final class name (may be different if mapping exists)
+                    final_class = class_mapping.get(cls, cls) if class_mapping else cls
+
+                    # Get optimized prompt for better detection
+                    optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
+
+                    # Run SAM3 text prompt segmentation using optimized prompt
+                    inputs = state.sam3_processor(
+                        images=pil_image,
+                        text=optimized_prompt,  # Use optimized prompt for detection
+                        return_tensors="pt"
+                    ).to(state.device)
+
+                    with torch.no_grad():
+                        outputs = state.sam3_model(**inputs)
+
+                    # Post-process results
+                    target_sizes = inputs.get("original_sizes")
+                    if target_sizes is not None:
+                        target_sizes = target_sizes.tolist()
+                    else:
+                        target_sizes = [(h, w)]
+
+                    results = state.sam3_processor.post_process_instance_segmentation(
+                        outputs,
+                        threshold=min_confidence,
+                        mask_threshold=min_confidence,
+                        target_sizes=target_sizes
+                    )[0]
+
+                    if 'masks' not in results or len(results['masks']) == 0:
                         continue
 
-                    mask_np = mask.cpu().numpy().astype(np.uint8)
-                    if mask_np.shape != (h, w):
-                        mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+                    # Process each detected instance
+                    instances_added = 0
+                    for mask, score in zip(results['masks'], results['scores']):
+                        if instances_added >= max_instances:
+                            break
 
-                    # Calculate area
-                    area = int(np.sum(mask_np > 0))
-                    if area < min_area:
-                        continue
+                        score_val = score.cpu().item()
+                        if score_val < min_confidence:
+                            continue
 
-                    # Get bounding box
-                    contours, _ = cv2.findContours(
-                        (mask_np * 255).astype(np.uint8),
-                        cv2.RETR_EXTERNAL,
-                        cv2.CHAIN_APPROX_SIMPLE
-                    )
+                        mask_np = mask.cpu().numpy().astype(np.uint8)
+                        if mask_np.shape != (h, w):
+                            mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
 
-                    if not contours:
-                        continue
+                        # Calculate area
+                        area = int(np.sum(mask_np > 0))
+                        if area < min_area:
+                            continue
 
-                    x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
-                    bbox = [float(x), float(y), float(bw), float(bh)]
-
-                    # Validate detection using DetectionValidator
-                    is_valid, rejection_reason, adjusted_score = detection_validator.validate_detection(
-                        mask=mask_np,
-                        bbox=bbox,
-                        class_name=final_class,
-                        image_size=(w, h),
-                        score=score_val,
-                    )
-
-                    if not is_valid:
-                        logger.debug(f"Rejected detection for '{final_class}': {rejection_reason}")
-                        continue
-
-                    # Track quality metrics
-                    all_scores.append(adjusted_score)
-                    if adjusted_score < 0.5:
-                        low_confidence_count += 1
-
-                    # Apply padding if configured
-                    if padding > 0:
-                        bbox = _apply_padding_to_bbox(bbox, padding, w, h)
-
-                    # Build annotation (use final_class for category lookup)
-                    annotation = {
-                        "id": annotation_id,
-                        "image_id": image_id,
-                        "category_id": category_map[final_class],
-                        "bbox": bbox,
-                        "area": area,
-                        "iscrowd": 0,
-                        "_score": adjusted_score,  # Track score for potential dedup
-                    }
-
-                    # Add segmentation if task requires it
-                    if task_type in ["segmentation", "both"]:
-                        polygons = state.object_extractor.mask_to_polygon(
+                        # Get bounding box
+                        contours, _ = cv2.findContours(
                             (mask_np * 255).astype(np.uint8),
-                            simplify=simplify_polygons,
-                            tolerance=simplify_tolerance
+                            cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE
                         )
-                        if polygons:
-                            annotation["segmentation"] = polygons
 
-                    coco_result["annotations"].append(annotation)
-                    annotation_id += 1
-                    instances_added += 1
+                        if not contours:
+                            continue
 
-                    # Track by final class name
-                    job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
-                    job["total_objects_found"] += 1
+                        x, y, bw, bh = cv2.boundingRect(np.concatenate(contours))
+                        bbox = [float(x), float(y), float(bw), float(bh)]
+
+                        # Validate detection using DetectionValidator
+                        is_valid, rejection_reason, adjusted_score = detection_validator.validate_detection(
+                            mask=mask_np,
+                            bbox=bbox,
+                            class_name=final_class,
+                            image_size=(w, h),
+                            score=score_val,
+                        )
+
+                        if not is_valid:
+                            logger.debug(f"Rejected detection for '{final_class}': {rejection_reason}")
+                            continue
+
+                        # Track quality metrics
+                        all_scores.append(adjusted_score)
+                        if adjusted_score < 0.5:
+                            low_confidence_count += 1
+
+                        # Apply padding if configured
+                        if padding > 0:
+                            bbox = _apply_padding_to_bbox(bbox, padding, w, h)
+
+                        # Build annotation (use final_class for category lookup)
+                        annotation = {
+                            "id": annotation_id,
+                            "image_id": image_id,
+                            "category_id": category_map[final_class],
+                            "bbox": bbox,
+                            "area": area,
+                            "iscrowd": 0,
+                            "_score": adjusted_score,  # Track score for potential dedup
+                        }
+
+                        # Add segmentation if task requires it
+                        if task_type in ["segmentation", "both"]:
+                            polygons = state.object_extractor.mask_to_polygon(
+                                (mask_np * 255).astype(np.uint8),
+                                simplify=simplify_polygons,
+                                tolerance=simplify_tolerance
+                            )
+                            if polygons:
+                                annotation["segmentation"] = polygons
+
+                        coco_result["annotations"].append(annotation)
+                        annotation_id += 1
+                        instances_added += 1
+
+                        # Track by final class name
+                        job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
+                        job["total_objects_found"] += 1
 
             # Deduplicate annotations for this image (remove overlapping detections)
             image_annotations = coco_result["annotations"][image_annotations_start_idx:]
             if len(image_annotations) > 1:
-                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.7)
+                deduped = deduplicate_annotations(image_annotations, iou_threshold=0.5, strategy=deduplication_strategy)
                 removed_count = len(image_annotations) - len(deduped)
                 if removed_count > 0:
                     # Update the annotations list
@@ -3282,7 +3861,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             consecutive_errors = 0
 
             # Save preview image if this image had detections
-            if save_visualizations and instances_added > 0:
+            if save_visualizations and current_image_detections > 0:
                 images_with_detections += 1
                 # Save preview periodically (every N images with detections, up to max_previews)
                 if images_with_detections % preview_interval == 0 and preview_count < max_previews:
@@ -3311,6 +3890,19 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     img_idx + 1, job["objects_by_class"]
                 )
                 logger.debug(f"Saved checkpoint at image {img_idx + 1}")
+
+                # Clear retry count on successful processing
+                if "_retry_count" in job and img_path in job["_retry_count"]:
+                    del job["_retry_count"][img_path]
+
+                # Update quality metrics in real-time (so frontend can display them)
+                job["quality_metrics"] = {
+                    "avg_confidence": sum(all_scores) / len(all_scores) if all_scores else 0.0,
+                    "images_with_detections": images_with_detections,
+                    "images_without_detections": images_without_detections,
+                    "low_confidence_count": low_confidence_count,
+                    "total_detections": len(all_scores),
+                }
 
                 # Update progress in database
                 if state.db:
@@ -3346,9 +3938,20 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                     stats = vram_monitor.get_vram_stats()
                     logger.debug(f"VRAM cleanup at image {img_idx + 1}: {stats.get('allocated_gb', 0):.2f}GB")
 
-            # Yield to event loop to allow health checks and other operations
-            if (img_idx + 1) % yield_interval == 0:
-                await asyncio.sleep(0)
+                # Yield to event loop to allow health checks and other operations
+                if (img_idx + 1) % yield_interval == 0:
+                    await asyncio.sleep(0)
+
+        except asyncio.TimeoutError:
+            # Image processing took too long (>30s), skip it
+            consecutive_errors += 1
+            error_msg = f"Timeout processing {img_path} (>30s), skipping"
+            job["errors"].append(error_msg)
+            logger.warning(f"Job {job_id}: {error_msg}")
+            # Clean up
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         except torch.cuda.OutOfMemoryError as e:
             # OOM: Clean memory and retry with exponential backoff
@@ -3490,9 +4093,11 @@ async def _process_relabeling_job(job_id: str):
     coco_data = job.get("_coco_data")
     image_paths = job["_image_paths"]
     image_lookup = job["_image_lookup"]
+    image_id_map = job.get("_image_id_map", {})  # filename -> original_image_id
     classes = job["_classes"]
     min_confidence = job["_min_confidence"]
     simplify_polygons = job["_simplify_polygons"]
+    deduplication_strategy = job.get("_deduplication_strategy", "confidence")  # Deduplication strategy
     output_dir = Path(job["output_dir"])
     gc_interval = 5  # Run garbage collection every N images
 
@@ -3524,6 +4129,7 @@ async def _process_relabeling_job(job_id: str):
         annotation_id = 1
 
     category_map = {c["name"]: c["id"] for c in coco_result.get("categories", [])}
+    prompt_optimizer = get_prompt_optimizer()
     logger.info(f"[RELABEL] Category map: {category_map}")
     logger.info(f"[RELABEL] Starting to process {len(image_paths)} images")
 
@@ -3532,32 +4138,40 @@ async def _process_relabeling_job(job_id: str):
         job["current_image"] = Path(img_path).name
         job["processed_images"] = img_idx
 
-        if img_idx == 0 or img_idx % 100 == 0:
-            logger.info(f"[RELABEL] Processing image {img_idx + 1}/{len(image_paths)}: {Path(img_path).name}")
+        if img_idx == 0 or (img_idx + 1) % 10 == 0:
+            logger.info(f"[RELABEL] Job {job_id}: Processing image {img_idx + 1}/{len(image_paths)} ({100*(img_idx+1)/len(image_paths):.1f}%) - {Path(img_path).name}")
 
         try:
-            image = cv2.imread(img_path)
-            if image is None:
-                continue
+            # Timeout per image to prevent indefinite blocking (30 seconds)
+            async with asyncio.timeout(30.0):
+                image = cv2.imread(img_path)
+                if image is None:
+                    continue
 
             h, w = image.shape[:2]
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             pil_image = PILImage.fromarray(image_rgb)
 
-            image_id = img_idx + 1
+            # Use original image ID if available, otherwise generate sequential ID
+            filename = Path(img_path).name
+            image_id = image_id_map.get(filename, img_idx + 1)
 
-            # Add image if not in replace mode with existing data
-            if relabel_mode != "add":
+            # Add image if not already in coco_result
+            existing_image_ids = {img["id"] for img in coco_result.get("images", [])}
+            if image_id not in existing_image_ids:
                 coco_result["images"].append({
                     "id": image_id,
-                    "file_name": Path(img_path).name,
+                    "file_name": filename,
                     "width": w,
                     "height": h
                 })
 
+            # Track annotations added for this image (for deduplication)
+            image_annotations_start_idx = len(coco_result["annotations"])
+
             # Handle improve_segmentation mode differently
             if relabel_mode == "improve_segmentation" and coco_data:
-                # Get existing annotations for this image
+                # Get existing annotations for this image (bbox-only annotations)
                 img_anns = [a for a in coco_data.get("annotations", [])
                            if a.get("image_id") == image_id and not a.get("segmentation")]
 
@@ -3603,14 +4217,21 @@ async def _process_relabeling_job(job_id: str):
                                 job["total_objects_found"] += 1
 
             else:
+                # Get existing annotations for this image (for deduplication in "add" mode)
+                existing_anns_for_image = []
+                if relabel_mode == "add" and coco_data:
+                    existing_anns_for_image = [a for a in coco_data.get("annotations", [])
+                                               if a.get("image_id") == image_id]
+
                 # Regular labeling with text prompts
                 for cls in classes:
                     if cls not in category_map:
                         continue
 
+                    optimized_prompt = prompt_optimizer.get_primary_prompt(cls)
                     inputs = state.sam3_processor(
                         images=pil_image,
-                        text=cls,
+                        text=optimized_prompt,
                         return_tensors="pt"
                     ).to(state.device)
 
@@ -3665,16 +4286,44 @@ async def _process_relabeling_job(job_id: str):
                             "bbox": [float(x), float(y), float(bw), float(bh)],
                             "area": area,
                             "iscrowd": 0,
+                            "_score": score_val,
                         }
 
                         if polygons:
                             annotation["segmentation"] = polygons
 
-                        coco_result["annotations"].append(annotation)
-                        annotation_id += 1
+                        # Check for duplicates in "add" mode (IoU threshold 0.5)
+                        is_duplicate = False
+                        if relabel_mode == "add" and existing_anns_for_image:
+                            new_bbox = annotation["bbox"]
+                            for exist_ann in existing_anns_for_image:
+                                exist_bbox = exist_ann.get("bbox", [])
+                                if len(exist_bbox) == 4:
+                                    # Calculate IoU
+                                    iou = _calculate_iou(new_bbox, exist_bbox)
+                                    if iou > 0.5:
+                                        is_duplicate = True
+                                        break
 
-                        job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
-                        job["total_objects_found"] += 1
+                        if not is_duplicate:
+                            coco_result["annotations"].append(annotation)
+                            annotation_id += 1
+
+                            job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
+                            job["total_objects_found"] += 1
+
+            # Deduplicate annotations for this image (remove overlapping detections across all classes)
+            image_anns = coco_result["annotations"][image_annotations_start_idx:]
+            if len(image_anns) > 1:
+                deduped = deduplicate_annotations(image_anns, iou_threshold=0.5, strategy=deduplication_strategy)
+                removed_count = len(image_anns) - len(deduped)
+                if removed_count > 0:
+                    coco_result["annotations"] = coco_result["annotations"][:image_annotations_start_idx] + deduped
+                    job["total_objects_found"] -= removed_count
+                    for i, ann in enumerate(coco_result["annotations"][image_annotations_start_idx:]):
+                        ann["id"] = image_annotations_start_idx + i + 1
+                    annotation_id = len(coco_result["annotations"]) + 1
+                    logger.debug(f"[RELABEL] Deduplicated {removed_count} overlapping annotations for {Path(img_path).name}")
 
             # Garbage collection and yielding
             if (img_idx + 1) % gc_interval == 0:
@@ -3685,6 +4334,15 @@ async def _process_relabeling_job(job_id: str):
 
             # Yield to event loop
             await asyncio.sleep(0)
+
+        except asyncio.TimeoutError:
+            # Image processing took too long (>30s), skip it
+            error_msg = f"[RELABEL] Timeout processing {img_path} (>30s), skipping"
+            job["errors"].append(error_msg)
+            logger.warning(error_msg)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         except Exception as e:
             job["errors"].append(f"Error processing {img_path}: {str(e)}")

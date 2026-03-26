@@ -52,6 +52,8 @@ class BatchEstimateRequest(BaseModel):
     normalize: bool = Field(True, description="Normalize depth values")
     generate_preview: bool = Field(True, description="Generate PNG previews")
     file_pattern: str = Field("*.jpg,*.jpeg,*.png", description="File patterns to process")
+    max_images: int = Field(100, ge=1, le=500, description="Maximum number of images to process (prevents OOM)")
+    skip_existing: bool = Field(True, description="Skip images that already have depth maps")
 
 
 class BatchEstimateResponse(BaseModel):

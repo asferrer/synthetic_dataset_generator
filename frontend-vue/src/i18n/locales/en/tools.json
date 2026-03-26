@@ -114,7 +114,9 @@
       "food": "Food & Kitchen",
       "foodDesc": "Food items and kitchenware",
       "fashion": "Fashion & Clothing",
-      "fashionDesc": "Clothes and accessories"
+      "fashionDesc": "Clothes and accessories",
+      "marineDebris": "Marine Debris",
+      "marineDebrisDesc": "Underwater waste detection"
     },
     "input": {
       "imageDirectories": "Image Directories",
@@ -133,8 +135,16 @@
         "both": "Both Detection & Segmentation"
       },
       "minConfidence": "Min Confidence",
-      "useSam3": "Use SAM3 for Segmentation",
-      "useSam3Desc": "Generate precise segmentation masks"
+      "outputFormats": "Output Formats",
+      "previewMode": "Preview Mode (Test Run)",
+      "previewModeDesc": "Process only a small sample of images to test accuracy before running on the full dataset",
+      "previewCount": "Preview Images",
+      "images": "images",
+      "deduplicationStrategy": "Deduplication Strategy",
+      "confidenceStrategy": "Confidence Priority",
+      "confidenceStrategyDesc": "Prioritize detections with higher confidence scores",
+      "areaStrategy": "Area Priority",
+      "areaStrategyDesc": "Prioritize detections with larger bounding boxes"
     },
     "relabeling": {
       "mode": "Relabel Mode",
@@ -143,13 +153,14 @@
         "replace": "Replace - Remove all, relabel everything",
         "improve": "Improve - Enhance segmentation quality"
       },
-      "existingAnnotations": "Existing Annotations Path (optional)"
+      "existingAnnotations": "Existing Annotations Path"
     },
     "progress": {
       "title": "Current Job Progress",
       "processing": "Processing...",
       "imagesProcessed": "{processed}/{total} images",
-      "annotationsCreated": "{count} annotations"
+      "annotationsCreated": "{count} annotations",
+      "byClass": "Detections by Class"
     },
     "metrics": {
       "avgConfidence": "Avg Confidence",
@@ -165,7 +176,8 @@
     },
     "actions": {
       "startLabeling": "Start Labeling",
-      "startRelabeling": "Start Relabeling"
+      "startRelabeling": "Start Relabeling",
+      "cancel": "Cancel"
     },
     "notifications": {
       "templateApplied": "Template Applied",
@@ -177,7 +189,14 @@
       "failed": "Labeling Failed",
       "missingInput": "Missing Input",
       "missingDirectories": "Please specify at least one image directory",
-      "missingClasses": "Please specify at least one class to detect"
+      "missingClasses": "Please specify at least one class to detect",
+      "missingAnnotations": "Please provide an existing annotations file (COCO JSON) for relabeling",
+      "outputConflict": "A job is already running with the same output directory. Wait for it to finish or use a different output path.",
+      "cancelled": "Labeling job cancelled",
+      "cancelFailed": "Failed to cancel job",
+      "pollingError": "Connection Issue",
+      "pollingErrorMsg": "Having trouble connecting to the backend. Retrying...",
+      "connectionLost": "Connection lost to backend after multiple retries. Please check if the service is running."
     },
     "activeJobs": "Active Jobs",
     "activeJobsMsg": "{count} labeling job(s) are currently running."
@@ -272,6 +291,387 @@
       "title": "Size Constraints",
       "minSize": "Minimum Size",
       "maxSize": "Maximum Size"
+    }
+  },
+  "domainGap": {
+    "title": "Domain Gap Reduction",
+    "subtitle": "Measure and reduce the domain gap between synthetic and real images",
+    "tabs": {
+      "references": "Reference Images",
+      "validation": "Validation",
+      "randomization": "Domain Randomization",
+      "styleTransfer": "Style Transfer",
+      "diffusion": "Diffusion Refinement"
+    },
+    "references": {
+      "title": "Reference Image Sets",
+      "description": "Upload sets of real images from your target domain for comparison",
+      "uploadTitle": "Upload Reference Set",
+      "name": "Set Name",
+      "namePlaceholder": "e.g., Real underwater images",
+      "domainId": "Domain",
+      "setDescription": "Description",
+      "descriptionPlaceholder": "Optional description of the image set",
+      "selectImages": "Select Images",
+      "upload": "Upload",
+      "createFromDir": "Create from Directory",
+      "filesSelected": "files selected",
+      "imageCount": "{count} images",
+      "uploadMode": {
+        "files": "Upload Files",
+        "directory": "From Server Directory"
+      },
+      "directoryLabel": "Images Directory",
+      "directoryHint": "Point to a directory already on the Docker volume — images will be copied, no network transfer needed.",
+      "progress": {
+        "creating": "Creating reference set...",
+        "uploading": "Uploading batches",
+        "finalizing": "Computing statistics...",
+        "files": "files"
+      },
+      "created": "Created {date}",
+      "noSets": "No reference sets uploaded yet",
+      "deleteConfirm": "Delete this reference set?",
+      "stats": {
+        "title": "Pre-computed Statistics",
+        "brightness": "Avg Brightness",
+        "edgeVariance": "Avg Edge Variance",
+        "colorMeansLab": "LAB Means",
+        "colorMeansRgb": "RGB Means"
+      }
+    },
+    "validation": {
+      "title": "Gap Validation",
+      "description": "Measure the domain gap between your synthetic images and real references",
+      "syntheticDir": "Synthetic Images Directory",
+      "referenceSet": "Reference Set",
+      "selectReferenceSet": "Select a reference set...",
+      "maxImages": "Max Images to Analyze",
+      "analyze": "Analyze Gap",
+      "computing": "Computing metrics...",
+      "results": {
+        "title": "Analysis Results",
+        "gapScore": "Overall Gap Score",
+        "gapLevel": "Gap Level",
+        "radioMmdScore": "RADIO-MMD Score",
+        "fdRadioScore": "FD-RADIO Score",
+        "fidScore": "FID Score",
+        "kidScore": "KID Score",
+        "colorDistribution": "Color Distribution",
+        "cmmdScore": "CMMD Score",
+        "precision": "Precision",
+        "recall": "Recall",
+        "density": "Density",
+        "coverage": "Coverage",
+        "sharpnessRatio": "Sharpness Ratio",
+        "syntheticSharpness": "Synthetic Sharpness",
+        "realSharpness": "Real Sharpness",
+        "sampleSizeWarning": "Sample size is too small for reliable metrics",
+        "pcaApplied": "PCA was applied for numerical stability due to small sample size",
+        "levels": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High",
+          "critical": "Critical"
+        }
+      },
+      "issues": {
+        "title": "Detected Issues",
+        "noIssues": "No issues detected"
+      },
+      "suggestions": {
+        "title": "Parameter Suggestions",
+        "noSuggestions": "No suggestions available",
+        "currentValue": "Current",
+        "suggestedValue": "Suggested",
+        "impact": "Expected Impact",
+        "apply": "Apply Suggestion",
+        "applyAll": "Apply All Suggestions"
+      },
+      "skip": "Skip",
+      "issuesDetected": "issues detected",
+      "parameterSuggestions": "parameter suggestions",
+      "progress": {
+        "phases": {
+          "pending": "Starting analysis...",
+          "extracting_radio_synthetic": "Extracting RADIO features (synthetic)...",
+          "extracting_radio_real": "Extracting RADIO features (real)...",
+          "computing_radio_mmd": "Computing RADIO-MMD score...",
+          "computing_fd_radio": "Computing FD-RADIO score...",
+          "extracting_features_synthetic": "Extracting Inception features (synthetic)...",
+          "extracting_features_real": "Extracting Inception features (real)...",
+          "computing_fid": "Computing FID score...",
+          "computing_kid": "Computing KID score...",
+          "computing_color": "Computing color distribution...",
+          "analyzing_color": "Analyzing color gaps...",
+          "analyzing_edges": "Analyzing edge sharpness...",
+          "analyzing_frequency": "Analyzing frequency content...",
+          "analyzing_texture": "Analyzing texture complexity...",
+          "generating_suggestions": "Generating suggestions...",
+          "extracting_clip_synthetic": "Extracting CLIP features (synthetic)...",
+          "extracting_clip_real": "Extracting CLIP features (real)...",
+          "computing_cmmd": "Computing CMMD score...",
+          "computing_prdc": "Computing Precision/Recall/Density/Coverage...",
+          "completing": "Finalizing results...",
+          "completed": "Analysis complete"
+        }
+      }
+    },
+    "randomization": {
+      "title": "Domain Randomization",
+      "description": "Create variants of synthetic images with randomized augmentations to increase diversity",
+      "imagesDir": "Images Directory",
+      "outputDir": "Output Directory",
+      "config": {
+        "numVariants": "Variants per Image",
+        "intensity": "Intensity",
+        "colorJitter": "Color Jitter",
+        "noiseIntensity": "Noise Intensity",
+        "histogramMatch": "Histogram Match Strength",
+        "preserveAnnotations": "Preserve Annotations"
+      },
+      "apply": "Apply Randomization",
+      "applyBatch": "Apply to Batch"
+    },
+    "styleTransfer": {
+      "title": "Style Transfer",
+      "description": "Transfer the visual style of real reference images onto synthetic images to reduce domain gap",
+      "imagesDir": "Synthetic Images Directory",
+      "outputDir": "Output Directory",
+      "referenceSet": "Style Reference Set",
+      "referenceSetHint": "Real images from this set will be used as the style source",
+      "config": {
+        "styleWeight": "Style Weight",
+        "contentWeight": "Content Weight",
+        "preserveStructure": "Preserve Structure",
+        "colorOnly": "Color Transfer Only",
+        "depthGuided": "Depth-Guided Transfer"
+      },
+      "applyBatch": "Apply Style Transfer"
+    },
+    "diffusion": {
+      "title": "Diffusion Refinement",
+      "description": "Use modern diffusion models to close the domain gap while preserving annotations",
+      "sourceDirectory": "Source Directory",
+      "outputDirectory": "Output Directory",
+      "method": {
+        "label": "Refinement Method",
+        "controlnet": "ControlNet + Depth",
+        "controlnetDesc": "Uses depth maps as structural guide with img2img refinement",
+        "ipAdapter": "IP-Adapter",
+        "ipAdapterDesc": "Zero-shot style transfer using reference images as image prompts",
+        "lora": "LoRA Fine-tuning",
+        "loraDesc": "Domain-specific adaptation trained on your reference set"
+      },
+      "params": {
+        "strength": "Denoising Strength",
+        "strengthHint": "Lower values preserve more structure (0.3-0.5 recommended)",
+        "conditioningScale": "ControlNet Scale",
+        "conditioningScaleHint": "Higher values enforce structure more strictly",
+        "ipAdapterScale": "IP-Adapter Scale",
+        "ipAdapterScaleHint": "Controls style transfer intensity from reference images",
+        "guidanceScale": "Guidance Scale",
+        "steps": "Inference Steps",
+        "useLcm": "Use Lightning (4-step)",
+        "useLcmHint": "Much faster but slightly lower quality",
+        "prompt": "Text Prompt",
+        "promptPlaceholder": "Optional: describe target appearance",
+        "negativePrompt": "Negative Prompt",
+        "seed": "Seed",
+        "seedPlaceholder": "Leave empty for random",
+        "loraWeight": "LoRA Weight",
+        "loraWeightHint": "Strength of the domain-specific adaptation"
+      },
+      "lora": {
+        "title": "LoRA Models",
+        "train": "Train New LoRA",
+        "trainingSteps": "Training Steps",
+        "learningRate": "Learning Rate",
+        "rank": "LoRA Rank",
+        "resolution": "Resolution",
+        "batchSize": "Batch Size",
+        "promptTemplate": "Prompt Template",
+        "noModels": "No LoRA models trained yet",
+        "modelId": "Model ID",
+        "modelIdPlaceholder": "e.g., underwater-v1",
+        "delete": "Delete",
+        "deleteConfirm": "Are you sure you want to delete this LoRA model?",
+        "training": "Training LoRA...",
+        "trainingComplete": "LoRA training complete",
+        "size": "Size",
+        "createdAt": "Created"
+      },
+      "annotations": {
+        "title": "Annotation Preservation",
+        "edgeIou": "Edge IoU",
+        "edgeIouHint": "Overlap of edge structures (higher = better preserved)",
+        "ssim": "Structural Similarity",
+        "ssimHint": "Overall structural preservation (higher = better)",
+        "keypointDisplacement": "Keypoint Displacement",
+        "keypointDisplacementHint": "Average pixel shift of features (lower = better)",
+        "valid": "Annotations preserved",
+        "invalid": "Annotations may be corrupted - consider reducing strength",
+        "threshold": "Validity Threshold"
+      },
+      "actions": {
+        "refineSingle": "Refine Image",
+        "refineBatch": "Refine Batch",
+        "refining": "Refining...",
+        "selectMethod": "Select a refinement method",
+        "selectReferenceSet": "Select a reference set",
+        "selectLoraModel": "Select a LoRA model"
+      },
+      "preview": {
+        "before": "Before",
+        "after": "After",
+        "noPreview": "Refine an image to see the comparison"
+      },
+      "notifications": {
+        "refineSuccess": "Image refined successfully",
+        "refineFailed": "Image refinement failed",
+        "batchStarted": "Batch refinement started",
+        "batchComplete": "Batch refinement complete",
+        "loraTrainStarted": "LoRA training started",
+        "loraTrainComplete": "LoRA training complete",
+        "loraDeleted": "LoRA model deleted",
+        "noGpu": "GPU required for diffusion refinement",
+        "lowVram": "Insufficient GPU memory (6GB+ required)",
+        "annotationsWarning": "Low annotation preservation detected"
+      }
+    },
+    "optimization": {
+      "title": "Automatic Optimization",
+      "description": "Iteratively apply techniques to minimize the domain gap automatically",
+      "outputDir": "Output Directory",
+      "targetScore": "Target Gap Score",
+      "maxIterations": "Max Iterations",
+      "techniques": "Techniques to Apply",
+      "run": "Run Optimization"
+    },
+    "notifications": {
+      "uploadSuccess": "Reference Set Uploaded",
+      "uploadSuccessMsg": "Uploaded {count} images as \"{name}\"",
+      "uploadFailed": "Upload Failed",
+      "deleteSuccess": "Reference Set Deleted",
+      "deleteFailed": "Delete Failed",
+      "analysisComplete": "Analysis Complete",
+      "analysisCompleteMsg": "Gap score: {score}/100 ({level})",
+      "analysisFailed": "Analysis Failed",
+      "randomizationStarted": "Randomization Started",
+      "randomizationStartedMsg": "Job {id} started",
+      "randomizationComplete": "Randomization Complete",
+      "randomizationFailed": "Randomization Failed",
+      "suggestionApplied": "Suggestion Applied",
+      "suggestionAppliedMsg": "Updated {path} to {value}",
+      "styleTransferStarted": "Style Transfer Started",
+      "styleTransferStartedMsg": "Job {id} started",
+      "styleTransferFailed": "Style Transfer Failed",
+      "optimizationStarted": "Optimization Started",
+      "optimizationStartedMsg": "Job {id} started",
+      "optimizationFailed": "Optimization Failed"
+    }
+  },
+  "annotationReview": {
+    "title": "Annotation Review",
+    "subtitle": "Review and edit annotations in your datasets",
+    "loader": {
+      "title": "Load Dataset",
+      "tabUpload": "Upload File",
+      "tabBrowse": "Browse Server",
+      "tabJobs": "Completed Jobs",
+      "selectFile": "COCO JSON Path",
+      "orFromJob": "Or load from completed job",
+      "filePath": "COCO JSON Path (server path)",
+      "loadButton": "Load",
+      "noJobs": "No completed labeling jobs found",
+      "upload": {
+        "title": "Upload COCO JSON",
+        "description": "Upload an annotation file from your computer. Images referenced in the JSON must be accessible from the server.",
+        "dragDrop": "Drag & drop your COCO JSON file here, or click to select",
+        "selectedFile": "Selected file",
+        "uploading": "Uploading...",
+        "uploadButton": "Upload & Review",
+        "invalidFile": "Please select a valid .json file",
+        "orManualPath": "Or enter a server path manually"
+      },
+      "browse": {
+        "title": "Available Datasets",
+        "description": "Annotation files found on the server",
+        "scanning": "Scanning for annotation files...",
+        "noFiles": "No annotation files found on the server",
+        "columns": {
+          "path": "File",
+          "categories": "Categories",
+          "images": "Images",
+          "annotations": "Annotations",
+          "modified": "Modified"
+        }
+      },
+      "jobColumns": {
+        "jobId": "Job ID",
+        "classes": "Classes",
+        "images": "Images",
+        "annotations": "Annotations",
+        "completed": "Completed"
+      }
+    },
+    "navigator": {
+      "title": "Images",
+      "search": "Search images...",
+      "filter": {
+        "all": "All",
+        "annotated": "Annotated",
+        "empty": "Empty"
+      },
+      "annotations": "annotations",
+      "reviewed": "Reviewed",
+      "noImages": "No images found"
+    },
+    "canvas": {
+      "zoomIn": "Zoom In",
+      "zoomOut": "Zoom Out",
+      "fitToView": "Fit to View",
+      "noImage": "Select an image to start reviewing"
+    },
+    "sidebar": {
+      "title": "Annotation Details",
+      "noSelection": "Click on an annotation to view details",
+      "class": "Class",
+      "confidence": "Confidence",
+      "bbox": "Bounding Box",
+      "area": "Area",
+      "deleteAnnotation": "Delete Annotation",
+      "reannotate": "Re-annotate with SAM3",
+      "reannotateAll": "Re-annotate this image"
+    },
+    "toolbar": {
+      "save": "Save",
+      "undo": "Undo",
+      "redo": "Redo",
+      "mode": {
+        "select": "Select",
+        "drawBbox": "Draw BBox",
+        "editPolygon": "Edit Polygon"
+      },
+      "visibility": {
+        "bboxes": "Bounding Boxes",
+        "polygons": "Polygons",
+        "labels": "Labels"
+      },
+      "unsavedChanges": "Unsaved changes",
+      "saved": "All changes saved"
+    },
+    "notifications": {
+      "loaded": "Dataset loaded successfully",
+      "loadFailed": "Failed to load dataset",
+      "saved": "Dataset saved successfully",
+      "saveFailed": "Failed to save dataset",
+      "annotationCreated": "Annotation created",
+      "annotationDeleted": "Annotation deleted",
+      "annotationUpdated": "Annotation updated",
+      "reannotateStarted": "Re-annotation started",
+      "reannnotateFailed": "Re-annotation failed",
+      "reannotateComplete": "Re-annotation complete"
     }
   },
   "postProcessing": {

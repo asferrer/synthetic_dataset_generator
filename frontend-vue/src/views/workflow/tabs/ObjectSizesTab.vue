@@ -122,7 +122,6 @@ async function loadObjectSizes() {
   try {
     objectSizes.value = await getObjectSizes()
   } catch (e) {
-    // API might not have sizes yet, start with empty
     objectSizes.value = {}
   } finally {
     loadingSizes.value = false
@@ -216,7 +215,6 @@ const datasetOptions = computed(() =>
   }))
 )
 
-// Calculate size statistics from analysis
 const sizeStats = computed(() => {
   if (!analysis.value) return null
 
@@ -240,7 +238,6 @@ const sortedObjectSizes = computed(() =>
   Object.entries(objectSizes.value).sort(([a], [b]) => a.localeCompare(b))
 )
 
-// Load data on mount
 onMounted(() => {
   loadDatasets()
   loadObjectSizes()
@@ -249,14 +246,6 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
-    <div>
-      <h2 class="text-2xl font-bold text-white">Object Sizes</h2>
-      <p class="mt-1 text-gray-400">
-        Configure object size ratios for synthetic generation and analyze dataset dimensions.
-      </p>
-    </div>
-
     <!-- Error -->
     <AlertBox v-if="error" type="error" :title="error" dismissible @dismiss="error = null" />
 
@@ -393,34 +382,16 @@ onMounted(() => {
 
     <!-- Analysis Results -->
     <div v-if="analysis" class="space-y-6">
-      <!-- Overview Metrics -->
       <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard
-          title="Total Images"
-          :value="analysis.total_images"
-          :icon="Ruler"
-        />
-        <MetricCard
-          title="Total Annotations"
-          :value="analysis.total_annotations"
-          :icon="BarChart3"
-        />
-        <MetricCard
-          title="Categories"
-          :value="analysis.categories.length"
-        />
-        <MetricCard
-          title="Avg Annotations/Image"
-          :value="analysis.annotations_per_image.mean.toFixed(1)"
-        />
+        <MetricCard title="Total Images" :value="analysis.total_images" :icon="Ruler" />
+        <MetricCard title="Total Annotations" :value="analysis.total_annotations" :icon="BarChart3" />
+        <MetricCard title="Categories" :value="analysis.categories.length" />
+        <MetricCard title="Avg Annotations/Image" :value="analysis.annotations_per_image.mean.toFixed(1)" />
       </div>
 
-      <!-- Image Size Statistics -->
       <div v-if="sizeStats" class="card p-6">
         <h3 class="text-lg font-semibold text-white mb-4">Image Dimensions</h3>
-
         <div class="grid gap-6 sm:grid-cols-2">
-          <!-- Width Stats -->
           <div class="space-y-4">
             <h4 class="text-md font-medium text-gray-400">Width</h4>
             <div class="grid grid-cols-3 gap-4">
@@ -441,8 +412,6 @@ onMounted(() => {
               </div>
             </div>
           </div>
-
-          <!-- Height Stats -->
           <div class="space-y-4">
             <h4 class="text-md font-medium text-gray-400">Height</h4>
             <div class="grid grid-cols-3 gap-4">
@@ -466,10 +435,8 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Category Distribution -->
       <div class="card p-6">
         <h3 class="text-lg font-semibold text-white mb-4">Annotations per Category</h3>
-
         <div class="space-y-3">
           <div
             v-for="category in analysis.categories"
@@ -480,9 +447,7 @@ onMounted(() => {
             <div class="flex-1 h-4 bg-background-tertiary rounded-full overflow-hidden">
               <div
                 class="h-full bg-gradient-to-r from-primary to-blue-400"
-                :style="{
-                  width: `${(category.count / analysis.total_annotations) * 100}%`
-                }"
+                :style="{ width: `${(category.count / analysis.total_annotations) * 100}%` }"
               />
             </div>
             <span class="w-20 text-sm text-gray-400 text-right">{{ category.count }}</span>
@@ -491,7 +456,6 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- No analysis yet -->
     <EmptyState
       v-else-if="!analyzing"
       :icon="Ruler"

@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/filesystem", tags=["Filesystem"])
 
 # Base paths for data (can be configured via environment)
-DATA_BASE_PATH = os.environ.get("DATA_BASE_PATH", "/data")
-DATA_DIR = os.environ.get("DATA_DIR", "/data")
-BACKGROUNDS_PATH = os.environ.get("BACKGROUNDS_PATH", "/data/Backgrounds_filtered")
-OBJECTS_PATH = os.environ.get("OBJECTS_PATH", "/data/Objects")
-OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/data/output")
+# Defaults match Docker Compose volume mounts: ./datasets -> /app/datasets, ./output -> /app/output
+DATA_BASE_PATH = os.environ.get("DATA_BASE_PATH", "/app/datasets")
+DATA_DIR = os.environ.get("DATA_DIR", "/app/datasets")
+BACKGROUNDS_PATH = os.environ.get("BACKGROUNDS_PATH", "/app/datasets/Backgrounds_filtered")
+OBJECTS_PATH = os.environ.get("OBJECTS_PATH", "/app/datasets/Objects")
+OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/app/output")
 
 
 class DirectoryListResponse(BaseModel):
@@ -103,7 +104,7 @@ MOUNT_POINTS_CONFIG = [
         "name": "Output",
         "path": OUTPUT_PATH,
         "description": "Generated datasets and exports",
-        "purpose": "output",
+        "purpose": "both",
         "icon": "folder-output",
         "is_writable": True,
     },
@@ -116,12 +117,13 @@ def _is_safe_path(path: str) -> bool:
         resolved = Path(path).resolve()
         base = Path(DATA_BASE_PATH).resolve()
         output_base = Path(OUTPUT_PATH).resolve()
-        # Allow paths within DATA_BASE_PATH, OUTPUT_PATH, or legacy /data paths
+        # Allow paths within DATA_BASE_PATH, OUTPUT_PATH, /shared, or legacy /data paths
         return (
             str(resolved).startswith(str(base)) or
             str(resolved).startswith(str(output_base)) or
             str(resolved).startswith("/data") or
-            str(resolved).startswith("/app")
+            str(resolved).startswith("/app") or
+            str(resolved).startswith("/shared")
         )
     except Exception:
         return False

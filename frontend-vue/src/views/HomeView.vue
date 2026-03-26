@@ -90,10 +90,9 @@ function getJobStatusColor(status: string) {
 }
 
 const workflowSteps = [
-  { nameKey: 'workflow.steps.analysis.name', descKey: 'workflow.steps.analysis.description', path: '/analysis' },
+  { nameKey: 'workflow.steps.prepare.name', descKey: 'workflow.steps.prepare.description', path: '/prepare' },
   { nameKey: 'workflow.steps.configure.name', descKey: 'workflow.steps.configure.description', path: '/configure' },
-  { nameKey: 'workflow.steps.source.name', descKey: 'workflow.steps.source.description', path: '/source-selection' },
-  { nameKey: 'workflow.steps.generate.name', descKey: 'workflow.steps.generate.description', path: '/generation' },
+  { nameKey: 'workflow.steps.generate.name', descKey: 'workflow.steps.generate.description', path: '/generate' },
   { nameKey: 'workflow.steps.export.name', descKey: 'workflow.steps.export.description', path: '/export' },
 ]
 
@@ -114,7 +113,7 @@ onMounted(() => {
         </p>
       </div>
       <button
-        @click="router.push('/analysis')"
+        @click="router.push('/prepare')"
         class="btn-primary flex items-center gap-2"
       >
         <Sparkles class="h-5 w-5" />
@@ -206,7 +205,7 @@ onMounted(() => {
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold text-white">{{ t('workflow.home.recentJobs') }}</h2>
           <button
-            @click="router.push('/tools/job-monitor')"
+            @click="router.push('/tools/system?tab=jobs')"
             class="text-sm text-primary hover:text-primary-hover"
           >
             {{ t('common.actions.viewAll') }}

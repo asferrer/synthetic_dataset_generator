@@ -114,7 +114,9 @@
       "food": "Comida y Cocina",
       "foodDesc": "Alimentos y utensilios de cocina",
       "fashion": "Moda y Ropa",
-      "fashionDesc": "Ropa y accesorios"
+      "fashionDesc": "Ropa y accesorios",
+      "marineDebris": "Residuos Marinos",
+      "marineDebrisDesc": "Detección de residuos submarinos"
     },
     "input": {
       "imageDirectories": "Directorios de Imágenes",
@@ -133,8 +135,16 @@
         "both": "Ambos: Detección y Segmentación"
       },
       "minConfidence": "Confianza Mínima",
-      "useSam3": "Usar SAM3 para Segmentación",
-      "useSam3Desc": "Genera máscaras de segmentación precisas"
+      "outputFormats": "Formatos de Salida",
+      "previewMode": "Modo Preview (Prueba)",
+      "previewModeDesc": "Procesar solo una muestra pequeña de imágenes para probar la precisión antes de ejecutar en el dataset completo",
+      "previewCount": "Imágenes de Preview",
+      "images": "imágenes",
+      "deduplicationStrategy": "Estrategia de Deduplicación",
+      "confidenceStrategy": "Prioridad por Confianza",
+      "confidenceStrategyDesc": "Prioriza detecciones con mayor puntuación de confianza",
+      "areaStrategy": "Prioridad por Área",
+      "areaStrategyDesc": "Prioriza detecciones con cajas delimitadoras más grandes"
     },
     "relabeling": {
       "mode": "Modo de Re-etiquetado",
@@ -143,13 +153,14 @@
         "replace": "Reemplazar - Eliminar todo, re-etiquetar completamente",
         "improve": "Mejorar - Mejorar calidad de segmentación"
       },
-      "existingAnnotations": "Ruta de Anotaciones Existentes (opcional)"
+      "existingAnnotations": "Ruta de Anotaciones Existentes"
     },
     "progress": {
       "title": "Progreso del Trabajo Actual",
       "processing": "Procesando...",
       "imagesProcessed": "{processed}/{total} imágenes",
-      "annotationsCreated": "{count} anotaciones"
+      "annotationsCreated": "{count} anotaciones",
+      "byClass": "Detecciones por Clase"
     },
     "metrics": {
       "avgConfidence": "Confianza Promedio",
@@ -165,7 +176,8 @@
     },
     "actions": {
       "startLabeling": "Iniciar Etiquetado",
-      "startRelabeling": "Iniciar Re-etiquetado"
+      "startRelabeling": "Iniciar Re-etiquetado",
+      "cancel": "Cancelar"
     },
     "notifications": {
       "templateApplied": "Plantilla Aplicada",
@@ -177,7 +189,14 @@
       "failed": "Etiquetado Fallido",
       "missingInput": "Entrada Faltante",
       "missingDirectories": "Por favor especifica al menos un directorio de imágenes",
-      "missingClasses": "Por favor especifica al menos una clase a detectar"
+      "missingClasses": "Por favor especifica al menos una clase a detectar",
+      "missingAnnotations": "Por favor proporciona un archivo de anotaciones existente (COCO JSON) para el re-etiquetado",
+      "outputConflict": "Ya hay un trabajo ejecutándose con el mismo directorio de salida. Espera a que termine o usa una ruta diferente.",
+      "cancelled": "Trabajo de etiquetado cancelado",
+      "cancelFailed": "Error al cancelar el trabajo",
+      "pollingError": "Problema de Conexión",
+      "pollingErrorMsg": "Teniendo problemas para conectar con el backend. Reintentando...",
+      "connectionLost": "Conexión perdida con el backend tras múltiples reintentos. Por favor verifica que el servicio esté ejecutándose."
     },
     "activeJobs": "Trabajos Activos",
     "activeJobsMsg": "{count} trabajo(s) de etiquetado en ejecución."
@@ -272,6 +291,387 @@
       "title": "Restricciones de Tamaño",
       "minSize": "Tamaño Mínimo",
       "maxSize": "Tamaño Máximo"
+    }
+  },
+  "domainGap": {
+    "title": "Reducción Domain Gap",
+    "subtitle": "Mide y reduce el domain gap entre imágenes sintéticas y reales",
+    "tabs": {
+      "references": "Imágenes de Referencia",
+      "validation": "Validación",
+      "randomization": "Domain Randomization",
+      "styleTransfer": "Style Transfer",
+      "diffusion": "Refinamiento por Difusión"
+    },
+    "references": {
+      "title": "Conjuntos de Imágenes de Referencia",
+      "description": "Sube conjuntos de imágenes reales de tu dominio objetivo para comparación",
+      "uploadTitle": "Subir Conjunto de Referencia",
+      "name": "Nombre del Conjunto",
+      "namePlaceholder": "ej., Imágenes reales submarinas",
+      "domainId": "Dominio",
+      "setDescription": "Descripción",
+      "descriptionPlaceholder": "Descripción opcional del conjunto de imágenes",
+      "selectImages": "Seleccionar Imágenes",
+      "upload": "Subir",
+      "createFromDir": "Crear desde Directorio",
+      "filesSelected": "archivos seleccionados",
+      "imageCount": "{count} imágenes",
+      "uploadMode": {
+        "files": "Subir Archivos",
+        "directory": "Desde Directorio del Servidor"
+      },
+      "directoryLabel": "Directorio de Imágenes",
+      "directoryHint": "Apunta a un directorio ya existente en el volumen Docker — las imágenes se copiarán sin transferencia de red.",
+      "progress": {
+        "creating": "Creando conjunto de referencia...",
+        "uploading": "Subiendo lotes",
+        "finalizing": "Calculando estadísticas...",
+        "files": "archivos"
+      },
+      "created": "Creado {date}",
+      "noSets": "Aún no se han subido conjuntos de referencia",
+      "deleteConfirm": "¿Eliminar este conjunto de referencia?",
+      "stats": {
+        "title": "Estadísticas Pre-computadas",
+        "brightness": "Brillo Promedio",
+        "edgeVariance": "Varianza de Bordes Promedio",
+        "colorMeansLab": "Medias LAB",
+        "colorMeansRgb": "Medias RGB"
+      }
+    },
+    "validation": {
+      "title": "Validación de Gap",
+      "description": "Mide el domain gap entre tus imágenes sintéticas y las referencias reales",
+      "syntheticDir": "Directorio de Imágenes Sintéticas",
+      "referenceSet": "Conjunto de Referencia",
+      "selectReferenceSet": "Selecciona un conjunto de referencia...",
+      "maxImages": "Máximo de Imágenes a Analizar",
+      "analyze": "Analizar Gap",
+      "computing": "Calculando métricas...",
+      "results": {
+        "title": "Resultados del Análisis",
+        "gapScore": "Puntuación General de Gap",
+        "gapLevel": "Nivel de Gap",
+        "radioMmdScore": "Puntuación RADIO-MMD",
+        "fdRadioScore": "Puntuación FD-RADIO",
+        "fidScore": "Puntuación FID",
+        "kidScore": "Puntuación KID",
+        "colorDistribution": "Distribución de Color",
+        "cmmdScore": "Puntuación CMMD",
+        "precision": "Precisión",
+        "recall": "Recall",
+        "density": "Densidad",
+        "coverage": "Cobertura",
+        "sharpnessRatio": "Ratio de Nitidez",
+        "syntheticSharpness": "Nitidez Sintética",
+        "realSharpness": "Nitidez Real",
+        "sampleSizeWarning": "El tamaño de muestra es muy pequeño para métricas fiables",
+        "pcaApplied": "Se aplicó PCA para estabilidad numérica por muestra pequeña",
+        "levels": {
+          "low": "Bajo",
+          "medium": "Medio",
+          "high": "Alto",
+          "critical": "Crítico"
+        }
+      },
+      "issues": {
+        "title": "Problemas Detectados",
+        "noIssues": "No se detectaron problemas"
+      },
+      "suggestions": {
+        "title": "Sugerencias de Parámetros",
+        "noSuggestions": "No hay sugerencias disponibles",
+        "currentValue": "Actual",
+        "suggestedValue": "Sugerido",
+        "impact": "Impacto Esperado",
+        "apply": "Aplicar Sugerencia",
+        "applyAll": "Aplicar Todas las Sugerencias"
+      },
+      "skip": "Omitir",
+      "issuesDetected": "problemas detectados",
+      "parameterSuggestions": "sugerencias de parámetros",
+      "progress": {
+        "phases": {
+          "pending": "Iniciando análisis...",
+          "extracting_radio_synthetic": "Extrayendo características RADIO (sintéticas)...",
+          "extracting_radio_real": "Extrayendo características RADIO (reales)...",
+          "computing_radio_mmd": "Calculando puntuación RADIO-MMD...",
+          "computing_fd_radio": "Calculando puntuación FD-RADIO...",
+          "extracting_features_synthetic": "Extrayendo características Inception (sintéticas)...",
+          "extracting_features_real": "Extrayendo características Inception (reales)...",
+          "computing_fid": "Calculando puntuación FID...",
+          "computing_kid": "Calculando puntuación KID...",
+          "computing_color": "Calculando distribución de color...",
+          "analyzing_color": "Analizando gaps de color...",
+          "analyzing_edges": "Analizando nitidez de bordes...",
+          "analyzing_frequency": "Analizando contenido frecuencial...",
+          "analyzing_texture": "Analizando complejidad de textura...",
+          "generating_suggestions": "Generando sugerencias...",
+          "extracting_clip_synthetic": "Extrayendo características CLIP (sintéticas)...",
+          "extracting_clip_real": "Extrayendo características CLIP (reales)...",
+          "computing_cmmd": "Calculando puntuación CMMD...",
+          "computing_prdc": "Calculando Precisión/Recall/Densidad/Cobertura...",
+          "completing": "Finalizando resultados...",
+          "completed": "Análisis completado"
+        }
+      }
+    },
+    "randomization": {
+      "title": "Domain Randomization",
+      "description": "Crea variantes de imágenes sintéticas con aumentaciones aleatorias para incrementar diversidad",
+      "imagesDir": "Directorio de Imágenes",
+      "outputDir": "Directorio de Salida",
+      "config": {
+        "numVariants": "Variantes por Imagen",
+        "intensity": "Intensidad",
+        "colorJitter": "Variación de Color",
+        "noiseIntensity": "Intensidad de Ruido",
+        "histogramMatch": "Fuerza de Histograma",
+        "preserveAnnotations": "Preservar Anotaciones"
+      },
+      "apply": "Aplicar Randomización",
+      "applyBatch": "Aplicar a Lote"
+    },
+    "styleTransfer": {
+      "title": "Transferencia de Estilo",
+      "description": "Transfiere el estilo visual de imágenes reales de referencia a imágenes sintéticas para reducir el domain gap",
+      "imagesDir": "Directorio de Imágenes Sintéticas",
+      "outputDir": "Directorio de Salida",
+      "referenceSet": "Conjunto de Referencia de Estilo",
+      "referenceSetHint": "Las imágenes reales de este conjunto se usarán como fuente de estilo",
+      "config": {
+        "styleWeight": "Peso del Estilo",
+        "contentWeight": "Peso del Contenido",
+        "preserveStructure": "Preservar Estructura",
+        "colorOnly": "Solo Transferencia de Color",
+        "depthGuided": "Transferencia Guiada por Profundidad"
+      },
+      "applyBatch": "Aplicar Transferencia de Estilo"
+    },
+    "diffusion": {
+      "title": "Refinamiento por Difusión",
+      "description": "Usa modelos de difusión modernos para cerrar el domain gap preservando anotaciones",
+      "sourceDirectory": "Directorio de origen",
+      "outputDirectory": "Directorio de salida",
+      "method": {
+        "label": "Método de Refinamiento",
+        "controlnet": "ControlNet + Profundidad",
+        "controlnetDesc": "Usa mapas de profundidad como guía estructural con refinamiento img2img",
+        "ipAdapter": "IP-Adapter",
+        "ipAdapterDesc": "Transferencia de estilo zero-shot usando imágenes de referencia",
+        "lora": "LoRA Fine-tuning",
+        "loraDesc": "Adaptación específica al dominio entrenada con tu set de referencia"
+      },
+      "params": {
+        "strength": "Fuerza de Denoising",
+        "strengthHint": "Valores más bajos preservan más estructura (0.3-0.5 recomendado)",
+        "conditioningScale": "Escala ControlNet",
+        "conditioningScaleHint": "Valores más altos refuerzan la estructura con más fuerza",
+        "ipAdapterScale": "Escala IP-Adapter",
+        "ipAdapterScaleHint": "Controla la intensidad de transferencia de estilo",
+        "guidanceScale": "Escala de Guía",
+        "steps": "Pasos de Inferencia",
+        "useLcm": "Usar Lightning (4 pasos)",
+        "useLcmHint": "Mucho más rápido pero calidad ligeramente menor",
+        "prompt": "Prompt de Texto",
+        "promptPlaceholder": "Opcional: describe la apariencia objetivo",
+        "negativePrompt": "Prompt Negativo",
+        "seed": "Semilla",
+        "seedPlaceholder": "Dejar vacío para aleatorio",
+        "loraWeight": "Peso LoRA",
+        "loraWeightHint": "Fuerza de la adaptación específica al dominio"
+      },
+      "lora": {
+        "title": "Modelos LoRA",
+        "train": "Entrenar Nuevo LoRA",
+        "trainingSteps": "Pasos de Entrenamiento",
+        "learningRate": "Tasa de Aprendizaje",
+        "rank": "Rango LoRA",
+        "resolution": "Resolución",
+        "batchSize": "Tamaño de Lote",
+        "promptTemplate": "Plantilla de Prompt",
+        "noModels": "No hay modelos LoRA entrenados aún",
+        "modelId": "ID del Modelo",
+        "modelIdPlaceholder": "ej., submarino-v1",
+        "delete": "Eliminar",
+        "deleteConfirm": "¿Estás seguro de que deseas eliminar este modelo LoRA?",
+        "training": "Entrenando LoRA...",
+        "trainingComplete": "Entrenamiento LoRA completado",
+        "size": "Tamaño",
+        "createdAt": "Creado"
+      },
+      "annotations": {
+        "title": "Preservación de Anotaciones",
+        "edgeIou": "IoU de Bordes",
+        "edgeIouHint": "Solapamiento de estructuras de bordes (mayor = mejor preservado)",
+        "ssim": "Similitud Estructural",
+        "ssimHint": "Preservación estructural general (mayor = mejor)",
+        "keypointDisplacement": "Desplazamiento de Puntos Clave",
+        "keypointDisplacementHint": "Desplazamiento promedio en píxeles (menor = mejor)",
+        "valid": "Anotaciones preservadas",
+        "invalid": "Las anotaciones pueden estar corruptas - considera reducir la fuerza",
+        "threshold": "Umbral de Validez"
+      },
+      "actions": {
+        "refineSingle": "Refinar Imagen",
+        "refineBatch": "Refinar Lote",
+        "refining": "Refinando...",
+        "selectMethod": "Selecciona un método de refinamiento",
+        "selectReferenceSet": "Selecciona un set de referencia",
+        "selectLoraModel": "Selecciona un modelo LoRA"
+      },
+      "preview": {
+        "before": "Antes",
+        "after": "Después",
+        "noPreview": "Refina una imagen para ver la comparación"
+      },
+      "notifications": {
+        "refineSuccess": "Imagen refinada exitosamente",
+        "refineFailed": "Falló el refinamiento de la imagen",
+        "batchStarted": "Refinamiento por lotes iniciado",
+        "batchComplete": "Refinamiento por lotes completado",
+        "loraTrainStarted": "Entrenamiento LoRA iniciado",
+        "loraTrainComplete": "Entrenamiento LoRA completado",
+        "loraDeleted": "Modelo LoRA eliminado",
+        "noGpu": "Se requiere GPU para refinamiento por difusión",
+        "lowVram": "Memoria GPU insuficiente (se requieren 6GB+)",
+        "annotationsWarning": "Se detectó baja preservación de anotaciones"
+      }
+    },
+    "optimization": {
+      "title": "Optimización Automática",
+      "description": "Aplica técnicas iterativamente para minimizar el domain gap de forma automática",
+      "outputDir": "Directorio de Salida",
+      "targetScore": "Puntuación Objetivo de Gap",
+      "maxIterations": "Máximo de Iteraciones",
+      "techniques": "Técnicas a Aplicar",
+      "run": "Ejecutar Optimización"
+    },
+    "notifications": {
+      "uploadSuccess": "Conjunto de Referencia Subido",
+      "uploadSuccessMsg": "Se subieron {count} imágenes como \"{name}\"",
+      "uploadFailed": "Error al Subir",
+      "deleteSuccess": "Conjunto de Referencia Eliminado",
+      "deleteFailed": "Error al Eliminar",
+      "analysisComplete": "Análisis Completo",
+      "analysisCompleteMsg": "Puntuación de gap: {score}/100 ({level})",
+      "analysisFailed": "Análisis Fallido",
+      "randomizationStarted": "Randomización Iniciada",
+      "randomizationStartedMsg": "Trabajo {id} iniciado",
+      "randomizationComplete": "Randomización Completa",
+      "randomizationFailed": "Randomización Fallida",
+      "suggestionApplied": "Sugerencia Aplicada",
+      "suggestionAppliedMsg": "Actualizado {path} a {value}",
+      "styleTransferStarted": "Transferencia de Estilo Iniciada",
+      "styleTransferStartedMsg": "Trabajo {id} iniciado",
+      "styleTransferFailed": "Transferencia de Estilo Fallida",
+      "optimizationStarted": "Optimización Iniciada",
+      "optimizationStartedMsg": "Trabajo {id} iniciado",
+      "optimizationFailed": "Optimización Fallida"
+    }
+  },
+  "annotationReview": {
+    "title": "Revisión de Anotaciones",
+    "subtitle": "Revisa y edita las anotaciones de tus datasets",
+    "loader": {
+      "title": "Cargar Dataset",
+      "tabUpload": "Subir Archivo",
+      "tabBrowse": "Explorar Servidor",
+      "tabJobs": "Trabajos Completados",
+      "selectFile": "Archivo COCO JSON",
+      "orFromJob": "O cargar desde trabajo completado",
+      "filePath": "Ruta del COCO JSON (ruta del servidor)",
+      "loadButton": "Cargar",
+      "noJobs": "No se encontraron trabajos de etiquetado completados",
+      "upload": {
+        "title": "Subir COCO JSON",
+        "description": "Sube un archivo de anotaciones desde tu ordenador. Las imágenes referenciadas deben ser accesibles desde el servidor.",
+        "dragDrop": "Arrastra tu archivo COCO JSON aquí, o haz clic para seleccionar",
+        "selectedFile": "Archivo seleccionado",
+        "uploading": "Subiendo...",
+        "uploadButton": "Subir y Revisar",
+        "invalidFile": "Selecciona un archivo .json válido",
+        "orManualPath": "O introduce una ruta del servidor manualmente"
+      },
+      "browse": {
+        "title": "Datasets Disponibles",
+        "description": "Archivos de anotación encontrados en el servidor",
+        "scanning": "Buscando archivos de anotación...",
+        "noFiles": "No se encontraron archivos de anotación en el servidor",
+        "columns": {
+          "path": "Archivo",
+          "categories": "Categorías",
+          "images": "Imágenes",
+          "annotations": "Anotaciones",
+          "modified": "Modificado"
+        }
+      },
+      "jobColumns": {
+        "jobId": "ID del Trabajo",
+        "classes": "Clases",
+        "images": "Imágenes",
+        "annotations": "Anotaciones",
+        "completed": "Completado"
+      }
+    },
+    "navigator": {
+      "title": "Imágenes",
+      "search": "Buscar imágenes...",
+      "filter": {
+        "all": "Todas",
+        "annotated": "Anotadas",
+        "empty": "Sin anotaciones"
+      },
+      "annotations": "anotaciones",
+      "reviewed": "Revisada",
+      "noImages": "No se encontraron imágenes"
+    },
+    "canvas": {
+      "zoomIn": "Acercar",
+      "zoomOut": "Alejar",
+      "fitToView": "Ajustar a vista",
+      "noImage": "Selecciona una imagen para comenzar a revisar"
+    },
+    "sidebar": {
+      "title": "Detalles de Anotación",
+      "noSelection": "Haz clic en una anotación para ver detalles",
+      "class": "Clase",
+      "confidence": "Confianza",
+      "bbox": "Bounding Box",
+      "area": "Área",
+      "deleteAnnotation": "Eliminar Anotación",
+      "reannotate": "Re-anotar con SAM3",
+      "reannotateAll": "Re-anotar esta imagen"
+    },
+    "toolbar": {
+      "save": "Guardar",
+      "undo": "Deshacer",
+      "redo": "Rehacer",
+      "mode": {
+        "select": "Seleccionar",
+        "drawBbox": "Dibujar BBox",
+        "editPolygon": "Editar Polígono"
+      },
+      "visibility": {
+        "bboxes": "Bounding Boxes",
+        "polygons": "Polígonos",
+        "labels": "Etiquetas"
+      },
+      "unsavedChanges": "Cambios sin guardar",
+      "saved": "Todos los cambios guardados"
+    },
+    "notifications": {
+      "loaded": "Dataset cargado exitosamente",
+      "loadFailed": "Error al cargar el dataset",
+      "saved": "Dataset guardado exitosamente",
+      "saveFailed": "Error al guardar el dataset",
+      "annotationCreated": "Anotación creada",
+      "annotationDeleted": "Anotación eliminada",
+      "annotationUpdated": "Anotación actualizada",
+      "reannotateStarted": "Re-anotación iniciada",
+      "reannnotateFailed": "Error en la re-anotación",
+      "reannotateComplete": "Re-anotación completada"
     }
   },
   "postProcessing": {

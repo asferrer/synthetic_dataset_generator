@@ -5,18 +5,51 @@ API Gateway that orchestrates synthetic data generation services.
 """
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.client import get_service_registry
 from app.services.orchestrator import get_orchestrator
 
+# Add shared module path for job database
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+try:
+    from shared.job_database import get_job_db, JobDatabase
+    JOB_DATABASE_AVAILABLE = True
+except ImportError:
+    JOB_DATABASE_AVAILABLE = False
+
 # Service URLs
 AUGMENTOR_SERVICE_URL = os.environ.get("AUGMENTOR_SERVICE_URL", "http://augmentor:8004")
+
+# CORS Configuration
+# In production, set CORS_ORIGINS to a comma-separated list of allowed origins
+# Example: CORS_ORIGINS=http://localhost:3000,https://myapp.com
+CORS_ORIGINS_ENV = os.environ.get("CORS_ORIGINS", "")
+CORS_ALLOW_ALL = os.environ.get("CORS_ALLOW_ALL", "false").lower() == "true"
+
+def get_cors_origins() -> List[str]:
+    """Get list of allowed CORS origins from environment."""
+    if CORS_ALLOW_ALL:
+        return ["*"]
+    if CORS_ORIGINS_ENV:
+        return [origin.strip() for origin in CORS_ORIGINS_ENV.split(",") if origin.strip()]
+    # Default origins for development
+    return [
+        "http://localhost:3000",      # Vue frontend dev server
+        "http://localhost:3001",      # Vue frontend Docker (mapped port)
+        "http://localhost:8501",      # Streamlit frontend
+        "http://localhost:8000",      # Gateway itself (for Swagger UI)
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:8501",
+        "http://127.0.0.1:8000",
+    ]
 from app.models.schemas import (
     GenerateImageRequest,
     GenerateImageResponse,
@@ -28,7 +61,7 @@ from app.models.schemas import (
     ServiceStatus,
     AnnotationBox
 )
-from app.routers import augment, segmentation, datasets, filesystem, domains
+from app.routers import augment, segmentation, datasets, filesystem, domains, domain_gap, auto_tune, ml_optimize
 from app.services.domain_registry import get_domain_registry
 
 # Configure logging
@@ -43,6 +76,20 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting Gateway Service...")
+
+    # Initialize job database for unified job registry
+    app.state.db = None
+    if JOB_DATABASE_AVAILABLE:
+        try:
+            app.state.db = get_job_db()
+            logger.info("Job database initialized")
+
+            # Recover orphaned gateway jobs from unclean shutdowns
+            orphaned = app.state.db.mark_orphaned_jobs("gateway")
+            if orphaned:
+                logger.warning(f"Marked {orphaned} orphaned gateway jobs as interrupted")
+        except Exception as e:
+            logger.error(f"Failed to init job database: {e}")
 
     # Initialize service registry
     registry = get_service_registry()
@@ -79,13 +126,17 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# Note: When using specific origins (not "*"), credentials are allowed.
+# When using "*", credentials must be disabled for security.
+cors_origins = get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=(cors_origins != ["*"]),  # Only allow credentials with specific origins
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
+logger.info(f"CORS configured with origins: {cors_origins}")
 
 # Include routers
 app.include_router(augment.router)
@@ -93,6 +144,19 @@ app.include_router(segmentation.router)
 app.include_router(datasets.router)
 app.include_router(filesystem.router)
 app.include_router(domains.router)
+app.include_router(domain_gap.router)
+app.include_router(auto_tune.router)
+app.include_router(ml_optimize.router)
+
+
+@app.get("/ping")
+async def ping():
+    """Lightweight liveness probe for Docker health checks.
+
+    Returns immediately without checking downstream services.
+    Use /health for full service health with downstream checks.
+    """
+    return {"status": "ok"}
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -176,7 +240,7 @@ async def health_check():
 async def service_info():
     """Get gateway service information."""
     return InfoResponse(
-        available_services=["depth", "effects", "segmentation", "augmentor"],
+        available_services=["depth", "effects", "segmentation", "augmentor", "domain_gap"],
         endpoints=[
             "/health",
             "/info",
@@ -435,6 +499,59 @@ async def root():
         },
         "documentation": "/docs"
     }
+
+
+# =============================================================================
+# Unified Job Registry Endpoints
+# =============================================================================
+
+@app.get("/jobs/all", tags=["Jobs"])
+async def list_all_jobs(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    service: Optional[str] = Query(None, description="Filter by service"),
+    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List all jobs from all services via the unified job registry."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    jobs = app.state.db.list_jobs(
+        service=service, job_type=job_type, status=status,
+        limit=limit, offset=offset,
+    )
+    active = app.state.db.get_active_jobs()
+
+    return {
+        "jobs": jobs,
+        "total": len(jobs),
+        "active_count": len(active),
+    }
+
+
+@app.get("/jobs/active", tags=["Jobs"])
+async def list_active_jobs(
+    service: Optional[str] = Query(None, description="Filter by service"),
+):
+    """List all active jobs across all services."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    jobs = app.state.db.get_active_jobs(service=service)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/jobs/{job_id}", tags=["Jobs"])
+async def get_job_by_id(job_id: str):
+    """Get a specific job by ID from the unified registry."""
+    if not app.state.db:
+        raise HTTPException(503, detail="Job database not available")
+
+    job = app.state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, detail=f"Job {job_id} not found")
+    return job
 
 
 if __name__ == "__main__":

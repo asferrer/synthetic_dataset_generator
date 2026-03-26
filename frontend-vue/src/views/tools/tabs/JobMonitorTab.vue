@@ -234,16 +234,12 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
+    <!-- Filters -->
     <div class="flex items-center justify-between">
-      <div>
-        <h2 class="text-2xl font-bold text-white">Job Monitor</h2>
-        <p class="mt-1 text-gray-400">
-          Monitor and manage background jobs.
-          <span v-if="runningJobsCount > 0" class="text-blue-400">
-            {{ runningJobsCount }} running
-          </span>
-        </p>
+      <div class="flex items-center gap-2">
+        <span v-if="runningJobsCount > 0" class="text-sm text-blue-400">
+          {{ runningJobsCount }} running
+        </span>
       </div>
       <div class="flex items-center gap-4">
         <BaseSelect

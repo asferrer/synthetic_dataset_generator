@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
 import { splitDataset, kFoldSplit, listDatasets, type SplitResult, type KFoldResult } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -12,13 +11,10 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
   Split,
   CheckCircle,
-  ArrowLeft,
   Layers,
-  LayoutGrid,
 } from 'lucide-vue-next'
 import type { DatasetInfo } from '@/types/api'
 
-const router = useRouter()
 const uiStore = useUiStore()
 
 // Split mode: 'ratio' for train/val/test, 'kfold' for K-Fold
@@ -28,7 +24,7 @@ const loading = ref(false)
 const splitting = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDataset = ref<string | null>(null)
-const outputDir = ref('/data/splits')
+const outputDir = ref('/app/output/splits')
 
 // Ratio mode options
 const trainRatio = ref(70)
@@ -122,28 +118,12 @@ async function startSplit() {
   }
 }
 
-function goBack() {
-  router.push('/combine')
-}
-
-function goToDashboard() {
-  router.push('/')
-}
-
 // Load datasets on mount
 loadDatasets()
 </script>
 
 <template>
   <div class="space-y-8">
-    <!-- Header -->
-    <div>
-      <h2 class="text-2xl font-bold text-white">Dataset Splits</h2>
-      <p class="mt-2 text-gray-400">
-        Split your dataset into train, validation, and test sets.
-      </p>
-    </div>
-
     <!-- Mode Toggle -->
     <div class="flex gap-4">
       <BaseButton
@@ -190,7 +170,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
-            placeholder="/data/splits"
+            placeholder="/app/output/splits"
             path-mode="output"
             class="mt-4"
           />
@@ -443,32 +423,16 @@ loadDatasets()
     </div>
 
     <!-- Action Buttons -->
-    <div class="flex justify-between">
-      <BaseButton variant="outline" @click="goBack">
-        <ArrowLeft class="h-5 w-5" />
-        Back
+    <div class="flex justify-end">
+      <BaseButton
+        v-if="!splitResult && !kFoldResult"
+        :disabled="!selectedDataset || (splitMode === 'ratio' && !ratioValid)"
+        :loading="splitting"
+        @click="startSplit"
+      >
+        <component :is="splitMode === 'ratio' ? Split : Layers" class="h-5 w-5" />
+        {{ splitMode === 'ratio' ? 'Split Dataset' : 'Create K-Fold Splits' }}
       </BaseButton>
-
-      <div class="flex gap-4">
-        <BaseButton
-          v-if="!splitResult && !kFoldResult"
-          :disabled="!selectedDataset || (splitMode === 'ratio' && !ratioValid)"
-          :loading="splitting"
-          @click="startSplit"
-        >
-          <component :is="splitMode === 'ratio' ? Split : Layers" class="h-5 w-5" />
-          {{ splitMode === 'ratio' ? 'Split Dataset' : 'Create K-Fold Splits' }}
-        </BaseButton>
-
-        <BaseButton
-          v-if="splitResult || kFoldResult"
-          variant="success"
-          @click="goToDashboard"
-        >
-          <CheckCircle class="h-5 w-5" />
-          Finish Workflow
-        </BaseButton>
-      </div>
     </div>
   </div>
 </template>

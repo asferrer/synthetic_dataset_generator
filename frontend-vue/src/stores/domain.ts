@@ -21,6 +21,11 @@ import {
   exportDomain as exportDomainApi,
   importDomain as importDomainApi,
   checkCompatibility as checkCompatibilityApi,
+  createBuiltinOverride as createBuiltinOverrideApi,
+  resetBuiltinOverride as resetBuiltinOverrideApi,
+  getOverrideStatus as getOverrideStatusApi,
+  type BuiltinOverrideRequest,
+  type OverrideStatusResponse,
 } from '@/lib/api'
 
 // ============================================
@@ -293,11 +298,60 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
   /**
+   * Validate domain data structure before import
+   */
+  function validateDomainData(data: any): { valid: boolean; errors: string[] } {
+    const errors: string[] = []
+
+    // Required fields
+    if (!data.domain_id || typeof data.domain_id !== 'string') {
+      errors.push('domain_id is required and must be a string')
+    } else if (!/^[a-z][a-z0-9_]*$/.test(data.domain_id)) {
+      errors.push('domain_id must start with a letter and contain only lowercase letters, numbers, and underscores')
+    }
+
+    if (!data.name || typeof data.name !== 'string') {
+      errors.push('name is required and must be a string')
+    }
+
+    if (!Array.isArray(data.regions)) {
+      errors.push('regions must be an array')
+    } else if (data.regions.length === 0) {
+      errors.push('regions array cannot be empty')
+    } else {
+      data.regions.forEach((region: any, index: number) => {
+        if (!region.id) errors.push(`Region at index ${index} is missing 'id'`)
+        if (!region.name) errors.push(`Region at index ${index} is missing 'name'`)
+        if (!region.display_name) errors.push(`Region at index ${index} is missing 'display_name'`)
+      })
+    }
+
+    if (data.objects && !Array.isArray(data.objects)) {
+      errors.push('objects must be an array if provided')
+    }
+
+    if (data.compatibility_matrix && typeof data.compatibility_matrix !== 'object') {
+      errors.push('compatibility_matrix must be an object if provided')
+    }
+
+    return { valid: errors.length === 0, errors }
+  }
+
+  /**
    * Import a domain from JSON
    */
   async function importDomain(domainData: Domain, overwrite = false): Promise<Domain | null> {
     isLoading.value = true
     error.value = null
+
+    // Validate domain data before sending to server
+    const validation = validateDomainData(domainData)
+    if (!validation.valid) {
+      error.value = `Invalid domain data: ${validation.errors.join('; ')}`
+      isLoading.value = false
+      return null
+    }
+
     try {
       const domain = await importDomainApi(domainData, overwrite)
       // Refresh domains list
@@ -380,6 +434,117 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
   /**
+   * Create or update an override for a built-in domain.
+   * This allows modifying built-in domains by creating a user-space copy.
+   */
+  async function createBuiltinOverride(
+    domainId: string,
+    updates: BuiltinOverrideRequest
+  ): Promise<Domain | null> {
+    isLoading.value = true
+    error.value = null
+    try {
+      const response = await createBuiltinOverrideApi(domainId, updates)
+      if (response.success && response.domain) {
+        // Update cache with the new domain data
+        domainCache.value[domainId] = response.domain
+        // Refresh domains list
+        await fetchDomains()
+        // If this is the active domain, update it
+        if (activeDomainId.value === domainId) {
+          activeDomain.value = response.domain
+        }
+        return response.domain
+      }
+      return null
+    } catch (e: any) {
+      error.value = e.message || `Failed to create override for domain: ${domainId}`
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
+   * Reset a built-in domain override to its original configuration.
+   */
+  async function resetBuiltinOverride(domainId: string): Promise<Domain | null> {
+    isLoading.value = true
+    error.value = null
+    try {
+      const response = await resetBuiltinOverrideApi(domainId)
+      if (response.success && response.domain) {
+        // Update cache
+        domainCache.value[domainId] = response.domain
+        // Refresh domains list
+        await fetchDomains()
+        // If this is the active domain, update it
+        if (activeDomainId.value === domainId) {
+          activeDomain.value = response.domain
+        }
+        return response.domain
+      }
+      return null
+    } catch (e: any) {
+      error.value = e.message || `Failed to reset override for domain: ${domainId}`
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
+   * Check if a domain has a user override.
+   */
+  async function getOverrideStatus(domainId: string): Promise<OverrideStatusResponse | null> {
+    try {
+      return await getOverrideStatusApi(domainId)
+    } catch (e: any) {
+      error.value = e.message || `Failed to get override status for domain: ${domainId}`
+      return null
+    }
+  }
+
+  /**
+   * Update SAM3 prompts for specific regions in a domain.
+   * Works for both built-in and user domains.
+   */
+  async function updateRegionSam3Prompts(
+    domainId: string,
+    regionUpdates: Array<{ id: string; sam3_prompt: string | null }>
+  ): Promise<Domain | null> {
+    const domain = await fetchDomain(domainId)
+    if (!domain) return null
+
+    // Build the full region updates
+    const regions = domain.regions.map(r => {
+      const update = regionUpdates.find(u => u.id === r.id)
+      if (update) {
+        return { ...r, sam3_prompt: update.sam3_prompt }
+      }
+      return r
+    })
+
+    // Use override for built-in domains, update for user domains
+    if (domain.is_builtin) {
+      return createBuiltinOverride(domainId, { regions })
+    } else {
+      return updateDomain(domainId, { regions })
+    }
+  }
+
+  /**
+   * Update a single region's SAM3 prompt
+   */
+  async function updateRegionSam3Prompt(
+    domainId: string,
+    regionId: string,
+    sam3Prompt: string | null
+  ): Promise<Domain | null> {
+    return updateRegionSam3Prompts(domainId, [{ id: regionId, sam3_prompt: sam3Prompt }])
+  }
+
+  /**
    * Clear cache and refresh
    */
   async function refresh() {
@@ -448,6 +613,12 @@ export const useDomainStore = defineStore('domain', () => {
     getLabelingTemplate,
     refresh,
     reset,
+    // Built-in domain override actions
+    createBuiltinOverride,
+    resetBuiltinOverride,
+    getOverrideStatus,
+    updateRegionSam3Prompts,
+    updateRegionSam3Prompt,
   }
 }, {
   persist: {

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
 import { combineDatasets, listDatasets, type CombineResult } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -8,8 +7,6 @@ import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
-  ArrowRight,
-  ArrowLeft,
   Combine,
   Plus,
   CheckCircle,
@@ -17,14 +14,13 @@ import {
 } from 'lucide-vue-next'
 import type { DatasetInfo } from '@/types/api'
 
-const router = useRouter()
 const uiStore = useUiStore()
 
 const loading = ref(false)
 const combining = ref(false)
 const datasets = ref<DatasetInfo[]>([])
 const selectedDatasets = ref<string[]>([])
-const outputDir = ref('/data/combined')
+const outputDir = ref('/app/output/combined')
 const mergeCategories = ref(true)
 const deduplicate = ref(true)
 const combineResult = ref<CombineResult | null>(null)
@@ -84,28 +80,12 @@ async function startCombine() {
   }
 }
 
-function goBack() {
-  router.push('/export')
-}
-
-function continueToSplits() {
-  router.push('/splits')
-}
-
 // Load datasets on mount
 loadDatasets()
 </script>
 
 <template>
   <div class="space-y-8">
-    <!-- Header -->
-    <div>
-      <h2 class="text-2xl font-bold text-white">Combine Datasets</h2>
-      <p class="mt-2 text-gray-400">
-        Merge multiple datasets into a single unified dataset.
-      </p>
-    </div>
-
     <!-- Error Alert -->
     <AlertBox v-if="error" type="error" :title="error" dismissible @dismiss="error = null" />
 
@@ -164,7 +144,7 @@ loadDatasets()
         <DirectoryBrowser
           v-model="outputDir"
           label="Output Directory"
-          placeholder="/data/combined"
+          placeholder="/app/output/combined"
           path-mode="output"
         />
 
@@ -228,28 +208,16 @@ loadDatasets()
     </div>
 
     <!-- Action Buttons -->
-    <div class="flex justify-between">
-      <BaseButton variant="outline" @click="goBack">
-        <ArrowLeft class="h-5 w-5" />
-        Back
+    <div class="flex justify-end">
+      <BaseButton
+        v-if="!combineResult"
+        :disabled="!canCombine"
+        :loading="combining"
+        @click="startCombine"
+      >
+        <Combine class="h-5 w-5" />
+        Combine Datasets
       </BaseButton>
-
-      <div class="flex gap-4">
-        <BaseButton
-          v-if="!combineResult"
-          :disabled="!canCombine"
-          :loading="combining"
-          @click="startCombine"
-        >
-          <Combine class="h-5 w-5" />
-          Combine Datasets
-        </BaseButton>
-
-        <BaseButton @click="continueToSplits">
-          Continue to Splits
-          <ArrowRight class="h-5 w-5" />
-        </BaseButton>
-      </div>
     </div>
   </div>
 </template>

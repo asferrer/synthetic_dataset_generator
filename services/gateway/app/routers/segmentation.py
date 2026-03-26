@@ -6,7 +6,7 @@ Proxies requests to the Segmentation service.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -42,29 +42,6 @@ class ExtractSingleObjectRequest(BaseModel):
     padding: int = Field(10, description="Padding around object")
 
 
-class LabelingStartRequest(BaseModel):
-    """Request to start a labeling job"""
-    images_dir: str = Field(..., description="Directory containing images to label")
-    output_dir: str = Field(..., description="Output directory for labels")
-    categories: List[str] = Field(..., description="Categories to label")
-    model: str = Field("auto", description="Detection model to use")
-    confidence_threshold: float = Field(0.5, ge=0, le=1)
-    use_sam3: bool = Field(True, description="Use SAM3 for segmentation")
-    generate_masks: bool = Field(True, description="Generate segmentation masks")
-    min_area: int = Field(100, description="Minimum annotation area")
-    max_overlap: float = Field(0.5, ge=0, le=1, description="Maximum allowed overlap")
-
-
-class RelabelingRequest(BaseModel):
-    """Request to relabel existing annotations"""
-    coco_json_path: str = Field(..., description="Path to existing COCO JSON")
-    images_dir: str = Field(..., description="Directory containing images")
-    output_dir: str = Field(..., description="Output directory")
-    categories: Optional[List[str]] = Field(None, description="Categories to relabel")
-    confidence_threshold: float = Field(0.5, ge=0, le=1)
-    use_sam3: bool = Field(True)
-
-
 class SAM3SegmentRequest(BaseModel):
     """Request to segment an image using SAM3"""
     image_path: str = Field(..., description="Path to image")
@@ -82,6 +59,12 @@ class SAM3ConvertDatasetRequest(BaseModel):
     output_dir: str = Field(..., description="Output directory")
     min_area: int = Field(100, description="Minimum mask area")
     confidence_threshold: float = Field(0.8, ge=0, le=1)
+
+
+class AnalyzeDatasetRequest(BaseModel):
+    """Request to analyze a dataset before extraction"""
+    coco_json_path: str = Field(..., description="Path to COCO annotations JSON")
+    images_dir: str = Field(..., description="Directory containing source images")
 
 
 # =============================================================================
@@ -122,16 +105,17 @@ async def extract_single_object(request: ExtractSingleObjectRequest):
 
 
 @router.post("/extract/analyze-dataset")
-async def analyze_extraction_dataset(coco_json_path: str, images_dir: str):
-    """Analyze a dataset before extraction."""
-    logger.info(f"Analyze dataset for extraction: {coco_json_path}")
+async def analyze_extraction_dataset(request: AnalyzeDatasetRequest):
+    """Analyze a dataset before extraction.
+
+    Validates the dataset structure and returns statistics about
+    available categories, image counts, and annotation distribution.
+    """
+    logger.info(f"Analyze dataset for extraction: {request.coco_json_path}")
 
     try:
         registry = get_service_registry()
-        result = await registry.segmentation.post("/extract/analyze-dataset", {
-            "coco_json_path": coco_json_path,
-            "images_dir": images_dir
-        })
+        result = await registry.segmentation.post("/extract/analyze-dataset", request.model_dump())
         return result
     except Exception as e:
         logger.error(f"Analyze dataset failed: {e}")
@@ -183,172 +167,6 @@ async def cancel_extraction_job(job_id: str):
         return result
     except Exception as e:
         logger.error(f"Cancel extraction job failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# =============================================================================
-# Labeling Endpoints
-# =============================================================================
-
-@router.post("/labeling/start")
-async def start_labeling(request: LabelingStartRequest):
-    """
-    Start an automatic labeling job.
-
-    Uses detection models to automatically annotate images.
-    Returns a job_id for tracking progress.
-    """
-    logger.info(f"Start labeling: {request.images_dir}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.post("/labeling/start", request.model_dump())
-        return result
-    except Exception as e:
-        logger.error(f"Start labeling failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/labeling/relabel")
-async def relabel_dataset(request: RelabelingRequest):
-    """
-    Relabel an existing annotated dataset.
-
-    Updates annotations using improved models or parameters.
-    """
-    logger.info(f"Relabel dataset: {request.coco_json_path}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.post("/labeling/relabel", request.model_dump())
-        return result
-    except Exception as e:
-        logger.error(f"Relabel failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/labeling/jobs")
-async def list_labeling_jobs(
-    status: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200)
-):
-    """List all labeling jobs."""
-    logger.info(f"List labeling jobs - status: {status}")
-
-    try:
-        registry = get_service_registry()
-        params = {"limit": limit}
-        if status:
-            params["status"] = status
-        result = await registry.segmentation.get("/labeling/jobs", params=params)
-        return result
-    except Exception as e:
-        logger.error(f"List labeling jobs failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/labeling/jobs/active")
-async def get_active_labeling_jobs():
-    """Get all active (running/queued) labeling jobs."""
-    logger.info("Get active labeling jobs")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.get("/labeling/jobs", params={"status": "running"})
-        # Also get pending jobs
-        pending = await registry.segmentation.get("/labeling/jobs", params={"status": "pending"})
-
-        jobs = result.get("jobs", []) + pending.get("jobs", [])
-        return jobs
-    except Exception as e:
-        logger.error(f"Get active labeling jobs failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/labeling/jobs/{job_id}")
-async def get_labeling_job(job_id: str):
-    """Get status of a labeling job."""
-    logger.info(f"Get labeling job: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.get(f"/labeling/jobs/{job_id}")
-        return result
-    except Exception as e:
-        logger.error(f"Get labeling job failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/labeling/jobs/{job_id}/result")
-async def get_labeling_result(job_id: str):
-    """Get the result of a completed labeling job."""
-    logger.info(f"Get labeling result: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.get(f"/labeling/jobs/{job_id}/result")
-        return result
-    except Exception as e:
-        logger.error(f"Get labeling result failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/labeling/jobs/{job_id}/previews")
-async def get_labeling_previews(job_id: str, limit: int = 10):
-    """Get preview images from a labeling job."""
-    logger.info(f"Get labeling previews: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.get(
-            f"/labeling/jobs/{job_id}/previews",
-            params={"limit": limit}
-        )
-        return result
-    except Exception as e:
-        logger.error(f"Get labeling previews failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/labeling/jobs/{job_id}/resume")
-async def resume_labeling_job(job_id: str):
-    """Resume an interrupted labeling job."""
-    logger.info(f"Resume labeling job: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.post(f"/labeling/jobs/{job_id}/resume", {})
-        return result
-    except Exception as e:
-        logger.error(f"Resume labeling job failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/labeling/jobs/{job_id}")
-async def cancel_labeling_job(job_id: str):
-    """Cancel a running labeling job."""
-    logger.info(f"Cancel labeling job: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.delete(f"/labeling/jobs/{job_id}")
-        return result
-    except Exception as e:
-        logger.error(f"Cancel labeling job failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/labeling/jobs/{job_id}/delete")
-async def delete_labeling_job(job_id: str):
-    """Permanently delete a labeling job."""
-    logger.info(f"Delete labeling job: {job_id}")
-
-    try:
-        registry = get_service_registry()
-        result = await registry.segmentation.post(f"/labeling/jobs/{job_id}/delete", {})
-        return result
-    except Exception as e:
-        logger.error(f"Delete labeling job failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -1,0 +1,46 @@
+# Domain Gap Reduction Service Dependencies
+# FastAPI framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Image processing
+opencv-python>=4.9.0
+numpy>=1.26.0
+Pillow>=10.0.0
+scikit-image>=0.22.0
+
+# Deep learning (metrics: Inception v3, style transfer: VGG-19, CycleGAN)
+torch>=2.0.0
+torchvision>=0.15.0
+lpips>=0.1.4
+
+# Metrics
+scipy>=1.12.0
+scikit-learn>=1.4.0
+open-clip-torch>=2.24.0
+
+# C-RADIOv4 backbone (NVIDIA)
+transformers>=4.40.0
+einops>=0.7.0
+
+# Utilities
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+httpx>=0.26.0
+tenacity>=8.2.0
+pyyaml>=6.0.1
+
+# Bayesian Optimization & ML
+optuna>=3.5.0
+xgboost>=2.0.0
+joblib>=1.3.0
+
+# Logging
+loguru>=0.7.0
+
+# Diffusion refinement (ControlNet + IP-Adapter + LoRA)
+diffusers>=0.30.0
+accelerate>=0.25.0
+controlnet-aux>=0.0.7
+peft>=0.8.0

@@ -2,9 +2,10 @@
  * API Client for Synthetic Dataset Generator
  *
  * This module provides functions to interact with the backend services.
+ * Includes automatic retry with exponential backoff for failed requests.
  */
 
-import axios from 'axios'
+import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import type {
   HealthStatus,
   Job,
@@ -36,6 +37,89 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const SEGMENTATION_URL = import.meta.env.VITE_SEGMENTATION_URL || 'http://localhost:8002'
 
+// Retry configuration
+const MAX_RETRIES = 3
+const INITIAL_RETRY_DELAY = 1000 // 1 second
+const MAX_RETRY_DELAY = 10000 // 10 seconds
+
+// Extend AxiosRequestConfig to include retry metadata
+interface RetryConfig extends InternalAxiosRequestConfig {
+  _retryCount?: number
+  _isRetry?: boolean
+}
+
+/**
+ * Calculate delay with exponential backoff and jitter
+ */
+function calculateRetryDelay(retryCount: number): number {
+  const delay = Math.min(INITIAL_RETRY_DELAY * Math.pow(2, retryCount), MAX_RETRY_DELAY)
+  // Add jitter (±20%)
+  const jitter = delay * 0.2 * (Math.random() * 2 - 1)
+  return Math.round(delay + jitter)
+}
+
+/**
+ * Check if error is retryable
+ */
+function isRetryableError(error: AxiosError): boolean {
+  // Network errors
+  if (!error.response) return true
+
+  // Server errors (5xx) except 501 Not Implemented
+  const status = error.response.status
+  if (status >= 500 && status !== 501) return true
+
+  // Too Many Requests
+  if (status === 429) return true
+
+  // Request Timeout
+  if (status === 408) return true
+
+  return false
+}
+
+/**
+ * Add retry interceptor to axios instance
+ */
+function addRetryInterceptor(instance: AxiosInstance): void {
+  instance.interceptors.response.use(
+    (response) => response,
+    async (error: AxiosError) => {
+      const config = error.config as RetryConfig
+
+      if (!config) {
+        return Promise.reject(error)
+      }
+
+      // Initialize retry count
+      config._retryCount = config._retryCount ?? 0
+
+      // Check if we should retry
+      if (config._retryCount >= MAX_RETRIES || !isRetryableError(error)) {
+        return Promise.reject(error)
+      }
+
+      // Increment retry count
+      config._retryCount += 1
+      config._isRetry = true
+
+      // Calculate delay
+      const delay = calculateRetryDelay(config._retryCount - 1)
+
+      console.warn(
+        `Request failed (${error.response?.status || 'network error'}), ` +
+        `retrying in ${delay}ms (attempt ${config._retryCount}/${MAX_RETRIES})...`
+      )
+
+      // Wait before retrying
+      await new Promise((resolve) => setTimeout(resolve, delay))
+
+      // Retry the request
+      return instance.request(config)
+    }
+  )
+}
+
 // Create axios instance with default config
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -52,6 +136,10 @@ const segmentationApi = axios.create({
     'Content-Type': 'application/json',
   },
 })
+
+// Add retry interceptors
+addRetryInterceptor(api)
+addRetryInterceptor(segmentationApi)
 
 // ===========================================
 // HEALTH & STATUS
@@ -139,7 +227,10 @@ export async function retryJob(jobId: string): Promise<{ success: boolean; messa
 }
 
 export async function deleteJob(jobId: string): Promise<{ success: boolean; message?: string }> {
-  const response = await api.delete(`/augment/jobs/${jobId}`)
+  const response = await api.post(`/augment/jobs/${jobId}/delete`)
+  if (!response.data.success) {
+    throw new Error(response.data.message || 'Failed to delete job')
+  }
   return response.data
 }
 
@@ -336,11 +427,11 @@ export async function listDirectories(path?: string): Promise<string[]> {
   return response.data.directories || []
 }
 
-export async function listFiles(path: string, extensions?: string | string[]): Promise<string[]> {
+export async function listFiles(path: string, pattern?: string | string[]): Promise<string[]> {
   const params: Record<string, any> = { path }
-  if (extensions) {
-    // Accept both string and array formats
-    params.extensions = Array.isArray(extensions) ? extensions.join(',') : extensions
+  if (pattern) {
+    // Backend expects 'pattern' query param (e.g. "*.json", "*.png")
+    params.pattern = Array.isArray(pattern) ? pattern.join(',') : pattern
   }
   const response = await api.get('/filesystem/files', { params })
   return response.data.files || []
@@ -365,12 +456,20 @@ export function getImageUrl(imagePath: string): string {
 
 export async function startLabeling(request: LabelingRequest): Promise<LabelingResult> {
   const response = await segmentationApi.post('/labeling/start', request)
-  return response.data
+  const result = response.data as LabelingResult
+  if (!result.success) {
+    throw new Error(result.error || result.message || 'Failed to start labeling job')
+  }
+  return result
 }
 
 export async function startRelabeling(request: RelabelingRequest): Promise<LabelingResult> {
   const response = await segmentationApi.post('/labeling/relabel', request)
-  return response.data
+  const result = response.data as LabelingResult
+  if (!result.success) {
+    throw new Error(result.error || result.message || 'Failed to start relabeling job')
+  }
+  return result
 }
 
 export async function getLabelingStatus(jobId: string): Promise<LabelingJob> {
@@ -585,5 +684,494 @@ export async function getDomainSam3Prompts(domainId: string): Promise<{ domain_i
 
 export async function getDomainLabelingTemplates(domainId: string): Promise<{ domain_id: string; labeling_templates: Domain['labeling_templates'] }> {
   const response = await api.get(`/domains/${domainId}/labeling-templates`)
+  return response.data
+}
+
+// ===========================================
+// DOMAIN OVERRIDES (Built-in Domain Customization)
+// ===========================================
+
+export interface BuiltinOverrideRequest {
+  regions?: Domain['regions']
+  objects?: Domain['objects']
+  compatibility_matrix?: Domain['compatibility_matrix']
+  effects?: Domain['effects']
+  physics?: Domain['physics']
+  presets?: Domain['presets']
+  labeling_templates?: Domain['labeling_templates']
+  name?: string
+  description?: string
+  icon?: string
+}
+
+export interface BuiltinOverrideResponse {
+  success: boolean
+  domain_id: string
+  message: string
+  has_override: boolean
+  domain?: Domain
+}
+
+export interface OverrideStatusResponse {
+  domain_id: string
+  has_override: boolean
+  is_builtin: boolean
+  current_version: string
+  original?: Domain
+}
+
+/**
+ * Create or update an override for a built-in domain.
+ * This allows modifying built-in domains (like 'underwater', 'aerial_birds')
+ * by creating a user-space copy that takes precedence over the original.
+ */
+export async function createBuiltinOverride(
+  domainId: string,
+  updates: BuiltinOverrideRequest
+): Promise<BuiltinOverrideResponse> {
+  const response = await api.post(`/domains/${domainId}/override`, updates)
+  return response.data
+}
+
+/**
+ * Reset a built-in domain override to its original configuration.
+ * This removes any user customizations and restores the original settings.
+ */
+export async function resetBuiltinOverride(
+  domainId: string
+): Promise<BuiltinOverrideResponse> {
+  const response = await api.delete(`/domains/${domainId}/override`)
+  return response.data
+}
+
+/**
+ * Check if a domain has a user override.
+ */
+export async function getOverrideStatus(domainId: string): Promise<OverrideStatusResponse> {
+  const response = await api.get(`/domains/${domainId}/override-status`)
+  return response.data
+}
+
+/**
+ * Update SAM3 prompts for a domain's regions.
+ * Convenience function that creates an override with only region updates.
+ */
+export async function updateDomainSam3Prompts(
+  domainId: string,
+  regionPrompts: Array<{ id: string; sam3_prompt: string | null }>
+): Promise<BuiltinOverrideResponse> {
+  // Convert to the full region update format
+  const regions = regionPrompts.map(rp => ({
+    id: rp.id,
+    name: rp.id,
+    display_name: rp.id,
+    sam3_prompt: rp.sam3_prompt,
+  }))
+
+  return createBuiltinOverride(domainId, { regions })
+}
+
+
+// ============================================================================
+// Domain Gap Reduction
+// ============================================================================
+
+/**
+ * Upload reference images to create a new reference set.
+ */
+export async function uploadReferences(
+  files: File[],
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+): Promise<any> {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+  formData.append('name', name)
+  formData.append('description', description)
+  formData.append('domain_id', domainId)
+
+  const response = await api.post('/domain-gap/references/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+  return response.data
+}
+
+/**
+ * Create an empty reference set (phase 1 of chunked upload).
+ */
+export async function createReferenceSet(
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+): Promise<{ success: boolean; set_id: string; name: string; image_dir: string; message: string }> {
+  const formData = new FormData()
+  formData.append('name', name)
+  formData.append('description', description)
+  formData.append('domain_id', domainId)
+
+  const response = await api.post('/domain-gap/references/create', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 30000,
+  })
+  return response.data
+}
+
+/**
+ * Add a batch of images to an existing reference set (phase 2 of chunked upload).
+ */
+export async function addReferenceBatch(
+  setId: string,
+  files: File[],
+  onUploadProgress?: (progressEvent: any) => void,
+): Promise<{ success: boolean; set_id: string; images_added: number; total_images: number; message: string }> {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+
+  const response = await api.post(`/domain-gap/references/${setId}/add-batch`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000, // 5 min per batch
+    onUploadProgress,
+  })
+  return response.data
+}
+
+/**
+ * Finalize a reference set: compute stats (phase 3 of chunked upload).
+ */
+export async function finalizeReferenceSet(
+  setId: string,
+): Promise<{ success: boolean; set_id: string; name: string; image_count: number; stats: any; message: string }> {
+  const response = await api.post(`/domain-gap/references/${setId}/finalize`, null, {
+    timeout: 600000, // 10 min for stats
+  })
+  return response.data
+}
+
+/**
+ * Create a reference set from images in a server-side directory (zero network transfer).
+ */
+export async function createReferenceFromDirectory(
+  name: string,
+  description: string = '',
+  domainId: string = 'default',
+  directoryPath: string,
+): Promise<any> {
+  const response = await api.post('/domain-gap/references/from-directory', {
+    name,
+    description,
+    domain_id: domainId,
+    directory_path: directoryPath,
+  }, {
+    timeout: 600000, // 10 min
+  })
+  return response.data
+}
+
+/**
+ * List all reference sets.
+ */
+export async function listReferences(domainId?: string): Promise<any> {
+  const params = domainId ? { domain_id: domainId } : {}
+  const response = await api.get('/domain-gap/references', { params })
+  return response.data
+}
+
+/**
+ * Get reference set details.
+ */
+export async function getReference(setId: string): Promise<any> {
+  const response = await api.get(`/domain-gap/references/${setId}`)
+  return response.data
+}
+
+/**
+ * Delete a reference set.
+ */
+export async function deleteReference(setId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/references/${setId}`)
+  return response.data
+}
+
+/**
+ * Compute domain gap metrics between synthetic images and a reference set.
+ */
+export async function computeMetrics(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+  compute_fid?: boolean
+  compute_kid?: boolean
+  compute_color_distribution?: boolean
+}): Promise<any> {
+  const response = await api.post('/domain-gap/metrics/compute', request, {
+    timeout: 600000, // 10 min for FID/KID on large sets
+  })
+  return response.data
+}
+
+/**
+ * Compare domain gap metrics before and after processing.
+ */
+export async function compareMetrics(request: {
+  original_synthetic_dir: string
+  processed_synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+}): Promise<any> {
+  const response = await api.post('/domain-gap/metrics/compare', request, {
+    timeout: 600000, // 10 min — runs metrics twice (before + after)
+  })
+  return response.data
+}
+
+/**
+ * Start domain gap analysis (async job). Returns job_id for polling.
+ */
+export async function analyzeGap(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  max_images?: number
+  current_config?: Record<string, any>
+}): Promise<{ success: boolean; job_id: string; status: string; message: string }> {
+  const response = await api.post('/domain-gap/analyze', request)
+  return response.data
+}
+
+/**
+ * Apply domain randomization to a single image.
+ */
+export async function randomizeSingle(request: {
+  image_path: string
+  config: Record<string, any>
+  output_dir: string
+  annotations_path?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/randomize/apply', request)
+  return response.data
+}
+
+/**
+ * Apply domain randomization to a batch (async job).
+ */
+export async function randomizeBatch(request: {
+  images_dir: string
+  config: Record<string, any>
+  output_dir: string
+  annotations_dir?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/randomize/apply-batch', request)
+  return response.data
+}
+
+/**
+ * Get domain gap service info.
+ */
+/**
+ * Apply style transfer to a single image.
+ */
+export async function styleTransferSingle(request: {
+  image_path: string
+  config: {
+    reference_set_id: string
+    style_weight?: number
+    content_weight?: number
+    depth_guided?: boolean
+    preserve_structure?: number
+    color_only?: boolean
+  }
+  output_path: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/style-transfer/apply', request)
+  return response.data
+}
+
+/**
+ * Apply style transfer to a batch (async job).
+ */
+export async function styleTransferBatch(request: {
+  images_dir: string
+  config: {
+    reference_set_id: string
+    style_weight?: number
+    content_weight?: number
+    depth_guided?: boolean
+    preserve_structure?: number
+    color_only?: boolean
+  }
+  output_dir: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/style-transfer/apply-batch', request)
+  return response.data
+}
+
+/**
+ * Start automatic domain gap optimization (async job).
+ */
+export async function optimizeGap(request: {
+  synthetic_dir: string
+  reference_set_id: string
+  output_dir: string
+  target_gap_score?: number
+  max_iterations?: number
+  max_images?: number
+  techniques?: string[]
+  current_config?: Record<string, any>
+}): Promise<any> {
+  const response = await api.post('/domain-gap/optimize', request)
+  return response.data
+}
+
+export async function getDomainGapInfo(): Promise<any> {
+  const response = await api.get('/domain-gap/info')
+  return response.data
+}
+
+/**
+ * List domain gap jobs.
+ */
+export async function listDomainGapJobs(): Promise<any> {
+  const response = await api.get('/domain-gap/jobs')
+  return response.data
+}
+
+/**
+ * Get domain gap job status.
+ */
+export async function getDomainGapJob(jobId: string): Promise<any> {
+  const response = await api.get(`/domain-gap/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * Cancel a domain gap job.
+ */
+export async function cancelDomainGapJob(jobId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/jobs/${jobId}`)
+  return response.data
+}
+
+
+// ============================================================================
+// Auto-Tune (Closed-Loop Domain Gap Optimization)
+// ============================================================================
+
+/**
+ * Start auto-tune: closed-loop probe → measure → adjust → repeat.
+ */
+export async function startAutoTune(params: Record<string, any>): Promise<any> {
+  const response = await api.post('/auto-tune/start', params)
+  return response.data
+}
+
+/**
+ * Get auto-tune job status.
+ */
+export async function getAutoTuneStatus(jobId: string): Promise<any> {
+  const response = await api.get(`/auto-tune/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * Cancel an auto-tune job.
+ */
+export async function cancelAutoTune(jobId: string): Promise<any> {
+  const response = await api.delete(`/auto-tune/jobs/${jobId}`)
+  return response.data
+}
+
+/**
+ * List all auto-tune jobs.
+ */
+export async function listAutoTuneJobs(): Promise<any> {
+  const response = await api.get('/auto-tune/jobs')
+  return response.data
+}
+
+
+// ==================== Diffusion Refinement ====================
+
+export async function diffusionRefine(request: {
+  image_path: string
+  config: {
+    method: 'controlnet' | 'ip_adapter' | 'lora'
+    reference_set_id: string
+    strength?: number
+    controlnet_conditioning_scale?: number
+    use_depth_conditioning?: boolean
+    ip_adapter_scale?: number
+    lora_model_id?: string | null
+    lora_weight?: number
+    guidance_scale?: number
+    num_inference_steps?: number
+    use_lcm?: boolean
+    seed?: number | null
+    validate_annotations?: boolean
+    annotation_threshold?: number
+    prompt?: string
+    negative_prompt?: string
+  }
+  output_path: string
+  depth_map_path?: string | null
+  annotations_path?: string | null
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/refine', request)
+  return response.data
+}
+
+export async function diffusionRefineBatch(request: {
+  images_dir: string
+  config: {
+    method: 'controlnet' | 'ip_adapter' | 'lora'
+    reference_set_id: string
+    strength?: number
+    controlnet_conditioning_scale?: number
+    ip_adapter_scale?: number
+    lora_model_id?: string | null
+    guidance_scale?: number
+    num_inference_steps?: number
+    use_lcm?: boolean
+    validate_annotations?: boolean
+    prompt?: string
+    negative_prompt?: string
+  }
+  output_dir: string
+  annotations_dir?: string | null
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/refine-batch', request, { timeout: 300000 })
+  return response.data
+}
+
+export async function diffusionTrainLora(request: {
+  reference_set_id: string
+  model_id: string
+  training_steps?: number
+  learning_rate?: number
+  lora_rank?: number
+  resolution?: number
+  batch_size?: number
+  prompt_template?: string
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/train-lora', request)
+  return response.data
+}
+
+export async function listLoraModels(): Promise<any> {
+  const response = await api.get('/domain-gap/diffusion/lora-models')
+  return response.data
+}
+
+export async function deleteLoraModel(modelId: string): Promise<any> {
+  const response = await api.delete(`/domain-gap/diffusion/lora-models/${modelId}`)
+  return response.data
+}
+
+export async function validateAnnotations(request: {
+  original_path: string
+  refined_path: string
+  threshold?: number
+}): Promise<any> {
+  const response = await api.post('/domain-gap/diffusion/validate-annotations', request)
   return response.data
 }

@@ -113,17 +113,12 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
+    <!-- Refresh controls -->
     <div class="flex items-center justify-between">
-      <div>
-        <h2 class="text-2xl font-bold text-white">Service Status</h2>
-        <p class="mt-1 text-gray-400">
-          Monitor the health of all backend services.
-          <span v-if="lastChecked" class="text-gray-500">
-            Last checked: {{ lastChecked.toLocaleTimeString() }}
-          </span>
-        </p>
-      </div>
+      <span v-if="lastChecked" class="text-sm text-gray-500">
+        Last checked: {{ lastChecked.toLocaleTimeString() }}
+      </span>
+      <span v-else class="text-sm text-gray-500" />
       <BaseButton variant="outline" @click="checkHealth" :disabled="loading">
         <RefreshCw :class="['h-5 w-5', loading ? 'animate-spin' : '']" />
         Refresh

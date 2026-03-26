@@ -8,12 +8,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/HomeView.vue'),
     meta: { titleKey: 'nav.titles.dashboard' },
   },
-  // Workflow routes
+  // Workflow routes (4 steps)
   {
-    path: '/analysis',
-    name: 'analysis',
-    component: () => import('@/views/workflow/AnalysisView.vue'),
-    meta: { titleKey: 'nav.titles.analysis', step: 1 },
+    path: '/prepare',
+    name: 'prepare',
+    component: () => import('@/views/workflow/PrepareView.vue'),
+    meta: { titleKey: 'nav.titles.prepare', step: 1 },
   },
   {
     path: '/configure',
@@ -22,35 +22,23 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'nav.titles.configure', step: 2 },
   },
   {
-    path: '/source-selection',
-    name: 'source-selection',
-    component: () => import('@/views/workflow/SourceSelectionView.vue'),
-    meta: { titleKey: 'nav.titles.sourceSelection', step: 3 },
-  },
-  {
-    path: '/generation',
-    name: 'generation',
+    path: '/generate',
+    name: 'generate',
     component: () => import('@/views/workflow/GenerationView.vue'),
-    meta: { titleKey: 'nav.titles.generation', step: 4 },
+    meta: { titleKey: 'nav.titles.generate', step: 3 },
   },
   {
     path: '/export',
     name: 'export',
-    component: () => import('@/views/workflow/ExportView.vue'),
-    meta: { titleKey: 'nav.titles.export', step: 5 },
+    component: () => import('@/views/workflow/ExportSplitView.vue'),
+    meta: { titleKey: 'nav.titles.export', step: 4 },
   },
-  {
-    path: '/combine',
-    name: 'combine',
-    component: () => import('@/views/workflow/CombineView.vue'),
-    meta: { titleKey: 'nav.titles.combine', step: 6 },
-  },
-  {
-    path: '/splits',
-    name: 'splits',
-    component: () => import('@/views/workflow/SplitsView.vue'),
-    meta: { titleKey: 'nav.titles.splits', step: 7 },
-  },
+  // Workflow redirects (backward compatibility)
+  { path: '/analysis', redirect: '/prepare?tab=analyze' },
+  { path: '/source-selection', redirect: '/prepare?tab=sources' },
+  { path: '/generation', redirect: '/generate' },
+  { path: '/combine', redirect: '/export?tab=combine' },
+  { path: '/splits', redirect: '/export?tab=split' },
   // Domain routes
   {
     path: '/domains',
@@ -70,19 +58,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/domain/DomainEditorView.vue'),
     meta: { titleKey: 'nav.titles.domainEdit' },
   },
-  // Tools routes
-  {
-    path: '/tools/job-monitor',
-    name: 'job-monitor',
-    component: () => import('@/views/tools/JobMonitorView.vue'),
-    meta: { titleKey: 'nav.titles.jobMonitor' },
-  },
-  {
-    path: '/tools/service-status',
-    name: 'service-status',
-    component: () => import('@/views/tools/ServiceStatusView.vue'),
-    meta: { titleKey: 'nav.titles.serviceStatus' },
-  },
+  // Tools routes (2 tools + system)
   {
     path: '/tools/object-extraction',
     name: 'object-extraction',
@@ -90,35 +66,27 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'nav.titles.objectExtraction' },
   },
   {
-    path: '/tools/labeling',
-    name: 'labeling',
-    component: () => import('@/views/tools/LabelingView.vue'),
-    meta: { titleKey: 'nav.titles.autoLabeling' },
+    path: '/tools/domain-gap',
+    name: 'domain-gap',
+    component: () => import('@/views/tools/DomainGapView.vue'),
+    meta: { titleKey: 'nav.titles.domainGap' },
   },
   {
-    path: '/tools/sam-segmentation',
-    name: 'sam-segmentation',
-    component: () => import('@/views/tools/SamSegmentationView.vue'),
-    meta: { titleKey: 'nav.titles.samSegmentation' },
+    path: '/tools/system',
+    name: 'system',
+    component: () => import('@/views/tools/SystemView.vue'),
+    meta: { titleKey: 'nav.titles.system' },
   },
-  {
-    path: '/tools/label-manager',
-    name: 'label-manager',
-    component: () => import('@/views/tools/LabelManagerView.vue'),
-    meta: { titleKey: 'nav.titles.labelManager' },
-  },
-  {
-    path: '/tools/object-sizes',
-    name: 'object-sizes',
-    component: () => import('@/views/tools/ObjectSizesView.vue'),
-    meta: { titleKey: 'nav.titles.objectSizes' },
-  },
-  {
-    path: '/tools/post-processing',
-    name: 'post-processing',
-    component: () => import('@/views/tools/PostProcessingView.vue'),
-    meta: { titleKey: 'nav.titles.postProcessing' },
-  },
+  // Tools redirects (backward compatibility)
+  { path: '/tools/job-monitor', redirect: '/tools/system?tab=jobs' },
+  { path: '/tools/service-status', redirect: '/tools/system?tab=services' },
+  { path: '/tools/object-sizes', redirect: '/configure?tab=sizes' },
+  { path: '/tools/post-processing', redirect: '/export?tab=balance' },
+  // Labeling tools removed - redirect to home
+  { path: '/tools/labeling', redirect: '/' },
+  { path: '/tools/sam-segmentation', redirect: '/' },
+  { path: '/tools/label-manager', redirect: '/' },
+  { path: '/tools/annotation-review', redirect: '/' },
   // Catch-all 404
   {
     path: '/:pathMatch(.*)*',

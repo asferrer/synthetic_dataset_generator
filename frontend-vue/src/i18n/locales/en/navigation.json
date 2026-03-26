@@ -3,49 +3,39 @@
     "dashboard": "Dashboard",
     "domains": "Domains",
     "workflow": "Workflow",
-    "tools": "Tools"
+    "tools": "Tools",
+    "system": "System"
   },
   "workflow": {
-    "analysis": "Analysis",
+    "prepare": "Prepare",
     "configure": "Configure",
-    "sourceSelection": "Source Selection",
-    "generation": "Generation",
-    "export": "Export",
-    "combine": "Combine",
-    "splits": "Splits"
+    "generate": "Generate",
+    "export": "Export"
   },
   "tools": {
-    "jobMonitor": "Job Monitor",
-    "serviceStatus": "Service Status",
     "objectExtraction": "Object Extraction",
-    "autoLabeling": "Auto Labeling",
-    "samSegmentation": "SAM Segmentation",
-    "labelManager": "Label Manager",
-    "objectSizes": "Object Sizes",
-    "postProcessing": "Post-Processing"
+    "domainGap": "Domain Gap",
+    "system": "System",
+    "systemDescription": "Monitor jobs and service health.",
+    "tabs": {
+      "jobs": "Jobs",
+      "services": "Services"
+    }
   },
   "titles": {
     "dashboard": "Dashboard",
     "home": "Home",
-    "analysis": "Dataset Analysis",
-    "configure": "Configure Effects",
-    "sourceSelection": "Source Selection",
-    "generation": "Generation",
-    "export": "Export",
-    "combine": "Combine Datasets",
-    "splits": "Dataset Splits",
+    "prepare": "Prepare Data",
+    "configure": "Configure Pipeline",
+    "generate": "Generate",
+    "export": "Export & Split",
     "domains": "Domain Manager",
     "domainDetail": "Domain Details",
     "domainEdit": "Edit Domain",
     "domainCreate": "Create Domain",
-    "jobMonitor": "Job Monitor",
-    "serviceStatus": "Service Status",
     "objectExtraction": "Object Extraction",
-    "autoLabeling": "Auto Labeling",
-    "samSegmentation": "SAM3 Segmentation",
-    "labelManager": "Label Manager",
-    "objectSizes": "Object Sizes",
-    "postProcessing": "Post-Processing",
+    "domainGap": "Domain Gap Reduction",
+    "system": "System Monitor",
     "notFound": "Page Not Found"
   },
   "searchPlaceholder": "Search pages...",

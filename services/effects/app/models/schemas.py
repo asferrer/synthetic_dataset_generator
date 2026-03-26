@@ -91,13 +91,18 @@ class ApplyEffectsResponse(BaseModel):
 
 
 class BlendRequest(BaseModel):
-    """Request to blend foreground onto background"""
+    """Request to blend foreground onto background.
+
+    The foreground is placed at the specified position while preserving aspect ratio.
+    Use scale to resize the foreground proportionally before blending.
+    """
     background_path: str = Field(..., description="Path to background image")
     foreground_path: str = Field(..., description="Path to foreground image (RGBA)")
     mask_path: Optional[str] = Field(None, description="Optional mask path")
     output_path: Optional[str] = Field(None, description="Output path")
     method: BlendMethod = Field(BlendMethod.ALPHA, description="Blending method")
-    position: Optional[tuple[int, int]] = Field(None, description="Position (x, y) to place foreground")
+    position: Optional[tuple[int, int]] = Field(None, description="Center position (x, y) to place foreground")
+    scale: Optional[float] = Field(None, ge=0.1, le=5.0, description="Scale factor for foreground (preserves aspect ratio)")
 
 
 class BlendResponse(BaseModel):

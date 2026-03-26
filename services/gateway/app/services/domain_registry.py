@@ -239,8 +239,8 @@ class DomainRegistry:
         # Load built-in domains
         if self.builtin_path.exists():
             for filepath in self.builtin_path.glob("*.json"):
-                if filepath.name.startswith("_"):
-                    continue  # Skip templates
+                if filepath.name.startswith("_") or "schema" in filepath.name:
+                    continue  # Skip templates and schema files
                 domain = self._load_domain_from_file(filepath, is_builtin=True)
                 if domain:
                     self._domains[domain.domain_id] = domain
@@ -355,7 +355,7 @@ class DomainRegistry:
             raise ValueError(f"Domain not found: {domain_id}")
 
         if existing.is_builtin:
-            raise ValueError(f"Cannot modify built-in domain: {domain_id}")
+            raise ValueError(f"Cannot modify built-in domain: {domain_id}. Use create_builtin_override instead.")
 
         # Merge with existing and save
         domain_data["domain_id"] = domain_id  # Ensure ID doesn't change
@@ -384,6 +384,190 @@ class DomainRegistry:
         except Exception as e:
             logger.error(f"Error updating domain: {e}")
             raise
+
+    def create_builtin_override(self, domain_id: str, updates: Dict[str, Any]) -> Optional[Domain]:
+        """
+        Create an override for a built-in domain.
+
+        This allows modifying built-in domains by creating a user copy that overrides
+        the original. The override is saved in the user domains directory and takes
+        precedence over the built-in version.
+
+        Args:
+            domain_id: The ID of the built-in domain to override
+            updates: Dictionary of fields to update (regions, objects, sam3_prompts, etc.)
+
+        Returns:
+            The updated domain with overrides applied
+        """
+        existing = self.get_domain(domain_id)
+        if not existing:
+            raise ValueError(f"Domain not found: {domain_id}")
+
+        if not existing.is_builtin:
+            raise ValueError(f"Domain '{domain_id}' is not a built-in domain. Use update_domain instead.")
+
+        # Start with the existing domain data
+        domain_data = existing.to_dict()
+
+        # Mark as override (not built-in anymore)
+        domain_data["is_builtin"] = False
+        domain_data["is_override"] = True
+        domain_data["original_builtin_id"] = domain_id
+
+        # Increment version
+        parts = domain_data.get("version", "1.0.0").split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        domain_data["version"] = ".".join(parts)
+
+        # Apply updates
+        self._apply_domain_updates(domain_data, updates)
+
+        # Save to user domains directory
+        filepath = self.user_path / f"{domain_id}.json"
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(domain_data, f, indent=2, ensure_ascii=False)
+
+            domain = self._load_domain_from_file(filepath, is_builtin=False)
+            if domain:
+                self._domains[domain_id] = domain
+                logger.info(f"Created override for built-in domain: {domain_id}")
+                return domain
+            else:
+                filepath.unlink()
+                raise ValueError("Invalid domain configuration after applying updates")
+
+        except Exception as e:
+            logger.error(f"Error creating built-in override: {e}")
+            raise
+
+    def _apply_domain_updates(self, domain_data: Dict[str, Any], updates: Dict[str, Any]) -> None:
+        """
+        Apply updates to domain data, supporting partial updates.
+
+        Handles special cases like updating specific regions or SAM3 prompts.
+        """
+        for key, value in updates.items():
+            if key == "regions" and isinstance(value, list):
+                # Update specific regions by ID
+                existing_regions = {r["id"]: r for r in domain_data.get("regions", [])}
+                for region_update in value:
+                    region_id = region_update.get("id")
+                    if region_id and region_id in existing_regions:
+                        existing_regions[region_id].update(region_update)
+                    elif region_id:
+                        existing_regions[region_id] = region_update
+                domain_data["regions"] = list(existing_regions.values())
+
+            elif key == "objects" and isinstance(value, list):
+                # Update specific objects by class_name
+                existing_objects = {o["class_name"]: o for o in domain_data.get("objects", [])}
+                for obj_update in value:
+                    class_name = obj_update.get("class_name")
+                    if class_name and class_name in existing_objects:
+                        existing_objects[class_name].update(obj_update)
+                    elif class_name:
+                        existing_objects[class_name] = obj_update
+                domain_data["objects"] = list(existing_objects.values())
+
+            elif key == "compatibility_matrix" and isinstance(value, dict):
+                # Merge compatibility matrix
+                existing_matrix = domain_data.get("compatibility_matrix", {})
+                for obj_class, regions in value.items():
+                    if obj_class not in existing_matrix:
+                        existing_matrix[obj_class] = {}
+                    existing_matrix[obj_class].update(regions)
+                domain_data["compatibility_matrix"] = existing_matrix
+
+            elif key == "effects" and isinstance(value, dict):
+                # Merge effects configuration
+                existing_effects = domain_data.get("effects", {})
+                for effect_key, effect_value in value.items():
+                    if effect_key in existing_effects and isinstance(existing_effects[effect_key], dict):
+                        existing_effects[effect_key].update(effect_value)
+                    else:
+                        existing_effects[effect_key] = effect_value
+                domain_data["effects"] = existing_effects
+
+            elif key == "physics" and isinstance(value, dict):
+                # Merge physics configuration
+                existing_physics = domain_data.get("physics", {})
+                existing_physics.update(value)
+                domain_data["physics"] = existing_physics
+
+            elif key == "presets" and isinstance(value, list):
+                # Update/add presets by ID
+                existing_presets = {p["id"]: p for p in domain_data.get("presets", [])}
+                for preset_update in value:
+                    preset_id = preset_update.get("id")
+                    if preset_id:
+                        if preset_id in existing_presets:
+                            existing_presets[preset_id].update(preset_update)
+                        else:
+                            existing_presets[preset_id] = preset_update
+                domain_data["presets"] = list(existing_presets.values())
+
+            else:
+                # Direct update for other fields
+                domain_data[key] = value
+
+    def reset_builtin_override(self, domain_id: str) -> Optional[Domain]:
+        """
+        Reset a built-in domain override to its original state.
+
+        Removes the user override file so the original built-in domain is used.
+
+        Args:
+            domain_id: The ID of the domain to reset
+
+        Returns:
+            The original built-in domain
+        """
+        existing = self.get_domain(domain_id)
+        if not existing:
+            raise ValueError(f"Domain not found: {domain_id}")
+
+        # Check if there's an override file
+        override_filepath = self.user_path / f"{domain_id}.json"
+
+        if not override_filepath.exists():
+            raise ValueError(f"No override exists for domain: {domain_id}")
+
+        try:
+            # Remove the override file
+            override_filepath.unlink()
+            logger.info(f"Removed override for domain: {domain_id}")
+
+            # Reload domains to get the original built-in
+            self.load_all_domains()
+
+            return self.get_domain(domain_id)
+
+        except Exception as e:
+            logger.error(f"Error resetting built-in override: {e}")
+            raise
+
+    def has_override(self, domain_id: str) -> bool:
+        """Check if a domain has a user override."""
+        override_filepath = self.user_path / f"{domain_id}.json"
+        return override_filepath.exists()
+
+    def get_original_builtin(self, domain_id: str) -> Optional[Domain]:
+        """
+        Get the original built-in domain, ignoring any overrides.
+
+        Args:
+            domain_id: The ID of the domain
+
+        Returns:
+            The original built-in domain or None if not found
+        """
+        builtin_filepath = self.builtin_path / f"{domain_id}.json"
+        if builtin_filepath.exists():
+            return self._load_domain_from_file(builtin_filepath, is_builtin=True)
+        return None
 
     def delete_domain(self, domain_id: str) -> bool:
         """Delete a user domain."""

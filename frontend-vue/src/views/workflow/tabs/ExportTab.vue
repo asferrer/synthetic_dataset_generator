@@ -1,28 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUiStore } from '@/stores/ui'
 import { exportDataset, listDatasets, analyzeDataset } from '@/lib/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
-import BaseInput from '@/components/ui/BaseInput.vue'
 import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import {
-  ArrowRight,
-  ArrowLeft,
   Download,
   FileJson,
   FileText,
   Database,
   CheckCircle,
-  FolderOpen,
 } from 'lucide-vue-next'
 import type { ExportFormat, DatasetInfo, DatasetAnalysis, ExportResult } from '@/types/api'
 
-const router = useRouter()
 const workflowStore = useWorkflowStore()
 const uiStore = useUiStore()
 
@@ -33,7 +27,7 @@ const selectedDataset = ref<string | null>(workflowStore.outputDir)
 const selectedImagesDir = ref('')
 const datasetAnalysis = ref<DatasetAnalysis | null>(null)
 const exportFormat = ref<ExportFormat>('yolo')
-const outputDir = ref('/data/exports')
+const outputDir = ref('/app/output/exports')
 const includeImages = ref(true)
 const exportResult = ref<ExportResult | null>(null)
 const error = ref<string | null>(null)
@@ -121,7 +115,7 @@ async function startExport() {
     })
 
     exportResult.value = result
-    workflowStore.markStepCompleted(5)
+    workflowStore.markStepCompleted(4)
     uiStore.showSuccess('Export Complete', `Dataset exported to ${result.output_dir}`)
   } catch (e: any) {
     error.value = e.message || 'Failed to export dataset'
@@ -131,28 +125,12 @@ async function startExport() {
   }
 }
 
-function goBack() {
-  router.push('/generation')
-}
-
-function continueToCombine() {
-  router.push('/combine')
-}
-
 // Load datasets on mount
 loadDatasets()
 </script>
 
 <template>
   <div class="space-y-8">
-    <!-- Header -->
-    <div>
-      <h2 class="text-2xl font-bold text-white">Export Dataset</h2>
-      <p class="mt-2 text-gray-400">
-        Export your dataset to various formats for use in different ML frameworks.
-      </p>
-    </div>
-
     <!-- Error Alert -->
     <AlertBox v-if="error" type="error" :title="error" dismissible @dismiss="error = null" />
 
@@ -177,7 +155,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="selectedImagesDir"
             label="Images Directory"
-            placeholder="/data/dataset/images"
+            placeholder="/app/datasets/images"
             path-mode="input"
           />
 
@@ -206,7 +184,7 @@ loadDatasets()
           <DirectoryBrowser
             v-model="outputDir"
             label="Output Directory"
-            placeholder="/data/exports"
+            placeholder="/app/output/exports"
             path-mode="output"
           />
 
@@ -288,31 +266,16 @@ loadDatasets()
     </div>
 
     <!-- Action Buttons -->
-    <div class="flex justify-between">
-      <BaseButton variant="outline" @click="goBack">
-        <ArrowLeft class="h-5 w-5" />
-        Back
+    <div class="flex justify-end">
+      <BaseButton
+        v-if="!exportResult"
+        :disabled="!selectedDataset || !selectedImagesDir"
+        :loading="exporting"
+        @click="startExport"
+      >
+        <Download class="h-5 w-5" />
+        Export Dataset
       </BaseButton>
-
-      <div class="flex gap-4">
-        <BaseButton
-          v-if="!exportResult"
-          :disabled="!selectedDataset || !selectedImagesDir"
-          :loading="exporting"
-          @click="startExport"
-        >
-          <Download class="h-5 w-5" />
-          Export Dataset
-        </BaseButton>
-
-        <BaseButton
-          v-if="exportResult"
-          @click="continueToCombine"
-        >
-          Continue to Combine
-          <ArrowRight class="h-5 w-5" />
-        </BaseButton>
-      </div>
     </div>
   </div>
 </template>
