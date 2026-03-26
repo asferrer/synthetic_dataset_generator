@@ -16,17 +16,13 @@
     "servicesOnline": "Services Online"
   },
   "steps": {
-    "analysis": {
-      "name": "Analysis",
-      "description": "Analyze your dataset structure"
+    "prepare": {
+      "name": "Prepare",
+      "description": "Analyze dataset and select sources"
     },
     "configure": {
       "name": "Configure",
-      "description": "Set up augmentation effects"
-    },
-    "source": {
-      "name": "Source",
-      "description": "Select source images"
+      "description": "Set up effects and object sizes"
     },
     "generate": {
       "name": "Generate",
@@ -34,7 +30,15 @@
     },
     "export": {
       "name": "Export",
-      "description": "Export in various formats"
+      "description": "Export, combine, and split"
+    }
+  },
+  "prepare": {
+    "title": "Prepare Data",
+    "subtitle": "Analyze your dataset and select source images for generation.",
+    "tabs": {
+      "analyze": "Analyze",
+      "sources": "Sources"
     }
   },
   "analysis": {
@@ -77,8 +81,12 @@
     }
   },
   "configure": {
-    "title": "Configure Effects and Placement",
-    "subtitle": "Customize augmentation effects for your synthetic data",
+    "title": "Configure Pipeline",
+    "subtitle": "Configure augmentation effects, object sizes, and placement for synthetic data generation.",
+    "tabs": {
+      "effects": "Effects & Placement",
+      "objectSizes": "Object Sizes"
+    },
     "effectsPresets": "Effects Presets",
     "customEffects": "Custom Effects",
     "intensity": "Intensity",
@@ -312,6 +320,16 @@
       "completed": "Generation Complete",
       "completedMsg": "Your synthetic dataset is ready!",
       "failed": "Generation Failed"
+    }
+  },
+  "exportSplit": {
+    "title": "Export & Split",
+    "subtitle": "Export your dataset, combine datasets, split into train/val/test, or balance classes.",
+    "tabs": {
+      "export": "Export",
+      "combine": "Combine",
+      "split": "Split",
+      "balance": "Balance"
     }
   },
   "export": {

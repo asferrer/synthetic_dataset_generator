@@ -3,53 +3,41 @@
     "dashboard": "Panel",
     "domains": "Dominios",
     "workflow": "Flujo de Trabajo",
-    "tools": "Herramientas"
+    "tools": "Herramientas",
+    "system": "Sistema"
   },
   "workflow": {
-    "analysis": "Análisis",
+    "prepare": "Preparar",
     "configure": "Configurar",
-    "sourceSelection": "Selección de Fuentes",
-    "generation": "Generación",
-    "export": "Exportar",
-    "combine": "Combinar",
-    "splits": "Divisiones"
+    "generate": "Generar",
+    "export": "Exportar"
   },
   "tools": {
-    "jobMonitor": "Monitor de Trabajos",
-    "serviceStatus": "Estado de Servicios",
-    "objectExtraction": "Extracción de Objetos",
-    "autoLabeling": "Etiquetado Automático",
-    "samSegmentation": "Segmentación SAM",
-    "labelManager": "Gestor de Etiquetas",
-    "objectSizes": "Tamaños de Objetos",
-    "postProcessing": "Post-Procesamiento",
-    "domainGap": "Domain Gap"
+    "objectExtraction": "Extraccion de Objetos",
+    "domainGap": "Domain Gap",
+    "system": "Sistema",
+    "systemDescription": "Monitorear trabajos y estado de servicios.",
+    "tabs": {
+      "jobs": "Trabajos",
+      "services": "Servicios"
+    }
   },
   "titles": {
     "dashboard": "Panel",
     "home": "Inicio",
-    "analysis": "Análisis de Dataset",
-    "configure": "Configurar Efectos",
-    "sourceSelection": "Selección de Fuentes",
-    "generation": "Generación",
-    "export": "Exportar",
-    "combine": "Combinar Datasets",
-    "splits": "Divisiones de Dataset",
+    "prepare": "Preparar Datos",
+    "configure": "Configurar Pipeline",
+    "generate": "Generar",
+    "export": "Exportar y Dividir",
     "domains": "Gestor de Dominios",
     "domainDetail": "Detalles del Dominio",
     "domainEdit": "Editar Dominio",
     "domainCreate": "Crear Dominio",
-    "jobMonitor": "Monitor de Trabajos",
-    "serviceStatus": "Estado de Servicios",
-    "objectExtraction": "Extracción de Objetos",
-    "autoLabeling": "Etiquetado Automático",
-    "samSegmentation": "Segmentación SAM3",
-    "labelManager": "Gestor de Etiquetas",
-    "objectSizes": "Tamaños de Objetos",
-    "postProcessing": "Post-Procesamiento",
-    "domainGap": "Reducción Domain Gap",
-    "notFound": "Página No Encontrada"
+    "objectExtraction": "Extraccion de Objetos",
+    "domainGap": "Reduccion Domain Gap",
+    "system": "Monitor del Sistema",
+    "notFound": "Pagina No Encontrada"
   },
-  "searchPlaceholder": "Buscar páginas...",
+  "searchPlaceholder": "Buscar paginas...",
   "keyboardShortcut": "Ctrl+K"
 }

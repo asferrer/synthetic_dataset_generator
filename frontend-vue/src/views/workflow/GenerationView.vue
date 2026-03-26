@@ -181,7 +181,7 @@ async function pollJobStatus(jobId: string) {
     if (job.status === 'completed') {
       stopPolling()
       generating.value = false
-      workflowStore.markStepCompleted(4)
+      workflowStore.markStepCompleted(3)
       uiStore.showSuccess(t('workflow.generation.notifications.completed'), t('workflow.generation.notifications.completedMsg'))
     } else if (job.status === 'failed') {
       stopPolling()
@@ -373,7 +373,7 @@ async function cancelAutoTuneJob() {
 }
 
 function goBack() {
-  router.push('/source-selection')
+  router.push('/prepare?tab=sources')
 }
 
 function continueToExport() {

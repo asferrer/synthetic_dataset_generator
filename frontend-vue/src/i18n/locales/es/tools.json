@@ -571,6 +571,109 @@
       "optimizationFailed": "Optimización Fallida"
     }
   },
+  "annotationReview": {
+    "title": "Revisión de Anotaciones",
+    "subtitle": "Revisa y edita las anotaciones de tus datasets",
+    "loader": {
+      "title": "Cargar Dataset",
+      "tabUpload": "Subir Archivo",
+      "tabBrowse": "Explorar Servidor",
+      "tabJobs": "Trabajos Completados",
+      "selectFile": "Archivo COCO JSON",
+      "orFromJob": "O cargar desde trabajo completado",
+      "filePath": "Ruta del COCO JSON (ruta del servidor)",
+      "loadButton": "Cargar",
+      "noJobs": "No se encontraron trabajos de etiquetado completados",
+      "upload": {
+        "title": "Subir COCO JSON",
+        "description": "Sube un archivo de anotaciones desde tu ordenador. Las imágenes referenciadas deben ser accesibles desde el servidor.",
+        "dragDrop": "Arrastra tu archivo COCO JSON aquí, o haz clic para seleccionar",
+        "selectedFile": "Archivo seleccionado",
+        "uploading": "Subiendo...",
+        "uploadButton": "Subir y Revisar",
+        "invalidFile": "Selecciona un archivo .json válido",
+        "orManualPath": "O introduce una ruta del servidor manualmente"
+      },
+      "browse": {
+        "title": "Datasets Disponibles",
+        "description": "Archivos de anotación encontrados en el servidor",
+        "scanning": "Buscando archivos de anotación...",
+        "noFiles": "No se encontraron archivos de anotación en el servidor",
+        "columns": {
+          "path": "Archivo",
+          "categories": "Categorías",
+          "images": "Imágenes",
+          "annotations": "Anotaciones",
+          "modified": "Modificado"
+        }
+      },
+      "jobColumns": {
+        "jobId": "ID del Trabajo",
+        "classes": "Clases",
+        "images": "Imágenes",
+        "annotations": "Anotaciones",
+        "completed": "Completado"
+      }
+    },
+    "navigator": {
+      "title": "Imágenes",
+      "search": "Buscar imágenes...",
+      "filter": {
+        "all": "Todas",
+        "annotated": "Anotadas",
+        "empty": "Sin anotaciones"
+      },
+      "annotations": "anotaciones",
+      "reviewed": "Revisada",
+      "noImages": "No se encontraron imágenes"
+    },
+    "canvas": {
+      "zoomIn": "Acercar",
+      "zoomOut": "Alejar",
+      "fitToView": "Ajustar a vista",
+      "noImage": "Selecciona una imagen para comenzar a revisar"
+    },
+    "sidebar": {
+      "title": "Detalles de Anotación",
+      "noSelection": "Haz clic en una anotación para ver detalles",
+      "class": "Clase",
+      "confidence": "Confianza",
+      "bbox": "Bounding Box",
+      "area": "Área",
+      "deleteAnnotation": "Eliminar Anotación",
+      "reannotate": "Re-anotar con SAM3",
+      "reannotateAll": "Re-anotar esta imagen"
+    },
+    "toolbar": {
+      "save": "Guardar",
+      "undo": "Deshacer",
+      "redo": "Rehacer",
+      "mode": {
+        "select": "Seleccionar",
+        "drawBbox": "Dibujar BBox",
+        "editPolygon": "Editar Polígono"
+      },
+      "visibility": {
+        "bboxes": "Bounding Boxes",
+        "polygons": "Polígonos",
+        "labels": "Etiquetas"
+      },
+      "unsavedChanges": "Cambios sin guardar",
+      "saved": "Todos los cambios guardados"
+    },
+    "notifications": {
+      "loaded": "Dataset cargado exitosamente",
+      "loadFailed": "Error al cargar el dataset",
+      "saved": "Dataset guardado exitosamente",
+      "saveFailed": "Error al guardar el dataset",
+      "annotationCreated": "Anotación creada",
+      "annotationDeleted": "Anotación eliminada",
+      "annotationUpdated": "Anotación actualizada",
+      "reannotateStarted": "Re-anotación iniciada",
+      "reannnotateFailed": "Error en la re-anotación",
+      "reannotateComplete": "Re-anotación completada"
+    }
+  },
   "postProcessing": {
     "title": "Post-Procesamiento",
     "subtitle": "Aplica efectos de post-procesamiento a imágenes generadas",

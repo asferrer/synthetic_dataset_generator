@@ -571,6 +571,109 @@
       "optimizationFailed": "Optimization Failed"
     }
   },
+  "annotationReview": {
+    "title": "Annotation Review",
+    "subtitle": "Review and edit annotations in your datasets",
+    "loader": {
+      "title": "Load Dataset",
+      "tabUpload": "Upload File",
+      "tabBrowse": "Browse Server",
+      "tabJobs": "Completed Jobs",
+      "selectFile": "COCO JSON Path",
+      "orFromJob": "Or load from completed job",
+      "filePath": "COCO JSON Path (server path)",
+      "loadButton": "Load",
+      "noJobs": "No completed labeling jobs found",
+      "upload": {
+        "title": "Upload COCO JSON",
+        "description": "Upload an annotation file from your computer. Images referenced in the JSON must be accessible from the server.",
+        "dragDrop": "Drag & drop your COCO JSON file here, or click to select",
+        "selectedFile": "Selected file",
+        "uploading": "Uploading...",
+        "uploadButton": "Upload & Review",
+        "invalidFile": "Please select a valid .json file",
+        "orManualPath": "Or enter a server path manually"
+      },
+      "browse": {
+        "title": "Available Datasets",
+        "description": "Annotation files found on the server",
+        "scanning": "Scanning for annotation files...",
+        "noFiles": "No annotation files found on the server",
+        "columns": {
+          "path": "File",
+          "categories": "Categories",
+          "images": "Images",
+          "annotations": "Annotations",
+          "modified": "Modified"
+        }
+      },
+      "jobColumns": {
+        "jobId": "Job ID",
+        "classes": "Classes",
+        "images": "Images",
+        "annotations": "Annotations",
+        "completed": "Completed"
+      }
+    },
+    "navigator": {
+      "title": "Images",
+      "search": "Search images...",
+      "filter": {
+        "all": "All",
+        "annotated": "Annotated",
+        "empty": "Empty"
+      },
+      "annotations": "annotations",
+      "reviewed": "Reviewed",
+      "noImages": "No images found"
+    },
+    "canvas": {
+      "zoomIn": "Zoom In",
+      "zoomOut": "Zoom Out",
+      "fitToView": "Fit to View",
+      "noImage": "Select an image to start reviewing"
+    },
+    "sidebar": {
+      "title": "Annotation Details",
+      "noSelection": "Click on an annotation to view details",
+      "class": "Class",
+      "confidence": "Confidence",
+      "bbox": "Bounding Box",
+      "area": "Area",
+      "deleteAnnotation": "Delete Annotation",
+      "reannotate": "Re-annotate with SAM3",
+      "reannotateAll": "Re-annotate this image"
+    },
+    "toolbar": {
+      "save": "Save",
+      "undo": "Undo",
+      "redo": "Redo",
+      "mode": {
+        "select": "Select",
+        "drawBbox": "Draw BBox",
+        "editPolygon": "Edit Polygon"
+      },
+      "visibility": {
+        "bboxes": "Bounding Boxes",
+        "polygons": "Polygons",
+        "labels": "Labels"
+      },
+      "unsavedChanges": "Unsaved changes",
+      "saved": "All changes saved"
+    },
+    "notifications": {
+      "loaded": "Dataset loaded successfully",
+      "loadFailed": "Failed to load dataset",
+      "saved": "Dataset saved successfully",
+      "saveFailed": "Failed to save dataset",
+      "annotationCreated": "Annotation created",
+      "annotationDeleted": "Annotation deleted",
+      "annotationUpdated": "Annotation updated",
+      "reannotateStarted": "Re-annotation started",
+      "reannnotateFailed": "Re-annotation failed",
+      "reannotateComplete": "Re-annotation complete"
+    }
+  },
   "postProcessing": {
     "title": "Post-Processing",
     "subtitle": "Apply post-processing effects to generated images",

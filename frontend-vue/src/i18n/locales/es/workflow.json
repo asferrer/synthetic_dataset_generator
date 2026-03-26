@@ -16,17 +16,13 @@
     "servicesOnline": "Servicios En Línea"
   },
   "steps": {
-    "analysis": {
-      "name": "Análisis",
-      "description": "Analiza la estructura de tu dataset"
+    "prepare": {
+      "name": "Preparar",
+      "description": "Analiza el dataset y selecciona fuentes"
     },
     "configure": {
       "name": "Configurar",
-      "description": "Configura los efectos de aumentación"
-    },
-    "source": {
-      "name": "Fuentes",
-      "description": "Selecciona imágenes fuente"
+      "description": "Configura efectos y tamaños de objetos"
     },
     "generate": {
       "name": "Generar",
@@ -34,7 +30,15 @@
     },
     "export": {
       "name": "Exportar",
-      "description": "Exporta en varios formatos"
+      "description": "Exporta, combina y divide"
+    }
+  },
+  "prepare": {
+    "title": "Preparar Datos",
+    "subtitle": "Analiza tu dataset y selecciona las imágenes fuente para la generación.",
+    "tabs": {
+      "analyze": "Analizar",
+      "sources": "Fuentes"
     }
   },
   "analysis": {
@@ -77,8 +81,12 @@
     }
   },
   "configure": {
-    "title": "Configurar Efectos y Ubicación",
-    "subtitle": "Personaliza los efectos de aumentación para tus datos sintéticos",
+    "title": "Configurar Pipeline",
+    "subtitle": "Configura los efectos de aumentación, tamaños de objetos y ubicación para la generación de datos sintéticos.",
+    "tabs": {
+      "effects": "Efectos y Ubicación",
+      "objectSizes": "Tamaños de Objetos"
+    },
     "effectsPresets": "Presets de Efectos",
     "customEffects": "Efectos Personalizados",
     "intensity": "Intensidad",
@@ -312,6 +320,16 @@
       "completed": "Generación Completa",
       "completedMsg": "¡Tu dataset sintético está listo!",
       "failed": "Generación Fallida"
+    }
+  },
+  "exportSplit": {
+    "title": "Exportar y Dividir",
+    "subtitle": "Exporta tu dataset, combina datasets, divide en train/val/test o balancea clases.",
+    "tabs": {
+      "export": "Exportar",
+      "combine": "Combinar",
+      "split": "Dividir",
+      "balance": "Balancear"
     }
   },
   "export": {

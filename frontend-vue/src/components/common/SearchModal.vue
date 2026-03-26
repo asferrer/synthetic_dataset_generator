@@ -36,20 +36,14 @@ const inputRef = ref<HTMLInputElement | null>(null)
 
 // Navigation items
 const navigationItems = [
-  { id: 'analysis', label: 'Dataset Analysis', icon: BarChart, path: '/analysis', group: 'Workflow' },
-  { id: 'configure', label: 'Configure Effects', icon: Settings, path: '/configure', group: 'Workflow' },
-  { id: 'source', label: 'Source Selection', icon: Folder, path: '/source-selection', group: 'Workflow' },
-  { id: 'generation', label: 'Generation', icon: Play, path: '/generation', group: 'Workflow' },
-  { id: 'export', label: 'Export Dataset', icon: Download, path: '/export', group: 'Workflow' },
-  { id: 'combine', label: 'Combine Datasets', icon: GitMerge, path: '/combine', group: 'Workflow' },
-  { id: 'splits', label: 'Create Splits', icon: Split, path: '/splits', group: 'Workflow' },
-  { id: 'job-monitor', label: 'Job Monitor', icon: Layers, path: '/tools/job-monitor', group: 'Tools' },
-  { id: 'service-status', label: 'Service Status', icon: Server, path: '/tools/service-status', group: 'Tools' },
-  { id: 'labeling', label: 'Labeling Tool', icon: Tag, path: '/tools/labeling', group: 'Tools' },
+  { id: 'prepare', label: 'Prepare Data', icon: Folder, path: '/prepare', group: 'Workflow' },
+  { id: 'configure', label: 'Configure Pipeline', icon: Settings, path: '/configure', group: 'Workflow' },
+  { id: 'generate', label: 'Generate', icon: Play, path: '/generate', group: 'Workflow' },
+  { id: 'export', label: 'Export & Split', icon: Download, path: '/export', group: 'Workflow' },
   { id: 'extraction', label: 'Object Extraction', icon: Scissors, path: '/tools/object-extraction', group: 'Tools' },
-  { id: 'sam', label: 'SAM Segmentation', icon: Layers, path: '/tools/sam', group: 'Tools' },
-  { id: 'label-manager', label: 'Label Manager', icon: Tag, path: '/tools/label-manager', group: 'Tools' },
-  { id: 'object-sizes', label: 'Object Sizes', icon: Settings, path: '/tools/object-sizes', group: 'Tools' },
+  { id: 'domain-gap', label: 'Domain Gap', icon: BarChart, path: '/tools/domain-gap', group: 'Tools' },
+  { id: 'system', label: 'System Monitor', icon: Server, path: '/tools/system', group: 'System' },
+  { id: 'domains', label: 'Domains', icon: Layers, path: '/domains', group: 'Domains' },
 ]
 
 // Filter items based on query

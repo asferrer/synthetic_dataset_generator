@@ -1,32 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import {
   LayoutDashboard,
   Globe,
-  BarChart3,
-  Settings,
   FolderInput,
+  Settings,
   Sparkles,
   Download,
-  Combine,
-  Split,
-  Activity,
-  Server,
   Scissors,
-  Tags,
-  Box,
-  Ruler,
-  Scale,
   ScanSearch,
+  Activity,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-vue-next'
 
 const route = useRoute()
-const router = useRouter()
 const uiStore = useUiStore()
 const { t } = useI18n()
 
@@ -38,28 +29,22 @@ interface NavItem {
 }
 
 const workflowItems: NavItem[] = [
-  { nameKey: 'nav.workflow.analysis', path: '/analysis', icon: BarChart3, step: 1 },
+  { nameKey: 'nav.workflow.prepare', path: '/prepare', icon: FolderInput, step: 1 },
   { nameKey: 'nav.workflow.configure', path: '/configure', icon: Settings, step: 2 },
-  { nameKey: 'nav.workflow.sourceSelection', path: '/source-selection', icon: FolderInput, step: 3 },
-  { nameKey: 'nav.workflow.generation', path: '/generation', icon: Sparkles, step: 4 },
-  { nameKey: 'nav.workflow.export', path: '/export', icon: Download, step: 5 },
-  { nameKey: 'nav.workflow.combine', path: '/combine', icon: Combine, step: 6 },
-  { nameKey: 'nav.workflow.splits', path: '/splits', icon: Split, step: 7 },
+  { nameKey: 'nav.workflow.generate', path: '/generate', icon: Sparkles, step: 3 },
+  { nameKey: 'nav.workflow.export', path: '/export', icon: Download, step: 4 },
 ]
 
 const toolItems: NavItem[] = [
-  { nameKey: 'nav.tools.jobMonitor', path: '/tools/job-monitor', icon: Activity },
-  { nameKey: 'nav.tools.serviceStatus', path: '/tools/service-status', icon: Server },
   { nameKey: 'nav.tools.objectExtraction', path: '/tools/object-extraction', icon: Scissors },
-  { nameKey: 'nav.tools.autoLabeling', path: '/tools/labeling', icon: Tags },
-  { nameKey: 'nav.tools.samSegmentation', path: '/tools/sam-segmentation', icon: Box },
-  { nameKey: 'nav.tools.labelManager', path: '/tools/label-manager', icon: Tags },
-  { nameKey: 'nav.tools.objectSizes', path: '/tools/object-sizes', icon: Ruler },
-  { nameKey: 'nav.tools.postProcessing', path: '/tools/post-processing', icon: Scale },
   { nameKey: 'nav.tools.domainGap', path: '/tools/domain-gap', icon: ScanSearch },
 ]
 
-const isActive = (path: string) => route.path === path
+const systemItems: NavItem[] = [
+  { nameKey: 'nav.tools.system', path: '/tools/system', icon: Activity },
+]
+
+const isActive = (path: string) => route.path === path || route.path.startsWith(path + '?')
 
 const sidebarClasses = computed(() => [
   'fixed inset-y-0 left-0 z-50 flex flex-col bg-background-secondary border-r border-gray-700/50',
@@ -91,7 +76,7 @@ const sidebarClasses = computed(() => [
           to="/"
           :class="[
             'flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors',
-            isActive('/') ? 'bg-primary text-white' : 'text-gray-400 hover:bg-gray-700/50 hover:text-white',
+            isActive('/') && route.path === '/' ? 'bg-primary text-white' : 'text-gray-400 hover:bg-gray-700/50 hover:text-white',
           ]"
         >
           <LayoutDashboard class="h-5 w-5 flex-shrink-0" />
@@ -146,7 +131,7 @@ const sidebarClasses = computed(() => [
       </div>
 
       <!-- Tools Section -->
-      <div>
+      <div class="mb-6">
         <h3
           v-if="!uiStore.sidebarCollapsed"
           class="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-500"
@@ -156,6 +141,30 @@ const sidebarClasses = computed(() => [
         <div class="space-y-1">
           <router-link
             v-for="item in toolItems"
+            :key="item.path"
+            :to="item.path"
+            :class="[
+              'flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors',
+              isActive(item.path) ? 'bg-primary text-white' : 'text-gray-400 hover:bg-gray-700/50 hover:text-white',
+            ]"
+          >
+            <component :is="item.icon" class="h-5 w-5 flex-shrink-0" />
+            <span v-if="!uiStore.sidebarCollapsed">{{ t(item.nameKey) }}</span>
+          </router-link>
+        </div>
+      </div>
+
+      <!-- System Section -->
+      <div>
+        <h3
+          v-if="!uiStore.sidebarCollapsed"
+          class="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-500"
+        >
+          {{ t('nav.sidebar.system') }}
+        </h3>
+        <div class="space-y-1">
+          <router-link
+            v-for="item in systemItems"
             :key="item.path"
             :to="item.path"
             :class="[
