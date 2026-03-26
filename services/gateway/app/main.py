@@ -42,9 +42,11 @@ def get_cors_origins() -> List[str]:
     # Default origins for development
     return [
         "http://localhost:3000",      # Vue frontend dev server
+        "http://localhost:3001",      # Vue frontend Docker (mapped port)
         "http://localhost:8501",      # Streamlit frontend
         "http://localhost:8000",      # Gateway itself (for Swagger UI)
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
         "http://127.0.0.1:8501",
         "http://127.0.0.1:8000",
     ]
