@@ -296,7 +296,7 @@ services:
       dockerfile: Dockerfile
     container_name: synth-frontend
     ports:
-      - "3000:3000"
+      - "3001:3000"
     # No se necesitan variables VITE_* - nginx hace proxy a las APIs internas
     # Límites de recursos - interfaz web ligera (nginx sirve archivos estáticos)
     mem_limit: 256M

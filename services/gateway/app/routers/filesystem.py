@@ -117,12 +117,13 @@ def _is_safe_path(path: str) -> bool:
         resolved = Path(path).resolve()
         base = Path(DATA_BASE_PATH).resolve()
         output_base = Path(OUTPUT_PATH).resolve()
-        # Allow paths within DATA_BASE_PATH, OUTPUT_PATH, or legacy /data paths
+        # Allow paths within DATA_BASE_PATH, OUTPUT_PATH, /shared, or legacy /data paths
         return (
             str(resolved).startswith(str(base)) or
             str(resolved).startswith(str(output_base)) or
             str(resolved).startswith("/data") or
-            str(resolved).startswith("/app")
+            str(resolved).startswith("/app") or
+            str(resolved).startswith("/shared")
         )
     except Exception:
         return False
